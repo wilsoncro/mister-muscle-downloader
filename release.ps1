@@ -59,10 +59,10 @@ Korak "Postavljam verziju na $Verzija"
 $guiPath = Join-Path $Ovdje "skini_klip_gui.py"
 $issPath = Join-Path $Ovdje "MisterMuscle_Setup.iss"
 
-(Get-Content $guiPath -Raw) -replace 'APP_VERZIJA = "[^"]*"', "APP_VERZIJA = `"$Verzija`"" |
+(Get-Content $guiPath -Raw -Encoding UTF8) -replace 'APP_VERZIJA = "[^"]*"', "APP_VERZIJA = `"$Verzija`"" |
     Set-Content $guiPath -NoNewline -Encoding UTF8
 
-(Get-Content $issPath -Raw) -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion `"$Verzija`"" |
+(Get-Content $issPath -Raw -Encoding UTF8) -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion `"$Verzija`"" |
     Set-Content $issPath -NoNewline -Encoding UTF8
 
 Write-Host "Verzija postavljena u skini_klip_gui.py i MisterMuscle_Setup.iss" -ForegroundColor Green
