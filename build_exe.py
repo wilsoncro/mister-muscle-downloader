@@ -120,7 +120,7 @@ def main():
     pokreni([sys.executable, "-m", "pip", "install", "--upgrade",
              *alati_za_instalirati], "Instaliram alate za build")
 
-    for folder in ("build", "dist"):
+    for folder in ("build", "dist", "Output"):
         put = os.path.join(OVDJE, folder)
         if os.path.isdir(put):
             shutil.rmtree(put, ignore_errors=True)
@@ -208,10 +208,16 @@ if __name__ == "__main__":
     # greska ne stignu procitati. "input()" na kraju drzi prozor otvoren dok
     # korisnik sam ne pritisne Enter, bez obzira zavrsi li build uspjesno,
     # neuspjesno (sys.exit u pokreni()) ili s neocekivanom greskom.
+    #
+    # IZNIMKA: kad ovu skriptu pozove release.ps1 (koji nakon nje JOS radi
+    # git push i GitHub release - ne smije stati i tiho cekati Enter koji
+    # niko ne zna da treba pritisnuti), release.ps1 postavi env varijablu
+    # MM_BEZ_PAUZE=1 prije poziva - u tom slucaju se pauza preskace.
     try:
         main()
     except SystemExit:
         pass
     except Exception as err:
         print(f"\n!!! Neočekivana greška: {err}")
-    input("\nPritisni Enter za izlaz...")
+    if not os.environ.get("MM_BEZ_PAUZE"):
+        input("\nPritisni Enter za izlaz...")

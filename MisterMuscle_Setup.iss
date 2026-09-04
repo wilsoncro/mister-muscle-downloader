@@ -1,34 +1,34 @@
-; ============================================================================
+﻿; ============================================================================
 ;  MisterMuscle_Setup.iss
-;  Inno Setup skripta koja od VEĆ IZGRAĐENOG dist\MisterMuscle.exe (napravljenog
+;  Inno Setup skripta koja od VEÄ† IZGRAÄENOG dist\MisterMuscle.exe (napravljenog
 ;  preko "python build_exe.py") pravi pravi Windows instalacijski program -
-;  s ikonicom u Start meniju, prečicom na Desktopu i "Ukloni program" opcijom.
+;  s ikonicom u Start meniju, preÄicom na Desktopu i "Ukloni program" opcijom.
 ;
-;  KAKO KORISTITI (jednom, na SVOM Windows računalu):
+;  KAKO KORISTITI (jednom, na SVOM Windows raÄunalu):
 ;    1) Prvo napravi MisterMuscle.exe:
 ;         python build_exe.py
-;       (mora se pokrenuti na Windowsu - .exe se ne može napraviti na
+;       (mora se pokrenuti na Windowsu - .exe se ne moÅ¾e napraviti na
 ;        Linuxu/Macu za Windows)
 ;
 ;    2) Skini i instaliraj Inno Setup (besplatan, ~5 min):
 ;         https://jrsoftware.org/isdl.php
 ;
-;    3) Desni klik na ovu datoteku (MisterMuscle_Setup.iss) → "Compile"
-;       (ili je otvori u Inno Setup Compileru pa Build → Compile / F9)
+;    3) Desni klik na ovu datoteku (MisterMuscle_Setup.iss) â†’ "Compile"
+;       (ili je otvori u Inno Setup Compileru pa Build â†’ Compile / F9)
 ;
 ;    4) Rezultat je:  Output\MisterMuscle_Setup.exe
-;       TO je jedina datoteka koju šalješ/dijeliš korisnicima. Oni je
+;       TO je jedina datoteka koju Å¡aljeÅ¡/dijeliÅ¡ korisnicima. Oni je
 ;       pokrenu, kliknu "Dalje" par puta, i gotovo - ne treba im Python,
 ;       yt-dlp ni ffmpeg, aplikacija to sve sama skine kod prvog pokretanja.
 ;
-;  Ova skripta instalira u pravi Program Files (traži admin/UAC potvrdu pri
+;  Ova skripta instalira u pravi Program Files (traÅ¾i admin/UAC potvrdu pri
 ;  instalaciji - to je normalno za Program Files) - alati (yt-dlp/ffmpeg) i
 ;  postavke svejedno idu u korisnikov profil (ne u Program Files), kako app
 ;  sama vec radi, pa nema problema s pravima pisanja ni nakon instalacije.
 ; ============================================================================
 
 #define MyAppName "Mister Muscle Downloader"
-#define MyAppVersion "1.1"
+#define MyAppVersion "1.2"
 #define MyAppPublisher "Mister Muscle"
 #define MyAppExeName "MisterMuscle.exe"
 

@@ -1,12 +1,12 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
-Mister Muscle Downloader — v17
+Mister Muscle Downloader â€” v17
 
 Novo u odnosu na v16:
   * 3 nacina skidanja: video+zvuk / SAMO video (bez zvuka) / SAMO zvuk (mp3, m4a, wav, flac, opus)
   * izbor rezolucije, H.264 prekidac, ugradnja metapodataka
-  * player za označavanje isječka je UGRAĐEN u glavni prozor (Windows + pywin32) -
-    ne otvara se više zaseban prozor za pregled/rezanje
+  * player za oznaÄavanje isjeÄka je UGRAÄEN u glavni prozor (Windows + pywin32) -
+    ne otvara se viÅ¡e zaseban prozor za pregled/rezanje
   * puni "desktop" raspored: velik prozor koji se moze rastezati i maksimizirati
   * "Provjeri azuriranja" azurira alate koji su joj potrebni za rad (yt-dlp + ffmpeg)
   * ffmpeg se automatski preuzima (bez njega spajanje slike i zvuka i rezanje NE RADE)
@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "1.1"
+APP_VERZIJA = "1.2"
 
 
 def _bazni_folder():
@@ -205,7 +205,7 @@ def preuzmi_datoteku(url, cilj, callback_postotak=None, min_velicina=0):
             os.remove(privremena)
         except OSError:
             pass
-        raise RuntimeError("Preuzeti fajl je premalen — prekinuta veza ili pogrešan link.")
+        raise RuntimeError("Preuzeti fajl je premalen â€” prekinuta veza ili pogreÅ¡an link.")
     os.replace(privremena, cilj)
     if not JE_WINDOWS:
         try:
@@ -218,15 +218,15 @@ def preuzmi_datoteku(url, cilj, callback_postotak=None, min_velicina=0):
 def preuzmi_yt_dlp_exe(callback_status=None, callback_postotak=None):
     putanja = os.path.join(_alati_folder(), YT_DLP_EXE_NAZIV)
     if callback_status:
-        callback_status(f"⏳ Preuzimam {YT_DLP_EXE_NAZIV} s GitHub Releases...")
+        callback_status(f"â³ Preuzimam {YT_DLP_EXE_NAZIV} s GitHub Releases...")
     preuzmi_datoteku(YT_DLP_EXE_URL, putanja, callback_postotak, min_velicina=1_000_000)
     if callback_status:
-        callback_status(f"✅ {YT_DLP_EXE_NAZIV} spreman: {putanja}")
+        callback_status(f"âœ… {YT_DLP_EXE_NAZIV} spreman: {putanja}")
     return putanja
 
 
 def _najnovija_verzija_yt_dlp():
-    """Provjerava (GitHub API, BEZ preuzimanja ičega) koja je najnovija objavljena
+    """Provjerava (GitHub API, BEZ preuzimanja iÄega) koja je najnovija objavljena
     verzija yt-dlp-a - koristi se za TIHU provjeru pri pokretanju (vidi
     App._tiha_provjera_azuriranja_pri_pokretanju). Vraca None ako provjera ne
     uspije (npr. nema interneta ili je GitHub trenutno nedostupan) - u tom
@@ -242,6 +242,58 @@ def _najnovija_verzija_yt_dlp():
         return (podaci.get("tag_name") or "").strip() or None
     except Exception:
         return None
+
+
+# Repo iz kojeg SAMA APLIKACIJA (ne yt-dlp) provjerava svoje nove verzije -
+# promijeni ovo ako ikad presalis repo na drugi GitHub racun/naziv.
+APP_GITHUB_REPO = "wilsoncro/mister-muscle-downloader"
+
+
+def _usporedi_verzije(v1, v2):
+    """Usporedjuje dva broja verzije sastavljena od brojeva odvojenih tockama
+    (npr. '1.10' i '1.2') NUMERICKI, ne kao obican tekst - obican tekst bi
+    krivo rekao da je '1.10' < '1.2' (jer '1' < '2' na drugom znaku). Vraca
+    1 ako je v1 noviji, -1 ako je v1 stariji, 0 ako su isti."""
+    def dijelovi(v):
+        return [int(x) for x in re.findall(r"\d+", v)] or [0]
+    a, b = dijelovi(v1), dijelovi(v2)
+    duljina = max(len(a), len(b))
+    a += [0] * (duljina - len(a))
+    b += [0] * (duljina - len(b))
+    if a > b:
+        return 1
+    if a < b:
+        return -1
+    return 0
+
+
+def _najnovija_verzija_app():
+    """Provjerava (GitHub API, BEZ preuzimanja iÄega) postoji li novija verzija
+    SAME APLIKACIJE objavljena kao GitHub Release - i ako postoji, nalazi
+    direktan link na .exe instalater prikacen uz taj release (prvi .exe asset
+    koji nadje). Vraca (verzija, url) ili (None, None) ako provjera ne uspije
+    ili release nema prikacen .exe."""
+    try:
+        zahtjev = urllib.request.Request(
+            f"https://api.github.com/repos/{APP_GITHUB_REPO}/releases/latest",
+            headers={"User-Agent": "MisterMuscle/" + APP_VERZIJA, "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(zahtjev, timeout=10) as odgovor:
+            podaci = json.loads(odgovor.read().decode("utf-8"))
+        tag = (podaci.get("tag_name") or "").strip()
+        if not tag:
+            return None, None
+        url_setup = None
+        for asset in podaci.get("assets", []):
+            naziv = (asset.get("name") or "").lower()
+            if naziv.endswith(".exe"):
+                url_setup = asset.get("browser_download_url")
+                break
+        if not url_setup:
+            return None, None
+        return tag, url_setup
+    except Exception:
+        return None, None
 
 
 def pokreni_yt_dlp(argumenti, **kwargs):
@@ -301,17 +353,17 @@ def preuzmi_ffmpeg(callback_status=None, callback_postotak=None):
     (ostatak zipa nam ne treba - stedimo ~200 MB na disku)."""
     if not JE_WINDOWS:
         raise RuntimeError(
-            "Automatsko preuzimanje ffmpega podržano je samo na Windowsima.\n"
-            "Na Linuxu/macOS-u instaliraj ga ručno (npr. 'sudo apt install ffmpeg' ili 'brew install ffmpeg')."
+            "Automatsko preuzimanje ffmpega podrÅ¾ano je samo na Windowsima.\n"
+            "Na Linuxu/macOS-u instaliraj ga ruÄno (npr. 'sudo apt install ffmpeg' ili 'brew install ffmpeg')."
         )
     cilj_folder = _alati_folder()
     zip_putanja = os.path.join(cilj_folder, "_ffmpeg_privremeno.zip")
     if callback_status:
-        callback_status("⏳ Preuzimam ffmpeg (~80 MB, samo prvi put)...")
+        callback_status("â³ Preuzimam ffmpeg (~80 MB, samo prvi put)...")
     preuzmi_datoteku(FFMPEG_ZIP_URL, zip_putanja, callback_postotak, min_velicina=5_000_000)
 
     if callback_status:
-        callback_status("📦 Raspakiravam ffmpeg...")
+        callback_status("ðŸ“¦ Raspakiravam ffmpeg...")
     izvuceno = 0
     with zipfile.ZipFile(zip_putanja) as z:
         for clan in z.namelist():
@@ -325,9 +377,9 @@ def preuzmi_ffmpeg(callback_status=None, callback_postotak=None):
     except OSError:
         pass
     if izvuceno < 2:
-        raise RuntimeError("U preuzetom arhivu nisu pronađeni ffmpeg.exe i ffprobe.exe.")
+        raise RuntimeError("U preuzetom arhivu nisu pronaÄ‘eni ffmpeg.exe i ffprobe.exe.")
     if callback_status:
-        callback_status(f"✅ ffmpeg spreman: {cilj_folder}")
+        callback_status(f"âœ… ffmpeg spreman: {cilj_folder}")
     return cilj_folder
 
 
@@ -394,18 +446,18 @@ def preuzmi_i_instaliraj_webview2(callback_status=None):
         raise RuntimeError("WebView2 Runtime instalacija je moguca samo na Windowsima.")
     cilj = os.path.join(_alati_folder(), "MicrosoftEdgeWebView2Setup.exe")
     if callback_status:
-        callback_status("⏳ Preuzimam Microsoft Edge WebView2 Runtime instalater (malen, ~2 MB)...")
+        callback_status("â³ Preuzimam Microsoft Edge WebView2 Runtime instalater (malen, ~2 MB)...")
     preuzmi_datoteku(WEBVIEW2_BOOTSTRAPPER_URL, cilj, min_velicina=500_000)
     if callback_status:
-        callback_status("⏳ Pokrećem WebView2 instalaciju — Windows može zatražiti potvrdu (UAC)...")
+        callback_status("â³ PokreÄ‡em WebView2 instalaciju â€” Windows moÅ¾e zatraÅ¾iti potvrdu (UAC)...")
     rezultat = subprocess.run([cilj, "/silent", "/install"], timeout=180)
     if rezultat.returncode != 0:
         raise RuntimeError(
-            f"WebView2 instalater je završio s kodom {rezultat.returncode} "
-            "(korisnik je možda odbio UAC potvrdu, ili je instalacija otkazana)."
+            f"WebView2 instalater je zavrÅ¡io s kodom {rezultat.returncode} "
+            "(korisnik je moÅ¾da odbio UAC potvrdu, ili je instalacija otkazana)."
         )
     if callback_status:
-        callback_status("✅ WebView2 Runtime uspješno instaliran.")
+        callback_status("âœ… WebView2 Runtime uspjeÅ¡no instaliran.")
 
 
 # ============================================================================
@@ -435,326 +487,333 @@ ZADANI_CONFIG = {
 PRIJEVODI = {
     "hr": {
         "naslov_prozora": "Mister Muscle Downloader",
-        "naslov_app": "💪 Mister Muscle Downloader",
-        "podnaslov_app": "YouTube · TikTok · Instagram — video, isječci i zvuk u najboljoj kvaliteti",
+        "naslov_app": "ðŸ’ª Mister Muscle Downloader",
+        "podnaslov_app": "YouTube Â· TikTok Â· Instagram â€” video, isjeÄci i zvuk u najboljoj kvaliteti",
         "meni_alati": "Alati",
-        "meni_provjeri_azuriranja": "🔄 Provjeri ažuriranja (sve)",
-        "meni_azuriraj_ytdlp": "Ažuriraj samo yt-dlp",
+        "meni_provjeri_azuriranja": "ðŸ”„ Provjeri aÅ¾uriranja (sve)",
+        "meni_azuriraj_ytdlp": "AÅ¾uriraj samo yt-dlp",
         "meni_reinstaliraj_ffmpeg": "Ponovno instaliraj ffmpeg",
         "meni_webview2": "Provjeri/instaliraj WebView2 Runtime",
-        "meni_folder_alati": "📂 Otvori folder s alatima",
-        "meni_config": "⚙ Otvori config",
-        "meni_reset_prozor": "🗔 Resetiraj veličinu prozora",
-        "meni_pomoc": "Pomoć",
+        "meni_folder_alati": "ðŸ“‚ Otvori folder s alatima",
+        "meni_config": "âš™ Otvori config",
+        "meni_reset_prozor": "ðŸ—” Resetiraj veliÄinu prozora",
+        "meni_pomoc": "PomoÄ‡",
         "meni_o_aplikaciji": "O aplikaciji",
         "meni_jezik": "Jezik",
         "meni_jezik_hr": "Hrvatski",
         "meni_jezik_en": "English",
-        "gumb_azuriranja": "🔄 Provjeri ažuriranja",
+        "gumb_azuriranja": "ðŸ”„ Provjeri aÅ¾uriranja",
         "kartica_1": "LINKOVI (jedan po retku)",
-        "kartica_2": "ŠTO SKIDAMO",
+        "kartica_2": "Å TO SKIDAMO",
         "kartica_3": "GDJE SE SPREMA",
         "placeholder_linkovi": "Zalijepi YouTube / TikTok / Instagram link ovdje...",
-        "gumb_pregledaj": "🎬 Pregledaj i označi isječak",
-        "gumb_zalijepi": "📋 Zalijepi",
-        "gumb_ocisti": "🗑 Očisti",
-        "gumb_ponisti_isjecak": "✕ Poništi",
-        "nacin_video_zvuk": "🎬  Video + zvuk",
-        "nacin_video_zvuk_opis": "spojen mp4 — standardno",
-        "nacin_samo_video": "🎞  Samo video (bez zvuka)",
-        "nacin_samo_video_opis": "nijemi zapis za montažu / B-roll",
-        "nacin_samo_zvuk": "🎵  Samo zvuk",
-        "nacin_samo_zvuk_opis": "mp3 / m4a / wav — bez slike",
+        "gumb_pregledaj": "ðŸŽ¬ Pregledaj i oznaÄi isjeÄak",
+        "gumb_zalijepi": "ðŸ“‹ Zalijepi",
+        "gumb_ocisti": "ðŸ—‘ OÄisti",
+        "gumb_ponisti_isjecak": "âœ• PoniÅ¡ti",
+        "nacin_video_zvuk": "ðŸŽ¬  Video + zvuk",
+        "nacin_video_zvuk_opis": "spojen mp4 â€” standardno",
+        "nacin_samo_video": "ðŸŽž  Samo video (bez zvuka)",
+        "nacin_samo_video_opis": "nijemi zapis za montaÅ¾u / B-roll",
+        "nacin_samo_zvuk": "ðŸŽµ  Samo zvuk",
+        "nacin_samo_zvuk_opis": "mp3 / m4a / wav â€” bez slike",
         "oznaka_kvaliteta": "Kvaliteta",
         "oznaka_format_videa": "Format videa",
         "oznaka_format_zvuka": "Format zvuka",
         "cb_h264": "Premiere-ready (H.264/avc1)",
-        "cb_h264_opis": "traži avc1 i po potrebi pretvori — Premiere ga uvijek čita",
+        "cb_h264_opis": "traÅ¾i avc1 i po potrebi pretvori â€” Premiere ga uvijek Äita",
         "cb_metapodaci": "Ugradi naslovnicu i metapodatke",
-        "cb_metapodaci_opis": "naslov, izvođač i cover u fajl",
-        "gumb_odaberi_folder": "📂 Odaberi",
-        "gumb_otvori_folder": "👁 Otvori",
-        "skini_video": "⬇   SKINI VIDEO",
-        "skini_video_bez_zvuka": "⬇   SKINI VIDEO BEZ ZVUKA",
-        "skini_zvuk": "⬇   SKINI ZVUK",
-        "gumb_pauziraj": "⏸ Pauziraj",
-        "gumb_nastavi": "▶ Nastavi",
-        "gumb_prekini": "✕ Prekini",
+        "cb_metapodaci_opis": "naslov, izvoÄ‘aÄ i cover u fajl",
+        "gumb_odaberi_folder": "ðŸ“‚ Odaberi",
+        "gumb_otvori_folder": "ðŸ‘ Otvori",
+        "skini_video": "â¬‡   SKINI VIDEO",
+        "skini_video_bez_zvuka": "â¬‡   SKINI VIDEO BEZ ZVUKA",
+        "skini_zvuk": "â¬‡   SKINI ZVUK",
+        "gumb_pauziraj": "â¸ Pauziraj",
+        "gumb_nastavi": "â–¶ Nastavi",
+        "gumb_prekini": "âœ• Prekini",
         "status_naslov": "STATUS",
         "player_naslov": "PLAYER",
-        "status_sakrij": "▾ sakrij",
-        "status_prikazi": "▸ prikaži",
-        "gumb_ocisti_log": "🗑 očisti log",
-        "player_placeholder": "🎬\n\nPlayer za označavanje isječka\nprikazat će se ovdje kad klikneš\n'Pregledaj i označi isječak'",
-        "player_zaseban_prozor": "🎬\n\nPlayer je otvoren u zasebnom prozoru\n(ugradnja u ovaj prozor zahtijeva Windows + pywin32)",
+        "status_sakrij": "â–¾ sakrij",
+        "status_prikazi": "â–¸ prikaÅ¾i",
+        "gumb_ocisti_log": "ðŸ—‘ oÄisti log",
+        "player_placeholder": "ðŸŽ¬\n\nPlayer za oznaÄavanje isjeÄka\nprikazat Ä‡e se ovdje kad klikneÅ¡\n'Pregledaj i oznaÄi isjeÄak'",
+        "player_zaseban_prozor": "ðŸŽ¬\n\nPlayer je otvoren u zasebnom prozoru\n(ugradnja u ovaj prozor zahtijeva Windows + pywin32)",
         "o_aplikaciji_naslov": "O aplikaciji",
         "o_aplikaciji_autor": "Razvio: Mr_muscle",
-        "o_aplikaciji_prava": "Sva prava pridržana.",
+        "o_aplikaciji_prava": "Sva prava pridrÅ¾ana.",
         "o_aplikaciji_auto_update": "Pri svakom pokretanju app tiho provjeri ima li nova verzija yt-dlp-a "
-                                    "(mehanizam za skidanje) i ponudi ažuriranje ako je nađe — a ffmpeg i "
-                                    "yt-dlp se preuzimaju sami ako uopće nedostaju.",
+                                    "(mehanizam za skidanje) i ponudi aÅ¾uriranje ako je naÄ‘e â€” a ffmpeg i "
+                                    "yt-dlp se preuzimaju sami ako uopÄ‡e nedostaju.",
         "o_aplikaciji_alati": "Alati",
         "o_aplikaciji_postavke": "Postavke",
-        "nije_pronadjen": "nije pronađen",
+        "nije_pronadjen": "nije pronaÄ‘en",
         "provjeravam_alate": "Provjeravam alate...",
-        "provjeravam": "🔄 Provjeravam...",
+        "provjeravam": "ðŸ”„ Provjeravam...",
         "skidam": "Skidam...",
         # --- dijaloski okviri i STATUS log poruke (dodano naknadno) ---
-        "err_naslov": "Greška",
-        "msg_need_pywebview": "ℹ Za '🎬 Pregledaj i označi' treba biblioteka 'pywebview' (pip install pywebview).",
-        "msg_need_pywin32": "ℹ Za player UGRAĐEN u prozor treba 'pywin32' (pip install pywin32) — za sad će se otvarati u zasebnom prozoru.",
-        "msg_black_player_hint": "ℹ Ako ugrađeni player ostane crn nakon otvaranja, pričekaj sekundu-dvije (automatski se pokušava 'probuditi') ili malo rastegni prozor aplikacije.",
-        "msg_window_reset": "🗔 Veličina prozora resetirana na 1240×820.",
+        "err_naslov": "GreÅ¡ka",
+        "msg_need_pywebview": "â„¹ Za 'ðŸŽ¬ Pregledaj i oznaÄi' treba biblioteka 'pywebview' (pip install pywebview).",
+        "msg_need_pywin32": "â„¹ Za player UGRAÄEN u prozor treba 'pywin32' (pip install pywin32) â€” za sad Ä‡e se otvarati u zasebnom prozoru.",
+        "msg_black_player_hint": "â„¹ Ako ugraÄ‘eni player ostane crn nakon otvaranja, priÄekaj sekundu-dvije (automatski se pokuÅ¡ava 'probuditi') ili malo rastegni prozor aplikacije.",
+        "msg_window_reset": "ðŸ—” VeliÄina prozora resetirana na 1240Ã—820.",
         "msg_cannot_open": "Ne mogu otvoriti: {0}\n\n{1}",
-        "msg_folder_session_only": "⚠ Folder vrijedi za ovu sesiju, ali ga ne mogu zapamtiti: {0}",
-        "msg_folder_saved": "📁 Folder: {0} (zapamćen)",
-        "msg_start_marked": "📍 Početak: {0}",
-        "msg_end_marked": "📍 Kraj: {0}",
+        "msg_folder_session_only": "âš  Folder vrijedi za ovu sesiju, ali ga ne mogu zapamtiti: {0}",
+        "msg_folder_saved": "ðŸ“ Folder: {0} (zapamÄ‡en)",
+        "msg_start_marked": "ðŸ“ PoÄetak: {0}",
+        "msg_end_marked": "ðŸ“ Kraj: {0}",
         "webview2_naslov": "WebView2 Runtime",
-        "webview2_ok_text": "Sve u redu — WebView2 Runtime je već instaliran.",
-        "msg_webview2_missing": "⚠ Microsoft Edge WebView2 Runtime nije pronađen — bez njega player (pregled/rezanje) neće raditi.",
+        "webview2_ok_text": "Sve u redu â€” WebView2 Runtime je veÄ‡ instaliran.",
+        "msg_webview2_missing": "âš  Microsoft Edge WebView2 Runtime nije pronaÄ‘en â€” bez njega player (pregled/rezanje) neÄ‡e raditi.",
         "webview2_confirm_naslov": "Nedostaje WebView2 Runtime",
-        "webview2_confirm_text": "Za prikaz playera (pregled i označavanje isječka) potrebna je Microsoft Edge "
-                                 "WebView2 komponenta, a nije pronađena na ovom računalu.\n\n"
-                                 "To je jednokratna, službena Microsoftova instalacija (dijele je sve aplikacije "
-                                 "na računalu, ne samo ova) - može zatražiti Windows potvrdu (UAC).\n\n"
+        "webview2_confirm_text": "Za prikaz playera (pregled i oznaÄavanje isjeÄka) potrebna je Microsoft Edge "
+                                 "WebView2 komponenta, a nije pronaÄ‘ena na ovom raÄunalu.\n\n"
+                                 "To je jednokratna, sluÅ¾bena Microsoftova instalacija (dijele je sve aplikacije "
+                                 "na raÄunalu, ne samo ova) - moÅ¾e zatraÅ¾iti Windows potvrdu (UAC).\n\n"
                                  "Preuzeti i instalirati je sada automatski?",
-        "msg_webview2_skipped": "ℹ Preskočeno — player neće raditi dok se WebView2 Runtime ručno ne instalira "
+        "msg_webview2_skipped": "â„¹ PreskoÄeno â€” player neÄ‡e raditi dok se WebView2 Runtime ruÄno ne instalira "
                                 "(https://developer.microsoft.com/microsoft-edge/webview2/).",
-        "msg_webview2_ready": "ℹ Sad probaj otvoriti player ('🎬 Pregledaj i označi isječak').",
-        "msg_webview2_install_failed": "❌ WebView2 instalacija nije uspjela: {0}",
-        "webview2_error_text": "Ne mogu instalirati WebView2 Runtime: {0}\n\nProbaj ručno preuzeti s https://developer.microsoft.com/microsoft-edge/webview2/",
-        "msg_tool_missing_downloading": "⚠ {0} nedostaje — preuzimam...",
-        "msg_ytdlp_download_failed": "❌ Preuzimanje yt-dlp nije uspjelo: {0}",
-        "msg_ffmpeg_missing_note": "⚠ ffmpeg nedostaje — bez njega ne rade spajanje slike i zvuka, "
-                                   "rezanje isječka ni pretvorba u mp3. Preuzimam...",
-        "msg_ffmpeg_download_failed": "❌ Preuzimanje ffmpega nije uspjelo: {0}",
-        "update_available_naslov": "Dostupno ažuriranje",
-        "update_available_text": "Dostupna je nova verzija yt-dlp-a: {0}\n(trenutno imaš: {1})\n\n"
-                                 "yt-dlp se često ažurira da prati promjene na YouTube/TikTok/Instagram — "
-                                 "redovito ažuriranje smanjuje šansu za greške pri skidanju.\n\n"
+        "msg_webview2_ready": "â„¹ Sad probaj otvoriti player ('ðŸŽ¬ Pregledaj i oznaÄi isjeÄak').",
+        "msg_webview2_install_failed": "âŒ WebView2 instalacija nije uspjela: {0}",
+        "webview2_error_text": "Ne mogu instalirati WebView2 Runtime: {0}\n\nProbaj ruÄno preuzeti s https://developer.microsoft.com/microsoft-edge/webview2/",
+        "msg_tool_missing_downloading": "âš  {0} nedostaje â€” preuzimam...",
+        "msg_ytdlp_download_failed": "âŒ Preuzimanje yt-dlp nije uspjelo: {0}",
+        "msg_ffmpeg_missing_note": "âš  ffmpeg nedostaje â€” bez njega ne rade spajanje slike i zvuka, "
+                                   "rezanje isjeÄka ni pretvorba u mp3. Preuzimam...",
+        "msg_ffmpeg_download_failed": "âŒ Preuzimanje ffmpega nije uspjelo: {0}",
+        "update_available_naslov": "Dostupno aÅ¾uriranje",
+        "update_available_text": "Dostupna je nova verzija yt-dlp-a: {0}\n(trenutno imaÅ¡: {1})\n\n"
+                                 "yt-dlp se Äesto aÅ¾urira da prati promjene na YouTube/TikTok/Instagram â€” "
+                                 "redovito aÅ¾uriranje smanjuje Å¡ansu za greÅ¡ke pri skidanju.\n\n"
                                  "Preuzeti i instalirati novu verziju sada?",
-        "msg_updating_ytdlp": "🔄 Preuzimam noviju verziju yt-dlp-a...",
-        "msg_tools_summary": "📦 yt-dlp {0} · {1}",
+        "msg_updating_ytdlp": "ðŸ”„ Preuzimam noviju verziju yt-dlp-a...",
+        "msg_tools_summary": "ðŸ“¦ yt-dlp {0} Â· {1}",
         "status_tools_unavailable": "nedostupan",
-        "status_ffmpeg_missing": "❌ ffmpeg NEDOSTAJE",
+        "status_ffmpeg_missing": "âŒ ffmpeg NEDOSTAJE",
         "update_in_progress_naslov": "Skidanje u tijeku",
-        "update_in_progress_text": "Ažuriranje se ne smije raditi dok traje skidanje.\nPričekaj da završi ili klikni '✕ Prekini'.",
-        "updates_naslov": "Ažuriranja",
-        "msg_ytdlp_output": "🔄 yt-dlp: {0}",
-        "msg_ytdlp_running_update": "🔄 Pokrećem yt-dlp -U ...",
-        "msg_ytdlp_downloaded_first": "✅ yt-dlp: preuzet (prvi put)",
-        "msg_ytdlp_download_failed_short": "❌ yt-dlp: preuzimanje nije uspjelo ({0})",
-        "msg_ytdlp_update_failed": "❌ yt-dlp: ažuriranje nije uspjelo (detalji u STATUS logu)",
-        "msg_ytdlp_already_latest": "✅ yt-dlp: već najnoviji",
-        "msg_ytdlp_updated": "🆕 yt-dlp: nadograđen na najnoviju verziju",
-        "msg_ytdlp_check_done": "✅ yt-dlp: provjera završena",
-        "msg_ytdlp_update_timeout": "❌ yt-dlp: ažuriranje je isteklo (spora veza) — pokušaj ponovno",
-        "msg_ytdlp_update_error": "❌ yt-dlp: {0}",
-        "msg_ffmpeg_present": "✅ ffmpeg: prisutan",
-        "msg_ffmpeg_installed": "🆕 ffmpeg: instaliran",
-        "msg_ffmpeg_error": "❌ ffmpeg: {0}",
+        "update_in_progress_text": "AÅ¾uriranje se ne smije raditi dok traje skidanje.\nPriÄekaj da zavrÅ¡i ili klikni 'âœ• Prekini'.",
+        "updates_naslov": "AÅ¾uriranja",
+        "msg_ytdlp_output": "ðŸ”„ yt-dlp: {0}",
+        "msg_ytdlp_running_update": "ðŸ”„ PokreÄ‡em yt-dlp -U ...",
+        "msg_ytdlp_downloaded_first": "âœ… yt-dlp: preuzet (prvi put)",
+        "msg_ytdlp_download_failed_short": "âŒ yt-dlp: preuzimanje nije uspjelo ({0})",
+        "msg_ytdlp_update_failed": "âŒ yt-dlp: aÅ¾uriranje nije uspjelo (detalji u STATUS logu)",
+        "msg_ytdlp_already_latest": "âœ… yt-dlp: veÄ‡ najnoviji",
+        "msg_ytdlp_updated": "ðŸ†• yt-dlp: nadograÄ‘en na najnoviju verziju",
+        "msg_ytdlp_check_done": "âœ… yt-dlp: provjera zavrÅ¡ena",
+        "msg_ytdlp_update_timeout": "âŒ yt-dlp: aÅ¾uriranje je isteklo (spora veza) â€” pokuÅ¡aj ponovno",
+        "msg_ytdlp_update_error": "âŒ yt-dlp: {0}",
+        "msg_ffmpeg_present": "âœ… ffmpeg: prisutan",
+        "msg_ffmpeg_installed": "ðŸ†• ffmpeg: instaliran",
+        "msg_ffmpeg_error": "âŒ ffmpeg: {0}",
         "err_pywebview_missing_text": "Biblioteka 'pywebview' nije instalirana.\n\nInstaliraj u terminalu:\n    pip install pywebview",
         "warn_naslov": "Upozorenje",
         "warn_paste_link_first": "Prvo zalijepi link.",
         "err_cant_recognize_youtube": "Ne prepoznajem YouTube video ID iz tog linka.",
-        "msg_opening_player": "⏳ Otvaram player...",
-        "msg_fetching_preview": "⏳ Dohvaćam pregled videa...",
-        "msg_embed_disabled_fallback": "⏳ Embed onemogućen za taj video — preuzimam kraći lokalni pregled...",
-        "msg_tiktok_bug_preview": "TikTok trenutno ima poznat problem u yt-dlp (ne u ovoj aplikaciji) — probaj 'Provjeri ažuriranja'.",
+        "msg_opening_player": "â³ Otvaram player...",
+        "msg_fetching_preview": "â³ DohvaÄ‡am pregled videa...",
+        "msg_embed_disabled_fallback": "â³ Embed onemoguÄ‡en za taj video â€” preuzimam kraÄ‡i lokalni pregled...",
+        "msg_tiktok_bug_preview": "TikTok trenutno ima poznat problem u yt-dlp (ne u ovoj aplikaciji) â€” probaj 'Provjeri aÅ¾uriranja'.",
         "err_cant_fetch_preview": "Ne mogu dohvatiti pregled videa: {0}",
-        "msg_preview_failed_log": "❌ Pregled nije uspio:\n{0}",
+        "msg_preview_failed_log": "âŒ Pregled nije uspio:\n{0}",
         "err_cant_prepare_player": "Ne mogu pripremiti player: {0}",
-        "msg_embedded_ready": "✅ Player ugrađen i spreman.",
-        "msg_embed_load_failed": "⚠ Ne mogu učitati ugrađeni player: {0} — koristim zaseban prozor.",
-        "msg_need_psutil_pause": "ℹ Prava pauza traži 'psutil' (pip install psutil) — bez njega skidanje nastavlja u pozadini.",
-        "msg_cant_pause_resume": "⚠ Ne mogu {0} proces: {1}",
+        "msg_embedded_ready": "âœ… Player ugraÄ‘en i spreman.",
+        "msg_embed_load_failed": "âš  Ne mogu uÄitati ugraÄ‘eni player: {0} â€” koristim zaseban prozor.",
+        "msg_need_psutil_pause": "â„¹ Prava pauza traÅ¾i 'psutil' (pip install psutil) â€” bez njega skidanje nastavlja u pozadini.",
+        "msg_cant_pause_resume": "âš  Ne mogu {0} proces: {1}",
         "akcija_pauzirati": "pauzirati",
         "akcija_nastaviti": "nastaviti",
-        "msg_cancelled_by_user": "✕ Prekinuto na zahtjev korisnika.",
+        "msg_cancelled_by_user": "âœ• Prekinuto na zahtjev korisnika.",
         "warn_no_link_naslov": "Nema linka",
         "warn_no_link_text": "Zalijepi barem jedan link.",
         "ffmpeg_missing_naslov": "Nedostaje ffmpeg",
-        "ffmpeg_missing_confirm_text": "Za spajanje slike i zvuka, rezanje isječka i pretvorbu u mp3 potreban je ffmpeg, "
-                                       "a nije pronađen.\n\nPreuzeti ga sada automatski?",
-        "warn_download_in_progress_text": "Pričekaj da trenutno skidanje završi pa pokušaj ponovno.",
-        "ffmpeg_missing_multi_text": "Za rezanje isječaka potreban je ffmpeg, a nije pronađen.\n\n"
-                                     "Idi na 'Alati → Provjeri ažuriranja' da ga preuzmeš, pa pokušaj ponovno.",
+        "ffmpeg_missing_confirm_text": "Za spajanje slike i zvuka, rezanje isjeÄka i pretvorbu u mp3 potreban je ffmpeg, "
+                                       "a nije pronaÄ‘en.\n\nPreuzeti ga sada automatski?",
+        "warn_download_in_progress_text": "PriÄekaj da trenutno skidanje zavrÅ¡i pa pokuÅ¡aj ponovno.",
+        "ffmpeg_missing_multi_text": "Za rezanje isjeÄaka potreban je ffmpeg, a nije pronaÄ‘en.\n\n"
+                                     "Idi na 'Alati â†’ Provjeri aÅ¾uriranja' da ga preuzmeÅ¡, pa pokuÅ¡aj ponovno.",
         "err_cant_download_tool": "Ne mogu preuzeti {0}: {1}",
-        "msg_merging": "🔗 Spajam sliku i zvuk...",
-        "msg_extracting_audio": "🎵 Izvlačim i pretvaram zvuk...",
-        "msg_silent_video_done": "🔇 Skinut nijemi video (bez audio zapisa).",
-        "msg_error_generic": "❌ Greška: {0}",
+        "msg_merging": "ðŸ”— Spajam sliku i zvuk...",
+        "msg_extracting_audio": "ðŸŽµ IzvlaÄim i pretvaram zvuk...",
+        "msg_silent_video_done": "ðŸ”‡ Skinut nijemi video (bez audio zapisa).",
+        "msg_error_generic": "âŒ GreÅ¡ka: {0}",
         "err_cant_start_tool": "Ne mogu pokrenuti {0}: {1}",
-        "msg_no_separate_video_stream": "ℹ Ovaj izvor nema odvojeni video zapis — skidam cijeli pa uklanjam zvuk...",
-        "msg_tiktok_bug_download": "ℹ️ Poznat obrazac greške (TikTok je promijenio JS 'izazov'). Klikni "
-                                   "'🔄 Provjeri ažuriranja' pa pokušaj ponovno.",
-        "msg_retry_attempt": "⏳ Pokušaj {0} nije uspio — pokušavam ponovno...",
-        "msg_full_error_details": "🔍 Puni detalji greške:\n{0}",
-        "msg_no_ffmpeg_kept_audio": "⚠ Nema ffmpega — fajl je ostao sa zvukom.",
-        "msg_audio_removed": "🔇 Zvuk uklonjen.",
-        "msg_duration_fixed": "🩹 Ispravljeno trajanje isječka u zaglavlju fajla.",
-        "msg_codec_check_skipped": "⚠ Preskačem provjeru kodeka (nema ffmpeg/ffprobe).",
-        "msg_converting_codec": "🎞 Video je {0} — pretvaram u H.264 za Premiere...",
-        "msg_codec_converted": "✅ Pretvoreno u H.264.",
-        "msg_codec_convert_failed": "⚠ Pretvorba nije uspjela — fajl je ostao u originalnom kodeku.",
-        "msg_codec_check_failed": "⚠ Provjera kodeka nije uspjela: {0}",
-        "msg_download_cancelled": "\n✕ Skidanje prekinuto.",
+        "msg_no_separate_video_stream": "â„¹ Ovaj izvor nema odvojeni video zapis â€” skidam cijeli pa uklanjam zvuk...",
+        "msg_tiktok_bug_download": "â„¹ï¸ Poznat obrazac greÅ¡ke (TikTok je promijenio JS 'izazov'). Klikni "
+                                   "'ðŸ”„ Provjeri aÅ¾uriranja' pa pokuÅ¡aj ponovno.",
+        "msg_retry_attempt": "â³ PokuÅ¡aj {0} nije uspio â€” pokuÅ¡avam ponovno...",
+        "msg_full_error_details": "ðŸ” Puni detalji greÅ¡ke:\n{0}",
+        "msg_no_ffmpeg_kept_audio": "âš  Nema ffmpega â€” fajl je ostao sa zvukom.",
+        "msg_audio_removed": "ðŸ”‡ Zvuk uklonjen.",
+        "msg_duration_fixed": "ðŸ©¹ Ispravljeno trajanje isjeÄka u zaglavlju fajla.",
+        "msg_codec_check_skipped": "âš  PreskaÄem provjeru kodeka (nema ffmpeg/ffprobe).",
+        "msg_converting_codec": "ðŸŽž Video je {0} â€” pretvaram u H.264 za Premiere...",
+        "msg_codec_converted": "âœ… Pretvoreno u H.264.",
+        "msg_codec_convert_failed": "âš  Pretvorba nije uspjela â€” fajl je ostao u originalnom kodeku.",
+        "msg_codec_check_failed": "âš  Provjera kodeka nije uspjela: {0}",
+        "msg_download_cancelled": "\nâœ• Skidanje prekinuto.",
         "done_naslov": "Gotovo",
-        "msg_all_done_log": "\n🎉 Gotovo! Folder: {0}",
-        "msg_all_done_text": "Sve je uspješno preuzeto!",
-        "msg_partial_log": "\n⚠ Djelomično: {0} OK, {1} neuspješno.",
-        "partial_naslov": "Djelomično gotovo",
-        "msg_partial_text": "{0} uspješno, {1} nije uspjelo.\nPogledaj STATUS log.",
-        "msg_all_failed_log": "\n❌ Nijedno skidanje nije uspjelo.",
+        "msg_all_done_log": "\nðŸŽ‰ Gotovo! Folder: {0}",
+        "msg_all_done_text": "Sve je uspjeÅ¡no preuzeto!",
+        "msg_partial_log": "\nâš  DjelomiÄno: {0} OK, {1} neuspjeÅ¡no.",
+        "partial_naslov": "DjelomiÄno gotovo",
+        "msg_partial_text": "{0} uspjeÅ¡no, {1} nije uspjelo.\nPogledaj STATUS log.",
+        "msg_all_failed_log": "\nâŒ Nijedno skidanje nije uspjelo.",
         "failed_naslov": "Nije uspjelo",
-        "msg_all_failed_text": "Skidanje nije uspjelo.\nPogledaj crveni ❌ redak u STATUS logu.",
-        "isjecak_label": "✂ Isječak: {0} → {1}",
-        "isjecak_pocetak": "početak",
+        "msg_all_failed_text": "Skidanje nije uspjelo.\nPogledaj crveni âŒ redak u STATUS logu.",
+        "isjecak_label": "âœ‚ IsjeÄak: {0} â†’ {1}",
+        "isjecak_pocetak": "poÄetak",
         "isjecak_kraj": "kraj",
-        "msg_embed_prep_failed": "⚠ Ugrađeni player se nije uspio pripremiti: {0}",
-        "msg_embed_not_found": "⚠ Ugrađeni player nije pronađen — koristit će se zaseban prozor.",
-        "msg_embed_failed": "⚠ Ugradnja playera nije uspjela: {0}",
+        "msg_embed_prep_failed": "âš  UgraÄ‘eni player se nije uspio pripremiti: {0}",
+        "msg_embed_not_found": "âš  UgraÄ‘eni player nije pronaÄ‘en â€” koristit Ä‡e se zaseban prozor.",
+        "msg_embed_failed": "âš  Ugradnja playera nije uspjela: {0}",
+        "app_update_naslov": "Dostupna nova verzija",
+        "app_update_text": "Dostupna je nova verzija aplikacije: v{0}\n(trenutno imaÅ¡: v{1})\n\n"
+                           "Preuzeti i pokrenuti instalaciju sada? Aplikacija Ä‡e se zatvoriti da bi se "
+                           "mogla nadograditi.",
+        "msg_downloading_app_update": "â³ Preuzimam novu verziju aplikacije...",
+        "msg_launching_installer": "â³ PokreÄ‡em instalaciju nove verzije â€” aplikacija se sada zatvara...",
+        "msg_app_update_failed": "âŒ AÅ¾uriranje aplikacije nije uspjelo: {0}",
     },
     "en": {
         "naslov_prozora": "Mister Muscle Downloader",
-        "naslov_app": "💪 Mister Muscle Downloader",
-        "podnaslov_app": "YouTube · TikTok · Instagram — video, clips and audio in the best quality",
+        "naslov_app": "ðŸ’ª Mister Muscle Downloader",
+        "podnaslov_app": "YouTube Â· TikTok Â· Instagram â€” video, clips and audio in the best quality",
         "meni_alati": "Tools",
-        "meni_provjeri_azuriranja": "🔄 Check for updates (all)",
+        "meni_provjeri_azuriranja": "ðŸ”„ Check for updates (all)",
         "meni_azuriraj_ytdlp": "Update yt-dlp only",
         "meni_reinstaliraj_ffmpeg": "Reinstall ffmpeg",
         "meni_webview2": "Check/install WebView2 Runtime",
-        "meni_folder_alati": "📂 Open tools folder",
-        "meni_config": "⚙ Open config",
-        "meni_reset_prozor": "🗔 Reset window size",
+        "meni_folder_alati": "ðŸ“‚ Open tools folder",
+        "meni_config": "âš™ Open config",
+        "meni_reset_prozor": "ðŸ—” Reset window size",
         "meni_pomoc": "Help",
         "meni_o_aplikaciji": "About",
         "meni_jezik": "Language",
         "meni_jezik_hr": "Hrvatski",
         "meni_jezik_en": "English",
-        "gumb_azuriranja": "🔄 Check for updates",
+        "gumb_azuriranja": "ðŸ”„ Check for updates",
         "kartica_1": "LINKS (one per line)",
         "kartica_2": "WHAT TO DOWNLOAD",
         "kartica_3": "WHERE TO SAVE",
         "placeholder_linkovi": "Paste a YouTube / TikTok / Instagram link here...",
-        "gumb_pregledaj": "🎬 Preview & mark clip",
-        "gumb_zalijepi": "📋 Paste",
-        "gumb_ocisti": "🗑 Clear",
-        "gumb_ponisti_isjecak": "✕ Clear",
-        "nacin_video_zvuk": "🎬  Video + audio",
-        "nacin_video_zvuk_opis": "merged mp4 — standard",
-        "nacin_samo_video": "🎞  Video only (no audio)",
+        "gumb_pregledaj": "ðŸŽ¬ Preview & mark clip",
+        "gumb_zalijepi": "ðŸ“‹ Paste",
+        "gumb_ocisti": "ðŸ—‘ Clear",
+        "gumb_ponisti_isjecak": "âœ• Clear",
+        "nacin_video_zvuk": "ðŸŽ¬  Video + audio",
+        "nacin_video_zvuk_opis": "merged mp4 â€” standard",
+        "nacin_samo_video": "ðŸŽž  Video only (no audio)",
         "nacin_samo_video_opis": "silent clip for editing / B-roll",
-        "nacin_samo_zvuk": "🎵  Audio only",
-        "nacin_samo_zvuk_opis": "mp3 / m4a / wav — no video",
+        "nacin_samo_zvuk": "ðŸŽµ  Audio only",
+        "nacin_samo_zvuk_opis": "mp3 / m4a / wav â€” no video",
         "oznaka_kvaliteta": "Quality",
         "oznaka_format_videa": "Video format",
         "oznaka_format_zvuka": "Audio format",
         "cb_h264": "Premiere-ready (H.264/avc1)",
-        "cb_h264_opis": "requests avc1 and converts if needed — Premiere always reads it",
+        "cb_h264_opis": "requests avc1 and converts if needed â€” Premiere always reads it",
         "cb_metapodaci": "Embed thumbnail and metadata",
         "cb_metapodaci_opis": "title, artist and cover art in the file",
-        "gumb_odaberi_folder": "📂 Choose",
-        "gumb_otvori_folder": "👁 Open",
-        "skini_video": "⬇   DOWNLOAD VIDEO",
-        "skini_video_bez_zvuka": "⬇   DOWNLOAD VIDEO (NO AUDIO)",
-        "skini_zvuk": "⬇   DOWNLOAD AUDIO",
-        "gumb_pauziraj": "⏸ Pause",
-        "gumb_nastavi": "▶ Resume",
-        "gumb_prekini": "✕ Cancel",
+        "gumb_odaberi_folder": "ðŸ“‚ Choose",
+        "gumb_otvori_folder": "ðŸ‘ Open",
+        "skini_video": "â¬‡   DOWNLOAD VIDEO",
+        "skini_video_bez_zvuka": "â¬‡   DOWNLOAD VIDEO (NO AUDIO)",
+        "skini_zvuk": "â¬‡   DOWNLOAD AUDIO",
+        "gumb_pauziraj": "â¸ Pause",
+        "gumb_nastavi": "â–¶ Resume",
+        "gumb_prekini": "âœ• Cancel",
         "status_naslov": "STATUS",
         "player_naslov": "PLAYER",
-        "status_sakrij": "▾ hide",
-        "status_prikazi": "▸ show",
-        "gumb_ocisti_log": "🗑 clear log",
-        "player_placeholder": "🎬\n\nThe clip-marking player will\nappear here once you click\n'Preview & mark clip'",
-        "player_zaseban_prozor": "🎬\n\nThe player opened in a separate window\n(embedding it here requires Windows + pywin32)",
+        "status_sakrij": "â–¾ hide",
+        "status_prikazi": "â–¸ show",
+        "gumb_ocisti_log": "ðŸ—‘ clear log",
+        "player_placeholder": "ðŸŽ¬\n\nThe clip-marking player will\nappear here once you click\n'Preview & mark clip'",
+        "player_zaseban_prozor": "ðŸŽ¬\n\nThe player opened in a separate window\n(embedding it here requires Windows + pywin32)",
         "o_aplikaciji_naslov": "About",
         "o_aplikaciji_autor": "Developed by Mr_muscle",
         "o_aplikaciji_prava": "All rights reserved.",
         "o_aplikaciji_auto_update": "On every launch, the app quietly checks whether a newer version of "
                                     "yt-dlp (the download engine) is available and offers to update it if "
-                                    "found — ffmpeg and yt-dlp are downloaded automatically if missing.",
+                                    "found â€” ffmpeg and yt-dlp are downloaded automatically if missing.",
         "o_aplikaciji_alati": "Tools",
         "o_aplikaciji_postavke": "Settings",
         "nije_pronadjen": "not found",
         "provjeravam_alate": "Checking tools...",
-        "provjeravam": "🔄 Checking...",
+        "provjeravam": "ðŸ”„ Checking...",
         "skidam": "Downloading...",
         # --- dialogs and STATUS log messages (added later) ---
         "err_naslov": "Error",
-        "msg_need_pywebview": "ℹ️ The '🎬 Preview & mark clip' feature needs the 'pywebview' library (pip install pywebview).",
-        "msg_need_pywin32": "ℹ️ An in-window EMBEDDED player needs 'pywin32' (pip install pywin32) — for now it will open in a separate window.",
-        "msg_black_player_hint": "ℹ️ If the embedded player stays black after opening, wait a second or two (it auto-retries) or slightly resize the app window.",
-        "msg_window_reset": "🗔 Window size reset to 1240×820.",
+        "msg_need_pywebview": "â„¹ï¸ The 'ðŸŽ¬ Preview & mark clip' feature needs the 'pywebview' library (pip install pywebview).",
+        "msg_need_pywin32": "â„¹ï¸ An in-window EMBEDDED player needs 'pywin32' (pip install pywin32) â€” for now it will open in a separate window.",
+        "msg_black_player_hint": "â„¹ï¸ If the embedded player stays black after opening, wait a second or two (it auto-retries) or slightly resize the app window.",
+        "msg_window_reset": "ðŸ—” Window size reset to 1240Ã—820.",
         "msg_cannot_open": "Can't open: {0}\n\n{1}",
-        "msg_folder_session_only": "⚠️ The folder works for this session, but I can't remember it: {0}",
-        "msg_folder_saved": "📁 Folder: {0} (saved)",
-        "msg_start_marked": "📍 Start: {0}",
-        "msg_end_marked": "📍 End: {0}",
+        "msg_folder_session_only": "âš ï¸ The folder works for this session, but I can't remember it: {0}",
+        "msg_folder_saved": "ðŸ“ Folder: {0} (saved)",
+        "msg_start_marked": "ðŸ“ Start: {0}",
+        "msg_end_marked": "ðŸ“ End: {0}",
         "webview2_naslov": "WebView2 Runtime",
-        "webview2_ok_text": "All good — WebView2 Runtime is already installed.",
-        "msg_webview2_missing": "⚠️ Microsoft Edge WebView2 Runtime was not found — without it the player (preview/trim) won't work.",
+        "webview2_ok_text": "All good â€” WebView2 Runtime is already installed.",
+        "msg_webview2_missing": "âš ï¸ Microsoft Edge WebView2 Runtime was not found â€” without it the player (preview/trim) won't work.",
         "webview2_confirm_naslov": "WebView2 Runtime missing",
         "webview2_confirm_text": "Displaying the player (previewing and marking a clip) requires the Microsoft "
                                  "Edge WebView2 component, which wasn't found on this computer.\n\n"
                                  "This is a one-time, official Microsoft installation (shared by every app on this "
-                                 "computer, not just this one) — it may prompt for Windows confirmation (UAC).\n\n"
+                                 "computer, not just this one) â€” it may prompt for Windows confirmation (UAC).\n\n"
                                  "Download and install it automatically now?",
-        "msg_webview2_skipped": "ℹ️ Skipped — the player won't work until WebView2 Runtime is installed manually "
+        "msg_webview2_skipped": "â„¹ï¸ Skipped â€” the player won't work until WebView2 Runtime is installed manually "
                                 "(https://developer.microsoft.com/microsoft-edge/webview2/).",
-        "msg_webview2_ready": "ℹ️ Now try opening the player ('🎬 Preview & mark clip').",
-        "msg_webview2_install_failed": "❌ WebView2 installation failed: {0}",
+        "msg_webview2_ready": "â„¹ï¸ Now try opening the player ('ðŸŽ¬ Preview & mark clip').",
+        "msg_webview2_install_failed": "âŒ WebView2 installation failed: {0}",
         "webview2_error_text": "Can't install WebView2 Runtime: {0}\n\nTry downloading it manually from https://developer.microsoft.com/microsoft-edge/webview2/",
-        "msg_tool_missing_downloading": "⚠️ {0} is missing — downloading...",
-        "msg_ytdlp_download_failed": "❌ Downloading yt-dlp failed: {0}",
-        "msg_ffmpeg_missing_note": "⚠️ ffmpeg is missing — without it, merging video+audio, trimming clips, and "
+        "msg_tool_missing_downloading": "âš ï¸ {0} is missing â€” downloading...",
+        "msg_ytdlp_download_failed": "âŒ Downloading yt-dlp failed: {0}",
+        "msg_ffmpeg_missing_note": "âš ï¸ ffmpeg is missing â€” without it, merging video+audio, trimming clips, and "
                                    "converting to mp3 won't work. Downloading...",
-        "msg_ffmpeg_download_failed": "❌ Downloading ffmpeg failed: {0}",
+        "msg_ffmpeg_download_failed": "âŒ Downloading ffmpeg failed: {0}",
         "update_available_naslov": "Update available",
         "update_available_text": "A new version of yt-dlp is available: {0}\n(you currently have: {1})\n\n"
-                                 "yt-dlp updates often to keep up with YouTube/TikTok/Instagram changes — "
+                                 "yt-dlp updates often to keep up with YouTube/TikTok/Instagram changes â€” "
                                  "updating regularly reduces the chance of download errors.\n\n"
                                  "Download and install the new version now?",
-        "msg_updating_ytdlp": "🔄 Downloading the newer yt-dlp version...",
-        "msg_tools_summary": "📦 yt-dlp {0} · {1}",
+        "msg_updating_ytdlp": "ðŸ”„ Downloading the newer yt-dlp version...",
+        "msg_tools_summary": "ðŸ“¦ yt-dlp {0} Â· {1}",
         "status_tools_unavailable": "unavailable",
-        "status_ffmpeg_missing": "❌ ffmpeg MISSING",
+        "status_ffmpeg_missing": "âŒ ffmpeg MISSING",
         "update_in_progress_naslov": "Download in progress",
-        "update_in_progress_text": "Updating can't be done while a download is running.\nWait for it to finish or click '✕ Cancel'.",
+        "update_in_progress_text": "Updating can't be done while a download is running.\nWait for it to finish or click 'âœ• Cancel'.",
         "updates_naslov": "Updates",
-        "msg_ytdlp_output": "🔄 yt-dlp: {0}",
-        "msg_ytdlp_running_update": "🔄 Running yt-dlp -U ...",
-        "msg_ytdlp_downloaded_first": "✅ yt-dlp: downloaded (first time)",
-        "msg_ytdlp_download_failed_short": "❌ yt-dlp: download failed ({0})",
-        "msg_ytdlp_update_failed": "❌ yt-dlp: update failed (see STATUS log for details)",
-        "msg_ytdlp_already_latest": "✅ yt-dlp: already up to date",
-        "msg_ytdlp_updated": "🆕 yt-dlp: updated to the latest version",
-        "msg_ytdlp_check_done": "✅ yt-dlp: check complete",
-        "msg_ytdlp_update_timeout": "❌ yt-dlp: update timed out (slow connection) — try again",
-        "msg_ytdlp_update_error": "❌ yt-dlp: {0}",
-        "msg_ffmpeg_present": "✅ ffmpeg: present",
-        "msg_ffmpeg_installed": "🆕 ffmpeg: installed",
-        "msg_ffmpeg_error": "❌ ffmpeg: {0}",
+        "msg_ytdlp_output": "ðŸ”„ yt-dlp: {0}",
+        "msg_ytdlp_running_update": "ðŸ”„ Running yt-dlp -U ...",
+        "msg_ytdlp_downloaded_first": "âœ… yt-dlp: downloaded (first time)",
+        "msg_ytdlp_download_failed_short": "âŒ yt-dlp: download failed ({0})",
+        "msg_ytdlp_update_failed": "âŒ yt-dlp: update failed (see STATUS log for details)",
+        "msg_ytdlp_already_latest": "âœ… yt-dlp: already up to date",
+        "msg_ytdlp_updated": "ðŸ†• yt-dlp: updated to the latest version",
+        "msg_ytdlp_check_done": "âœ… yt-dlp: check complete",
+        "msg_ytdlp_update_timeout": "âŒ yt-dlp: update timed out (slow connection) â€” try again",
+        "msg_ytdlp_update_error": "âŒ yt-dlp: {0}",
+        "msg_ffmpeg_present": "âœ… ffmpeg: present",
+        "msg_ffmpeg_installed": "ðŸ†• ffmpeg: installed",
+        "msg_ffmpeg_error": "âŒ ffmpeg: {0}",
         "err_pywebview_missing_text": "The 'pywebview' library isn't installed.\n\nInstall it in a terminal:\n    pip install pywebview",
         "warn_naslov": "Warning",
         "warn_paste_link_first": "Paste a link first.",
         "err_cant_recognize_youtube": "I can't recognize a YouTube video ID in that link.",
-        "msg_opening_player": "⏳ Opening player...",
-        "msg_fetching_preview": "⏳ Fetching video preview...",
-        "msg_embed_disabled_fallback": "⏳ Embedding disabled for this video — downloading a shorter local preview...",
-        "msg_tiktok_bug_preview": "TikTok currently has a known issue in yt-dlp (not in this app) — try 'Check for updates'.",
+        "msg_opening_player": "â³ Opening player...",
+        "msg_fetching_preview": "â³ Fetching video preview...",
+        "msg_embed_disabled_fallback": "â³ Embedding disabled for this video â€” downloading a shorter local preview...",
+        "msg_tiktok_bug_preview": "TikTok currently has a known issue in yt-dlp (not in this app) â€” try 'Check for updates'.",
         "err_cant_fetch_preview": "Can't fetch the video preview: {0}",
-        "msg_preview_failed_log": "❌ Preview failed:\n{0}",
+        "msg_preview_failed_log": "âŒ Preview failed:\n{0}",
         "err_cant_prepare_player": "Can't prepare the player: {0}",
-        "msg_embedded_ready": "✅ Player embedded and ready.",
-        "msg_embed_load_failed": "⚠️ Can't load the embedded player: {0} — using a separate window instead.",
-        "msg_need_psutil_pause": "ℹ️ A real pause needs 'psutil' (pip install psutil) — without it, the download continues in the background.",
-        "msg_cant_pause_resume": "⚠️ Can't {0} the process: {1}",
+        "msg_embedded_ready": "âœ… Player embedded and ready.",
+        "msg_embed_load_failed": "âš ï¸ Can't load the embedded player: {0} â€” using a separate window instead.",
+        "msg_need_psutil_pause": "â„¹ï¸ A real pause needs 'psutil' (pip install psutil) â€” without it, the download continues in the background.",
+        "msg_cant_pause_resume": "âš ï¸ Can't {0} the process: {1}",
         "akcija_pauzirati": "pause",
         "akcija_nastaviti": "resume",
-        "msg_cancelled_by_user": "✕ Cancelled by the user.",
+        "msg_cancelled_by_user": "âœ• Cancelled by the user.",
         "warn_no_link_naslov": "No link",
         "warn_no_link_text": "Paste at least one link.",
         "ffmpeg_missing_naslov": "ffmpeg missing",
@@ -762,42 +821,48 @@ PRIJEVODI = {
                                        "ffmpeg, which wasn't found.\n\nDownload it automatically now?",
         "warn_download_in_progress_text": "Wait for the current download to finish, then try again.",
         "ffmpeg_missing_multi_text": "Trimming clips needs ffmpeg, which wasn't found.\n\n"
-                                     "Go to 'Tools → Check for updates' to download it, then try again.",
+                                     "Go to 'Tools â†’ Check for updates' to download it, then try again.",
         "err_cant_download_tool": "Can't download {0}: {1}",
-        "msg_merging": "🔗 Merging video and audio...",
-        "msg_extracting_audio": "🎵 Extracting and converting audio...",
-        "msg_silent_video_done": "🔇 Downloaded a silent video (no audio track).",
-        "msg_error_generic": "❌ Error: {0}",
+        "msg_merging": "ðŸ”— Merging video and audio...",
+        "msg_extracting_audio": "ðŸŽµ Extracting and converting audio...",
+        "msg_silent_video_done": "ðŸ”‡ Downloaded a silent video (no audio track).",
+        "msg_error_generic": "âŒ Error: {0}",
         "err_cant_start_tool": "Can't start {0}: {1}",
-        "msg_no_separate_video_stream": "ℹ️ This source has no separate video stream — downloading the full file and removing the audio...",
-        "msg_tiktok_bug_download": "ℹ️ Known error pattern (TikTok changed its JS 'challenge'). Click "
-                                   "'🔄 Check for updates' and try again.",
-        "msg_retry_attempt": "⏳ Attempt {0} failed — retrying...",
-        "msg_full_error_details": "🔍 Full error details:\n{0}",
-        "msg_no_ffmpeg_kept_audio": "⚠️ No ffmpeg — the file kept its audio.",
-        "msg_audio_removed": "🔇 Audio removed.",
-        "msg_duration_fixed": "🩹 Fixed the clip's duration in the file header.",
-        "msg_codec_check_skipped": "⚠️ Skipping codec check (no ffmpeg/ffprobe).",
-        "msg_converting_codec": "🎞 Video is {0} — converting to H.264 for Premiere...",
-        "msg_codec_converted": "✅ Converted to H.264.",
-        "msg_codec_convert_failed": "⚠️ Conversion failed — the file stayed in its original codec.",
-        "msg_codec_check_failed": "⚠️ Codec check failed: {0}",
-        "msg_download_cancelled": "\n✕ Download cancelled.",
+        "msg_no_separate_video_stream": "â„¹ï¸ This source has no separate video stream â€” downloading the full file and removing the audio...",
+        "msg_tiktok_bug_download": "â„¹ï¸ Known error pattern (TikTok changed its JS 'challenge'). Click "
+                                   "'ðŸ”„ Check for updates' and try again.",
+        "msg_retry_attempt": "â³ Attempt {0} failed â€” retrying...",
+        "msg_full_error_details": "ðŸ” Full error details:\n{0}",
+        "msg_no_ffmpeg_kept_audio": "âš ï¸ No ffmpeg â€” the file kept its audio.",
+        "msg_audio_removed": "ðŸ”‡ Audio removed.",
+        "msg_duration_fixed": "ðŸ©¹ Fixed the clip's duration in the file header.",
+        "msg_codec_check_skipped": "âš ï¸ Skipping codec check (no ffmpeg/ffprobe).",
+        "msg_converting_codec": "ðŸŽž Video is {0} â€” converting to H.264 for Premiere...",
+        "msg_codec_converted": "âœ… Converted to H.264.",
+        "msg_codec_convert_failed": "âš ï¸ Conversion failed â€” the file stayed in its original codec.",
+        "msg_codec_check_failed": "âš ï¸ Codec check failed: {0}",
+        "msg_download_cancelled": "\nâœ• Download cancelled.",
         "done_naslov": "Done",
-        "msg_all_done_log": "\n🎉 Done! Folder: {0}",
+        "msg_all_done_log": "\nðŸŽ‰ Done! Folder: {0}",
         "msg_all_done_text": "Everything downloaded successfully!",
-        "msg_partial_log": "\n⚠ Partial: {0} OK, {1} failed.",
+        "msg_partial_log": "\nâš  Partial: {0} OK, {1} failed.",
         "partial_naslov": "Partially done",
         "msg_partial_text": "{0} succeeded, {1} failed.\nSee the STATUS log.",
-        "msg_all_failed_log": "\n❌ No downloads succeeded.",
+        "msg_all_failed_log": "\nâŒ No downloads succeeded.",
         "failed_naslov": "Failed",
-        "msg_all_failed_text": "The download failed.\nSee the red ❌ line in the STATUS log.",
-        "isjecak_label": "✂ Clip: {0} → {1}",
+        "msg_all_failed_text": "The download failed.\nSee the red âŒ line in the STATUS log.",
+        "isjecak_label": "âœ‚ Clip: {0} â†’ {1}",
         "isjecak_pocetak": "start",
         "isjecak_kraj": "end",
-        "msg_embed_prep_failed": "⚠️ Failed to prepare the embedded player: {0}",
-        "msg_embed_not_found": "⚠️ Embedded player not found — using a separate window instead.",
-        "msg_embed_failed": "⚠️ Embedding the player failed: {0}",
+        "msg_embed_prep_failed": "âš ï¸ Failed to prepare the embedded player: {0}",
+        "msg_embed_not_found": "âš ï¸ Embedded player not found â€” using a separate window instead.",
+        "msg_embed_failed": "âš ï¸ Embedding the player failed: {0}",
+        "app_update_naslov": "New version available",
+        "app_update_text": "A new app version is available: v{0}\n(you currently have: v{1})\n\n"
+                           "Download and run the installer now? The app will close so it can be updated.",
+        "msg_downloading_app_update": "â³ Downloading the new app version...",
+        "msg_launching_installer": "â³ Launching the new version's installer â€” the app is closing now...",
+        "msg_app_update_failed": "âŒ App update failed: {0}",
     },
 }
 
@@ -813,15 +878,15 @@ PRIJEVODI = {
 PROMJENE = {
     "1.1": {
         "hr": [
-            "Popravljeno: isječci su nakon skidanja ponekad pokazivali pogrešno "
-            "(izvorno, puno duže) trajanje umjesto stvarnog trajanja isječka, pa "
+            "Popravljeno: isjeÄci su nakon skidanja ponekad pokazivali pogreÅ¡no "
+            "(izvorno, puno duÅ¾e) trajanje umjesto stvarnog trajanja isjeÄka, pa "
             "se nije moglo normalno premotavati.",
-            "Popravljeno: VLC je za isječke prikazivao staro trajanje čak i kad "
-            "je Premiere prikazivao točno vrijeme.",
+            "Popravljeno: VLC je za isjeÄke prikazivao staro trajanje Äak i kad "
+            "je Premiere prikazivao toÄno vrijeme.",
             "Dodano: HH:MM:SS prikaz vremena (umjesto samo minuta:sekunda) pri "
-            "označavanju isječka u playeru.",
-            "Uklonjeni opisi ispod načina skidanja i checkboxovi 'Premiere-ready' "
-            "/ 'Ugradi naslovnicu i metapodatke' — više se ne prikazuju.",
+            "oznaÄavanju isjeÄka u playeru.",
+            "Uklonjeni opisi ispod naÄina skidanja i checkboxovi 'Premiere-ready' "
+            "/ 'Ugradi naslovnicu i metapodatke' â€” viÅ¡e se ne prikazuju.",
         ],
         "en": [
             "Fixed: after downloading, clips sometimes showed the wrong "
@@ -897,12 +962,12 @@ SUCCESS = "#32d74b"      # iOS-zelena
 DANGER = "#ff453a"       # iOS-crvena
 INPUT_BG = "#12142a"
 
-# "Caacupé One" (besplatan Google Font, SIL OFL licenca) je referenca za
+# "CaacupÃ© One" (besplatan Google Font, SIL OFL licenca) je referenca za
 # veliki naslov aplikacije - gust, "display" font. Ako nije instaliran na
 # racunalu, Tkinter automatski i tiho koristi zamjenski font (bez greske),
 # pa je siguran za koristiti bez instalacije. Za pravi izgled instaliraj ga s
 # https://github.com/googlefonts/caacupe
-FONT_NASLOV = "Caacupé One"
+FONT_NASLOV = "CaacupÃ© One"
 
 
 def posvijetli(hex_boja, faktor):
@@ -1049,85 +1114,85 @@ class PlayerAPI:
 _PLAYER_PRIJEVODI = {
     "hr": {
         "html_lang": "hr",
-        "cc_title": "Uključi/isključi titlove",
-        "cc_off": "💬 CC: isključeno",
-        "cc_on": "💬 CC: uključeno",
-        "spremno": "Spremno — klikni po traci ili koristi dugmad ispod.",
+        "cc_title": "UkljuÄi/iskljuÄi titlove",
+        "cc_off": "ðŸ’¬ CC: iskljuÄeno",
+        "cc_on": "ðŸ’¬ CC: ukljuÄeno",
+        "spremno": "Spremno â€” klikni po traci ili koristi dugmad ispod.",
         "err_invalid_id": "Neispravan video ID",
-        "err_html5": "Greška HTML5 playera",
+        "err_html5": "GreÅ¡ka HTML5 playera",
         "err_removed": "Video ne postoji ili je uklonjen",
-        "err_embed_disabled": "Vlasnik je onemogućio embed prikaz ovog videa",
-        "embed_fallback_status": "⏳ Vlasnik je onemogućio YouTube embed za ovaj video — preuzimam kraći lokalni pregled...",
-        "err_code_prefix": "Greška kod ",
-        "err_generic_video": "❌ Ne mogu učitati video (link je istekao, privatan je ili nije podržan).",
+        "err_embed_disabled": "Vlasnik je onemoguÄ‡io embed prikaz ovog videa",
+        "embed_fallback_status": "â³ Vlasnik je onemoguÄ‡io YouTube embed za ovaj video â€” preuzimam kraÄ‡i lokalni pregled...",
+        "err_code_prefix": "GreÅ¡ka kod ",
+        "err_generic_video": "âŒ Ne mogu uÄitati video (link je istekao, privatan je ili nije podrÅ¾an).",
         "trenutno": "Trenutno",
-        "isjecak_prefix": "Isječak",
-        "nije_oznaceno": "nije označeno",
+        "isjecak_prefix": "IsjeÄak",
+        "nije_oznaceno": "nije oznaÄeno",
         "ukupno": "Ukupno",
         "back5_title": "Nazad 5 sekundi",
         "playpause_title": "Play / Pauza",
-        "playpause_text": "⏯ Play/Pauza",
+        "playpause_text": "â¯ Play/Pauza",
         "fwd5_title": "Naprijed 5 sekundi",
-        "set_start_title": "Označi trenutnu poziciju kao početak isječka",
-        "set_start_text": "📍 Postavi OD",
-        "set_end_title": "Označi trenutnu poziciju kao kraj isječka",
-        "set_end_text": "📍 Postavi DO",
-        "current_selection": "🎬 Trenutni odabir:",
+        "set_start_title": "OznaÄi trenutnu poziciju kao poÄetak isjeÄka",
+        "set_start_text": "ðŸ“ Postavi OD",
+        "set_end_title": "OznaÄi trenutnu poziciju kao kraj isjeÄka",
+        "set_end_text": "ðŸ“ Postavi DO",
+        "current_selection": "ðŸŽ¬ Trenutni odabir:",
         "od_label": "Od:",
         "do_label": "Do:",
         "od_label_short": "Od",
         "do_label_short": "Do",
         "add_selection": "+ Dodaj odabir",
-        "download_all_clips": "⬇ Skini sve isječke",
-        "loading_player": "Učitavam player...",
-        "pause_text": "⏸ Pauziraj",
-        "play_text": "▶ Pusti",
-        "still_loading": "⏳ Video se još učitava, pričekaj trenutak...",
-        "add_selection_warn": "⚠ Prvo označi Od i Do (📍 gumbi iznad ili upiši ručno), pa klikni + Dodaj odabir.",
-        "remove_clip_title": "Ukloni ovaj isječak",
-        "add_clip_warn": "⚠ Dodaj barem jedan isječak prije skidanja.",
-        "download_started": "Preuzimanje {0} isječaka pokrenuto — pogledaj glavni prozor.",
+        "download_all_clips": "â¬‡ Skini sve isjeÄke",
+        "loading_player": "UÄitavam player...",
+        "pause_text": "â¸ Pauziraj",
+        "play_text": "â–¶ Pusti",
+        "still_loading": "â³ Video se joÅ¡ uÄitava, priÄekaj trenutak...",
+        "add_selection_warn": "âš  Prvo oznaÄi Od i Do (ðŸ“ gumbi iznad ili upiÅ¡i ruÄno), pa klikni + Dodaj odabir.",
+        "remove_clip_title": "Ukloni ovaj isjeÄak",
+        "add_clip_warn": "âš  Dodaj barem jedan isjeÄak prije skidanja.",
+        "download_started": "Preuzimanje {0} isjeÄaka pokrenuto â€” pogledaj glavni prozor.",
     },
     "en": {
         "html_lang": "en",
         "cc_title": "Toggle captions",
-        "cc_off": "💬 CC: off",
-        "cc_on": "💬 CC: on",
-        "spremno": "Ready — click the timeline or use the buttons below.",
+        "cc_off": "ðŸ’¬ CC: off",
+        "cc_on": "ðŸ’¬ CC: on",
+        "spremno": "Ready â€” click the timeline or use the buttons below.",
         "err_invalid_id": "Invalid video ID",
         "err_html5": "HTML5 player error",
         "err_removed": "Video does not exist or was removed",
         "err_embed_disabled": "The owner has disabled embedded playback for this video",
-        "embed_fallback_status": "⏳ The owner disabled YouTube embedding for this video — downloading a shorter local preview...",
+        "embed_fallback_status": "â³ The owner disabled YouTube embedding for this video â€” downloading a shorter local preview...",
         "err_code_prefix": "Error code ",
-        "err_generic_video": "❌ Can not load the video (the link expired, is private, or is not supported).",
+        "err_generic_video": "âŒ Can not load the video (the link expired, is private, or is not supported).",
         "trenutno": "Current",
         "isjecak_prefix": "Clip",
         "nije_oznaceno": "not marked",
         "ukupno": "Total",
         "back5_title": "Back 5 seconds",
         "playpause_title": "Play / Pause",
-        "playpause_text": "⏯ Play/Pause",
+        "playpause_text": "â¯ Play/Pause",
         "fwd5_title": "Forward 5 seconds",
         "set_start_title": "Mark the current position as the clip start",
-        "set_start_text": "📍 Set start",
+        "set_start_text": "ðŸ“ Set start",
         "set_end_title": "Mark the current position as the clip end",
-        "set_end_text": "📍 Set end",
-        "current_selection": "🎬 Current selection:",
+        "set_end_text": "ðŸ“ Set end",
+        "current_selection": "ðŸŽ¬ Current selection:",
         "od_label": "Start:",
         "do_label": "End:",
         "od_label_short": "Start",
         "do_label_short": "End",
         "add_selection": "+ Add selection",
-        "download_all_clips": "⬇ Download all clips",
+        "download_all_clips": "â¬‡ Download all clips",
         "loading_player": "Loading player...",
-        "pause_text": "⏸ Pause",
-        "play_text": "▶ Play",
-        "still_loading": "⏳ Video is still loading, please wait...",
-        "add_selection_warn": "⚠️ First mark Start and End (📍 buttons above or type manually), then click + Add selection.",
+        "pause_text": "â¸ Pause",
+        "play_text": "â–¶ Play",
+        "still_loading": "â³ Video is still loading, please wait...",
+        "add_selection_warn": "âš ï¸ First mark Start and End (ðŸ“ buttons above or type manually), then click + Add selection.",
         "remove_clip_title": "Remove this clip",
-        "add_clip_warn": "⚠️ Add at least one clip before downloading.",
-        "download_started": "Download of {0} clips started — check the main window.",
+        "add_clip_warn": "âš ï¸ Add at least one clip before downloading.",
+        "download_started": "Download of {0} clips started â€” check the main window.",
     },
 }
 
@@ -1188,7 +1253,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
           return;
         }}
         document.getElementById('status-bar').innerText =
-          '❌ ' + (poruke[e.data] || ('{PT["err_code_prefix"]}' + e.data));
+          'âŒ ' + (poruke[e.data] || ('{PT["err_code_prefix"]}' + e.data));
       }}
 
       function toggleCC() {{
@@ -1337,7 +1402,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       }}
       .btn-dodaj-odabir:hover {{ background: rgba(10,132,255,0.28); filter: none; }}
 
-      /* --- lista više isječaka odjednom --- */
+      /* --- lista viÅ¡e isjeÄaka odjednom --- */
       #multi-panel {{ width: 100%; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }}
       .selekcija-red {{
         background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
@@ -1385,7 +1450,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       <div id="player-wrap">
         {player_element}
         <div id="volume-wrap">
-          <button class="icon-btn secondary" id="btn-mute" onclick="toggleMute()" style="padding:5px 9px;">🔊</button>
+          <button class="icon-btn secondary" id="btn-mute" onclick="toggleMute()" style="padding:5px 9px;">ðŸ”Š</button>
           <input type="range" id="volume-slider" min="0" max="100" value="100" oninput="promijeniGlasnocu(this.value)">
         </div>
       </div>
@@ -1402,9 +1467,9 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       </div>
 
       <div class="kontrole">
-        <button class="secondary icon-btn" onclick="pomakniZa(-5)" title="{PT['back5_title']}">⏪ -5s</button>
+        <button class="secondary icon-btn" onclick="pomakniZa(-5)" title="{PT['back5_title']}">âª -5s</button>
         <button class="secondary icon-btn" id="btn-play" onclick="togglePlay()" title="{PT['playpause_title']}">{PT['playpause_text']}</button>
-        <button class="secondary icon-btn" onclick="pomakniZa(5)" title="{PT['fwd5_title']}">⏩ +5s</button>
+        <button class="secondary icon-btn" onclick="pomakniZa(5)" title="{PT['fwd5_title']}">â© +5s</button>
         {cc_dugme}
         <button onclick="oznaciPocetak()" title="{PT['set_start_title']}">{PT['set_start_text']}</button>
         <button onclick="oznaciKraj()" title="{PT['set_end_title']}">{PT['set_end_text']}</button>
@@ -1501,10 +1566,10 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         var slider = document.getElementById('volume-slider');
         if (muted) {{
           player.mute();
-          btnMute.innerText = '🔇';
+          btnMute.innerText = 'ðŸ”‡';
         }} else {{
           player.unMute();
-          btnMute.innerText = '🔊';
+          btnMute.innerText = 'ðŸ”Š';
           if (parseInt(slider.value) === 0) {{ slider.value = 50; player.setVolume(50); }}
         }}
       }}
@@ -1515,11 +1580,11 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         var btnMute = document.getElementById('btn-mute');
         if (parseInt(v) === 0) {{
           muted = true;
-          btnMute.innerText = '🔇';
+          btnMute.innerText = 'ðŸ”‡';
         }} else {{
           if (muted) {{ player.unMute(); }}
           muted = false;
-          btnMute.innerText = '🔊';
+          btnMute.innerText = 'ðŸ”Š';
         }}
       }}
 
@@ -1547,12 +1612,12 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
           selectionBox.style.width = ((krajSec - pocSec) / trajanjeVid) * 100 + '%';
           selectionBox.style.display = 'block';
           document.getElementById('trajanje-isjecka-info').innerText =
-            "{PT['isjecak_prefix']}: " + formatiraj(pocSec) + " → " + formatiraj(krajSec) +
+            "{PT['isjecak_prefix']}: " + formatiraj(pocSec) + " â†’ " + formatiraj(krajSec) +
             "  (" + formatiraj(krajSec - pocSec) + ")";
         }}
       }}
 
-      // ---- lista više isječaka odjednom ----
+      // ---- lista viÅ¡e isjeÄaka odjednom ----
       var brojacSelekcija = 0;
 
       function dodajUListu() {{
@@ -1573,7 +1638,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
             '<div class="selekcija-polje"><label>{PT["od_label_short"]}</label><input type="text" class="sel-od" value="' + odVal + '"></div>' +
             '<div class="selekcija-polje"><label>{PT["do_label_short"]}</label><input type="text" class="sel-do" value="' + doVal + '"></div>' +
           '</div>' +
-          '<button class="secondary icon-btn sel-obrisi" onclick="obrisiSelekciju(' + id + ')" title="{PT["remove_clip_title"]}">🗑</button>';
+          '<button class="secondary icon-btn sel-obrisi" onclick="obrisiSelekciju(' + id + ')" title="{PT["remove_clip_title"]}">ðŸ—‘</button>';
         document.getElementById('lista-selekcija').appendChild(red);
         red.querySelector('.sel-od').addEventListener('input', azurirajTimelineSelekcije);
         red.querySelector('.sel-do').addEventListener('input', azurirajTimelineSelekcije);
@@ -1663,7 +1728,7 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
     """SimpleHTTPRequestHandler prosiren podrskom za HTTP Range zahtjeve.
     Standardni SimpleHTTPRequestHandler NE podrzava Range, pa <video> tag ne moze
     premotavati (seek) - motor ne zna kako dohvatiti proizvoljni dio fajla, pa
-    dopusta samo puštanje od pocetka do kraja bez skakanja po traci."""
+    dopusta samo puÅ¡tanje od pocetka do kraja bez skakanja po traci."""
     protocol_version = "HTTP/1.1"
 
     def send_head(self):
@@ -1743,7 +1808,7 @@ def pokreni_lokalni_server(temp_dir):
 
 def pokreni_webview_proces(preview_url, queue_sanjac):
     api = PlayerAPI(queue_sanjac)
-    webview.create_window("Mister Muscle — Timeline Player", url=preview_url, js_api=api, width=1180, height=760)
+    webview.create_window("Mister Muscle â€” Timeline Player", url=preview_url, js_api=api, width=1180, height=760)
     webview.start()
 
 
@@ -1838,7 +1903,7 @@ class App:
 
         self.root.protocol("WM_DELETE_WINDOW", self.zatvori)
 
-        self.ispisi(f"💪 {self.t('podnaslov_app')}")
+        self.ispisi(f"ðŸ’ª {self.t('podnaslov_app')}")
         if not PYWEBVIEW_DOSTUPAN:
             self.ispisi(self.t("msg_need_pywebview"))
         elif not EMBED_PLAYERA_DOSTUPAN:
@@ -2118,11 +2183,11 @@ class App:
                             font_size=8, padx=10, pady=6).pack(side="left", padx=(8, 0))
 
     def _panel_desno(self, roditelj):
-        """Desna kolona: JEDAN panel koji dijeli isto mjesto između playera za
-        označavanje isječka (UGRAĐEN, bez zasebnog OS prozora koji iskače) i
-        STATUS logova - klikom na zaglavlje se sadržaj otvara/zatvara, a
+        """Desna kolona: JEDAN panel koji dijeli isto mjesto izmeÄ‘u playera za
+        oznaÄavanje isjeÄka (UGRAÄEN, bez zasebnog OS prozora koji iskaÄe) i
+        STATUS logova - klikom na zaglavlje se sadrÅ¾aj otvara/zatvara, a
         svjetlo u zaglavlju pokazuje stanje (sivo = mirno, plavo = skidanje u
-        tijeku, crveno = greška, zeleno treperi 5s = uspješno skinuto)."""
+        tijeku, crveno = greÅ¡ka, zeleno treperi 5s = uspjeÅ¡no skinuto)."""
         roditelj.rowconfigure(0, weight=1)
         roditelj.columnconfigure(0, weight=1)
 
@@ -2130,7 +2195,7 @@ class App:
         self.desni_panel.grid(row=0, column=0, sticky="nsew")
         staklena_linija(self.desni_panel, posvijetli(CARD, 0.22)).pack(fill="x", side="top")
 
-        # ---- zaglavlje (klikni za otvori/zatvori sadržaj ispod) ----
+        # ---- zaglavlje (klikni za otvori/zatvori sadrÅ¾aj ispod) ----
         self._status_expanded = True
         self._desni_mod = "log"  # "log" ili "player" - koji sadrzaj trenutno dijeli mjesto ispod
         zaglavlje = tk.Frame(self.desni_panel, bg=CARD, cursor="hand2")
@@ -2157,11 +2222,11 @@ class App:
 
         staklena_linija(self.desni_panel, posvijetli(CARD, 0.14)).pack(fill="x", side="top")
 
-        # ---- sadržaj: dijeljeno mjesto - ILI player ILI STATUS log, nikad oboje ----
+        # ---- sadrÅ¾aj: dijeljeno mjesto - ILI player ILI STATUS log, nikad oboje ----
         self.desni_sadrzaj = tk.Frame(self.desni_panel, bg=CARD)
         self.desni_sadrzaj.pack(fill="both", expand=True, side="top")
 
-        # -- player: placeholder dok se ne otvori, pa ugrađeni prozor preko njega --
+        # -- player: placeholder dok se ne otvori, pa ugraÄ‘eni prozor preko njega --
         self.player_placeholder = tk.Label(
             self.desni_sadrzaj,
             text=self.t("player_placeholder"),
@@ -2237,14 +2302,14 @@ class App:
             pass
 
     def _status_blink_uspjeh(self, trajanje=6.0, interval_ms=400):
-        """Zeleno svjetlo treperi 'trajanje' sekundi kad skidanje uspješno završi."""
+        """Zeleno svjetlo treperi 'trajanje' sekundi kad skidanje uspjeÅ¡no zavrÅ¡i."""
         self._blink_token += 1
         moj_token = self._blink_token
         krajnje_vrijeme = time.time() + trajanje
 
         def _tik(upaljeno=True):
             if moj_token != self._blink_token:
-                return  # u međuvremenu je pokrenuto nešto drugo (nova greška/skidanje)
+                return  # u meÄ‘uvremenu je pokrenuto neÅ¡to drugo (nova greÅ¡ka/skidanje)
             if time.time() >= krajnje_vrijeme:
                 try:
                     self.status_svjetlo.itemconfig(self._svjetlo_id, fill=SUCCESS)
@@ -2262,8 +2327,8 @@ class App:
 
     # -------------------------------------------------------- ugradnja playera ---
     def _namjesti_velicinu_playera(self):
-        """Kad se 'player_embed_frame' promijeni veličine (npr. korisnik rastegne
-        prozor), ugrađeni OS prozor se ručno preslaguje na istu veličinu - Windows
+        """Kad se 'player_embed_frame' promijeni veliÄine (npr. korisnik rastegne
+        prozor), ugraÄ‘eni OS prozor se ruÄno preslaguje na istu veliÄinu - Windows
         to ne radi sam za reparentani prozor."""
         if not self._webview_hwnd or not WIN32_DOSTUPAN:
             return
@@ -2277,16 +2342,16 @@ class App:
                 pass
 
     def _pripremi_ugradjeni_webview(self):
-        """Stvara JEDAN pywebview prozor koji živi cijelo vrijeme rada aplikacije.
+        """Stvara JEDAN pywebview prozor koji Å¾ivi cijelo vrijeme rada aplikacije.
 
-        VAŽNO (v17.0.1): 'webview.create_window()' smije se pozvati iz bilo koje
+        VAÅ½NO (v17.0.1): 'webview.create_window()' smije se pozvati iz bilo koje
         niti I PRIJE nego se pokrene 'webview.start()' - prozor se tada samo
         registrira, a stvarno se stvara kad GUI petlja krene. Sam 'webview.start()'
-        MORA biti pozvan iz glavne niti aplikacije (tvrdo ograničenje biblioteke -
-        otud greška "pywebview must be run on a main thread" kad se pozivao iz
-        pozadinske niti). Zato se ovdje SAMO registrira prozor i pokreće nit koja
-        čeka da se on stvarno pojavi kao OS prozor pa ga ugrađuje (reparenta);
-        sam 'webview.start()' zove se na dnu datoteke, u glavnom pokretačkom bloku."""
+        MORA biti pozvan iz glavne niti aplikacije (tvrdo ograniÄenje biblioteke -
+        otud greÅ¡ka "pywebview must be run on a main thread" kad se pozivao iz
+        pozadinske niti). Zato se ovdje SAMO registrira prozor i pokreÄ‡e nit koja
+        Äeka da se on stvarno pojavi kao OS prozor pa ga ugraÄ‘uje (reparenta);
+        sam 'webview.start()' zove se na dnu datoteke, u glavnom pokretaÄkom bloku."""
         try:
             api = PlayerAPI(self.queue_sanjac)
             self._player_api = api
@@ -2299,7 +2364,7 @@ class App:
 
     def _cekaj_pa_ugradi_webview(self):
         hwnd = None
-        for _ in range(150):  # do ~15s čekanja da OS stvarno stvori prozor
+        for _ in range(150):  # do ~15s Äekanja da OS stvarno stvori prozor
             hwnd = win32gui.FindWindow(None, WEBVIEW_NASLOV_PROZORA)
             if hwnd:
                 break
@@ -2318,11 +2383,11 @@ class App:
             self._webview_hwnd = hwnd
             self.root.after(0, self._namjesti_velicinu_playera)
             # WebView2 (Edge) crta preko DirectComposition-a i zna "izgubiti"
-            # kompoziciju čim se prozor reparenta drugom vlasniku - rezultat je
-            # potpuno crn player iako je stranica ispod haube stvarno učitana.
-            # SWP_FRAMECHANGED prisiljava Windows da ponovno izračuna stil/okvir,
-            # a mali "kick" veličine (smanji pa vrati) prisiljava WebView2 da
-            # ponovno izračuna svoj compositing target i stvarno nacrta sadržaj.
+            # kompoziciju Äim se prozor reparenta drugom vlasniku - rezultat je
+            # potpuno crn player iako je stranica ispod haube stvarno uÄitana.
+            # SWP_FRAMECHANGED prisiljava Windows da ponovno izraÄuna stil/okvir,
+            # a mali "kick" veliÄine (smanji pa vrati) prisiljava WebView2 da
+            # ponovno izraÄuna svoj compositing target i stvarno nacrta sadrÅ¾aj.
             win32gui.SetWindowPos(
                 hwnd, None, 0, 0, 0, 0,
                 win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED
@@ -2333,10 +2398,10 @@ class App:
             self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_embed_failed").format(em)))
 
     def _forsiraj_repaint_playera(self):
-        """Nakon SetParent-a, WebView2 zna ostati crn dok se veličina prozora
+        """Nakon SetParent-a, WebView2 zna ostati crn dok se veliÄina prozora
         stvarno ne promijeni. Ovo simulira tu promjenu (smanji pa odmah vrati)
-        da natjera WebView2 da ponovno nacrta sadržaj. Bezopasno je pozvati
-        više puta - koristi se i nakon svakog promjene veličine glavnog prozora."""
+        da natjera WebView2 da ponovno nacrta sadrÅ¾aj. Bezopasno je pozvati
+        viÅ¡e puta - koristi se i nakon svakog promjene veliÄine glavnog prozora."""
         if not self._webview_hwnd or not WIN32_DOSTUPAN:
             return
         try:
@@ -2445,13 +2510,13 @@ class App:
                 pass
         self.root.destroy()
         if PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
-            # sigurnosna mreža: ako webview.start() u glavnoj niti iz bilo kojeg
-            # razloga ne vrati kontrolu čim se zadnji prozor uništi, ugasi proces
+            # sigurnosna mreÅ¾a: ako webview.start() u glavnoj niti iz bilo kojeg
+            # razloga ne vrati kontrolu Äim se zadnji prozor uniÅ¡ti, ugasi proces
             # nasilno nakon kratke pauze - bolje to nego app koji "visi" u pozadini.
             threading.Timer(2.0, lambda: os._exit(0)).start()
 
     def resetiraj_velicinu_prozora(self):
-        """Rucni, pouzdan izlaz iz nužde - vraca prozor na razumnu pocetnu
+        """Rucni, pouzdan izlaz iz nuÅ¾de - vraca prozor na razumnu pocetnu
         velicinu (1240x820) i normalno (ne-maksimizirano) stanje, bez obzira
         sto je uzrokovalo da prozor ostane ogroman. Namjerno ne ovisi ni o
         kakvoj automatskoj detekciji - samo silom postavi poznato dobro stanje."""
@@ -2474,7 +2539,7 @@ class App:
             return
         stavke = PROMJENE.get(APP_VERZIJA, {}).get(self.jezik) or PROMJENE.get(APP_VERZIJA, {}).get("hr")
         if stavke:
-            tekst = "\n\n".join(f"• {s}" for s in stavke)
+            tekst = "\n\n".join(f"â€¢ {s}" for s in stavke)
             naslov = f"Novosti u v{APP_VERZIJA}" if self.jezik == "hr" else f"What's new in v{APP_VERZIJA}"
             messagebox.showinfo(naslov, tekst)
         self.cfg["zadnja_prikazana_verzija"] = APP_VERZIJA
@@ -2483,7 +2548,7 @@ class App:
     def o_aplikaciji(self):
         messagebox.showinfo(
             self.t("o_aplikaciji_naslov"),
-            f"💪 Mister Muscle Downloader\n"
+            f"ðŸ’ª Mister Muscle Downloader\n"
             f"{'Verzija' if self.jezik == 'hr' else 'Version'} {APP_VERZIJA}\n"
             f"{self.t('o_aplikaciji_autor')}\n"
             f"{self.t('o_aplikaciji_prava')}\n\n"
@@ -2545,7 +2610,7 @@ class App:
     def _auto_ucitaj_player(self):
         """Ako prvi redak izgleda kao pravi link i razlikuje se od zadnjeg koji
         smo vec automatski otvorili, otvori/osvjezi player - BEZ da korisnik mora
-        kliknuti '🎬 Pregledaj i označi isječak'."""
+        kliknuti 'ðŸŽ¬ Pregledaj i oznaÄi isjeÄak'."""
         self._auto_ucitaj_after_id = None
         if not PYWEBVIEW_DOSTUPAN:
             return
@@ -2602,7 +2667,7 @@ class App:
         self.log.insert("end", poruka + "\n")
         self.log.see("end")
         self.log.configure(state="disabled")
-        if "❌" in poruka:
+        if "âŒ" in poruka:
             self._status_light(DANGER)
 
     def azuriraj_progress(self, val):
@@ -2723,11 +2788,47 @@ class App:
             rez = pokreni_yt_dlp(["--version"], timeout=15)
             trenutna = (rez.stdout or rez.stderr).strip()
         except Exception:
-            return
-        najnovija = _najnovija_verzija_yt_dlp()
-        if not najnovija or not trenutna or najnovija == trenutna:
-            return
-        self.root.after(0, lambda: self._ponudi_azuriranje_yt_dlp(trenutna, najnovija))
+            trenutna = None
+        if trenutna:
+            najnovija = _najnovija_verzija_yt_dlp()
+            if najnovija and najnovija != trenutna:
+                self.root.after(0, lambda: self._ponudi_azuriranje_yt_dlp(trenutna, najnovija))
+
+        # provjeri i samu aplikaciju (ne samo yt-dlp) - preko GitHub Releases
+        app_verzija, app_url = _najnovija_verzija_app()
+        if app_verzija and app_url and _usporedi_verzije(app_verzija, APP_VERZIJA) > 0:
+            self.root.after(0, lambda: self._ponudi_azuriranje_app(app_verzija, app_url))
+
+    def _ponudi_azuriranje_app(self, nova_verzija, url_setup):
+        if self.aktivno_preuzimanje:
+            return  # ne prekidaj ponudom vec pokrenuto skidanje - provjerit ce se opet sljedeci put
+        odgovor = messagebox.askyesno(
+            self.t("app_update_naslov"),
+            self.t("app_update_text").format(nova_verzija, APP_VERZIJA)
+        )
+        if odgovor:
+            threading.Thread(target=self._preuzmi_i_pokreni_azuriranje_app, args=(url_setup,), daemon=True).start()
+
+    def _preuzmi_i_pokreni_azuriranje_app(self, url_setup):
+        """Preuzima novi Setup.exe s GitHub Releasea i pokrece ga - app se zatim
+        SAMA zatvara (kroz self.zatvori(), koji vec cisti player/webview i sprema
+        postavke) da instalater moze zamijeniti trenutno pokrenuti .exe. Setup
+        se skida u sistemski temp folder (ne u folder aplikacije), pa radi cak i
+        ako je app instalirana u Program Files bez pisackih prava tamo."""
+        try:
+            self.root.after(0, self.ispisi, self.t("msg_downloading_app_update"))
+            cilj = os.path.join(tempfile.gettempdir(), "MisterMuscle_Setup_update.exe")
+            preuzmi_datoteku(url_setup, cilj,
+                             callback_postotak=lambda p: self.root.after(0, self.azuriraj_progress, p),
+                             min_velicina=1_000_000)
+            self.root.after(0, self.azuriraj_progress, 0)
+            self.root.after(0, self.ispisi, self.t("msg_launching_installer"))
+            subprocess.Popen([cilj], close_fds=True)
+            self.root.after(800, self.zatvori)
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_app_update_failed").format(em)))
+            self.root.after(0, lambda em=str(err): messagebox.showerror(
+                self.t("err_naslov"), self.t("msg_app_update_failed").format(em)))
 
     def _ponudi_azuriranje_yt_dlp(self, trenutna, najnovija):
         if self.aktivno_preuzimanje:
@@ -2751,8 +2852,8 @@ class App:
             yt_verzija = (rez.stdout or rez.stderr).strip() or "?"
         except Exception:
             yt_verzija = self.t("status_tools_unavailable")
-        ff = "✅ ffmpeg" if ffmpeg_dostupan() else self.t("status_ffmpeg_missing")
-        self.lbl_status_alati.config(text=f"yt-dlp {yt_verzija}   ·   {ff}   ·   alati: {_alati_folder()}")
+        ff = "âœ… ffmpeg" if ffmpeg_dostupan() else self.t("status_ffmpeg_missing")
+        self.lbl_status_alati.config(text=f"yt-dlp {yt_verzija}   Â·   {ff}   Â·   alati: {_alati_folder()}")
         self.ispisi(self.t("msg_tools_summary").format(yt_verzija, ff))
 
     def provjeri_azuriranja(self, samo=None):
@@ -2911,7 +3012,7 @@ class App:
             self._pokreni_fallback_prozor(preview_url)
 
     def _pokreni_fallback_prozor(self, preview_url):
-        """Ako ugradnja nije dostupna (nije Windows / fali pywin32 / nešto je puklo),
+        """Ako ugradnja nije dostupna (nije Windows / fali pywin32 / neÅ¡to je puklo),
         player se otvara u svom zasebnom prozoru - kao u ranijim verzijama."""
         self.player_proces = multiprocessing.Process(target=pokreni_webview_proces,
                                                      args=(preview_url, self.queue_sanjac))
@@ -2934,7 +3035,7 @@ class App:
         rezultat = pokreni_yt_dlp(argumenti, timeout=180)
         if rezultat.returncode != 0 or not os.path.exists(putanja):
             detalji = (rezultat.stdout + "\n" + rezultat.stderr).strip()
-            raise RuntimeError(detalji or f"yt-dlp je završio s greškom (kod {rezultat.returncode}).")
+            raise RuntimeError(detalji or f"yt-dlp je zavrÅ¡io s greÅ¡kom (kod {rezultat.returncode}).")
         return naziv_fajla
 
     # ------------------------------------------------- pauza / prekid / DL ---
@@ -3021,9 +3122,9 @@ class App:
                          args=(linkovi, self.od_sek, self.do_sek, nacin), daemon=True).start()
 
     def pokreni_preuzimanje_visestrukih_isjecaka(self, isjecci):
-        """Skida VIŠE isječaka odjednom (svaki iz 'isjecci' kao zaseban fajl), za
-        sve zalijepljene linkove - poziva ga player kad se klikne '⬇ Skini sve
-        isječke' u listi odabira ('isjecci' je lista [od_string, do_string] parova
+        """Skida VIÅ E isjeÄaka odjednom (svaki iz 'isjecci' kao zaseban fajl), za
+        sve zalijepljene linkove - poziva ga player kad se klikne 'â¬‡ Skini sve
+        isjeÄke' u listi odabira ('isjecci' je lista [od_string, do_string] parova
         koje je poslao JS, npr. [["0:48","1:12"], ["3:00","3:20"]])."""
         if self.aktivno_preuzimanje:
             self.root.after(0, lambda: messagebox.showwarning(
@@ -3077,7 +3178,7 @@ class App:
             # "extractora") vracaju stranicu kao gomilu pronadjenih video linkova
             # (preporuceni/povezani klipovi, reklame...) preko GENERICKOG
             # extractora - "--playlist-items 1" to dodatno osigurava: cak i tada
-            # se skine SAMO prvi (traženi) video, ne svih ~100 pronađenih.
+            # se skine SAMO prvi (traÅ¾eni) video, ne svih ~100 pronaÄ‘enih.
             "--playlist-items", "1",
             "--newline",
             "--concurrent-fragments", "8",
@@ -3105,20 +3206,20 @@ class App:
             do_sek = parse_vrijeme(do_str)
             if od_sek is None or do_sek is None or do_sek <= od_sek:
                 self.root.after(0, self.ispisi,
-                                f"⚠ Isječak {idx}. preskočen — neispravan raspon ({od_str} → {do_str}).")
+                                f"âš  IsjeÄak {idx}. preskoÄen â€” neispravan raspon ({od_str} â†’ {do_str}).")
                 neuspjesni += len(linkovi)
                 continue
 
             raspon = ["--download-sections", f"*{od_sek}-{do_sek}", "--force-keyframes-at-cuts"]
-            sufiks = f" (isječak {idx}, {formatiraj_trajanje(od_sek)}-{formatiraj_trajanje(do_sek)})"
+            sufiks = f" (isjeÄak {idx}, {formatiraj_trajanje(od_sek)}-{formatiraj_trajanje(do_sek)})"
 
             for url in linkovi:
                 brojac += 1
                 if self.otkazano:
                     break
                 self.root.after(0, self.ispisi,
-                                f"\n[{brojac}/{ukupno}] Isječak {idx}. "
-                                f"({formatiraj_trajanje(od_sek)}–{formatiraj_trajanje(do_sek)}): {url}")
+                                f"\n[{brojac}/{ukupno}] IsjeÄak {idx}. "
+                                f"({formatiraj_trajanje(od_sek)}â€“{formatiraj_trajanje(do_sek)}): {url}")
                 platforma = prepoznaj_platformu(url)
                 argumenti_url = [url, *self._argumenti_za_nacin(nacin, platforma, sufiks=sufiks),
                                  *zajednicki, *raspon]
@@ -3137,9 +3238,9 @@ class App:
 
     def _argumenti_za_nacin(self, nacin, platforma, sufiks=""):
         """Slaze dio yt-dlp argumenata koji ovisi o odabranom nacinu skidanja.
-        'sufiks' (npr. ' (isječak 2, 0:48-1:12)') se ubacuje u naziv fajla -
-        koristi se kod skidanja VIŠE isječaka iz istog videa odjednom, da se
-        ne prepisuju međusobno."""
+        'sufiks' (npr. ' (isjeÄak 2, 0:48-1:12)') se ubacuje u naziv fajla -
+        koristi se kod skidanja VIÅ E isjeÄaka iz istog videa odjednom, da se
+        ne prepisuju meÄ‘usobno."""
         visina = visina_iz_kvalitete(self.var_kvaliteta.get())
         h264 = self.var_h264.get()
         format_str = izgradi_format_string(platforma, nacin, visina, h264)
@@ -3271,7 +3372,7 @@ class App:
                     if eta:
                         opis.append(f"preostalo {eta.group(1)}")
                     if opis:
-                        self.root.after(0, self.azuriraj_brzinu, "  ·  ".join(opis))
+                        self.root.after(0, self.azuriraj_brzinu, "  Â·  ".join(opis))
                 elif "[Merger]" in redak or "Merging formats" in redak:
                     self.root.after(0, self.ispisi, self.t("msg_merging"))
                 elif "[ExtractAudio]" in redak:
@@ -3295,7 +3396,7 @@ class App:
                 self.root.after(0, self.azuriraj_progress, 100)
                 return True, None
 
-            zadnja_greska_tekst = puni_izlaz.strip() or f"{YT_DLP_EXE_NAZIV} je završio s kodom {proc.returncode}"
+            zadnja_greska_tekst = puni_izlaz.strip() or f"{YT_DLP_EXE_NAZIV} je zavrÅ¡io s kodom {proc.returncode}"
             donji = zadnja_greska_tekst.lower()
 
             # TikTok nekad uopce nema odvojeni video stream - tada 'samo_video' pada
@@ -3476,32 +3577,32 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
 
     def _pokreni_tkinter():
-        """Stvara root prozor I pokreće mainloop() u ISTOJ niti - Tcl/Tk interpreter
+        """Stvara root prozor I pokreÄ‡e mainloop() u ISTOJ niti - Tcl/Tk interpreter
         je na Windowsima vezan uz COM 'apartman' niti u kojoj je stvoren, pa se root
         NE SMIJE stvoriti u jednoj niti a mainloop() zvati u drugoj (to je davalo
         'Calling Tcl from different apartment' / 'main thread is not in main loop').
-        Ovoj niti ne treba biti baš OS glavna nit procesa - samo mora biti DOSLJEDNO
-        ista nit za sve Tk pozive, što ovdje i jest."""
+        Ovoj niti ne treba biti baÅ¡ OS glavna nit procesa - samo mora biti DOSLJEDNO
+        ista nit za sve Tk pozive, Å¡to ovdje i jest."""
         root = tk.Tk()
         App(root)
         root.mainloop()
 
     if PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
-        # 'webview.start()' mora biti pozvan iz GLAVNE niti (ograničenje same
-        # biblioteke - inače puca "pywebview must be run on a main thread").
+        # 'webview.start()' mora biti pozvan iz GLAVNE niti (ograniÄenje same
+        # biblioteke - inaÄe puca "pywebview must be run on a main thread").
         # Zato CIJELI Tkinter (stvaranje root prozora + mainloop, zajedno) ide u
         # posebnu nit koju nam webview sam pokrene preko 'func' parametra.
         #
-        # VAŽNO (v17.0.2): noviji pywebview (>= verzija koja se sad skida s PyPI-ja)
-        # zahtijeva da PRIJE poziva 'webview.start()' već postoji BAREM JEDAN
-        # stvoren prozor - inače odmah puca:
+        # VAÅ½NO (v17.0.2): noviji pywebview (>= verzija koja se sad skida s PyPI-ja)
+        # zahtijeva da PRIJE poziva 'webview.start()' veÄ‡ postoji BAREM JEDAN
+        # stvoren prozor - inaÄe odmah puca:
         #   webview.errors.WebViewException: You must create a window first
         #   before calling this function
-        # Stvarni prozor za ugrađeni player stvara se tek KASNIJE, iz pozadinske
-        # niti (App._pripremi_ugradjeni_webview), pošto Tkinter app uopće krene -
-        # u trenutku ovog poziva još ne postoji nijedan prozor pa je pucalo odmah,
-        # prije nego što bi 'func' (Tkinter) stigao i pokrenuti. Rješenje: napravimo
-        # mali nevidljiv "čuvar mjesta" prozor SAMO da zadovoljimo taj uvjet -
+        # Stvarni prozor za ugraÄ‘eni player stvara se tek KASNIJE, iz pozadinske
+        # niti (App._pripremi_ugradjeni_webview), poÅ¡to Tkinter app uopÄ‡e krene -
+        # u trenutku ovog poziva joÅ¡ ne postoji nijedan prozor pa je pucalo odmah,
+        # prije nego Å¡to bi 'func' (Tkinter) stigao i pokrenuti. RjeÅ¡enje: napravimo
+        # mali nevidljiv "Äuvar mjesta" prozor SAMO da zadovoljimo taj uvjet -
         # stvarni, vidljivi player-prozor i dalje nastaje kako je bilo, kasnije.
         webview.create_window(
             "MisterMuscle_Init", url="about:blank", width=1, height=1, hidden=True
