@@ -928,20 +928,30 @@ PROMJENE = {
             "staying at their original position from the source video.",
         ],
     },
-    "1.4": {
+    "1.5": {
         "hr": [
             "Dodano: sad možeš povući (drag) izravno po traci u playeru da "
             "označiš isječak, umjesto da moraš koristiti samo 'Postavi OD/DO' "
             "dugmad — dok povlačiš, iznad trake se prikazuje raspon uživo.",
+            "Dodano: postojeći isječak na traci sad ima hvatišta na rubovima — "
+            "povuci lijevo/desno da pomjeriš početak ili kraj bez pravljenja "
+            "nove selekcije, ili povuci sredinu da pomjeriš cijeli isječak.",
             "Dodano: red u listi isječaka se sad vizualno istakne (plavi okvir) "
             "kad klikneš na njegovo Od/Do polje.",
+            "Popravljeno: ikona aplikacije (na Desktopu, u Exploreru i na "
+            "instalateru) bila je zamućena — sad je oštra na svim veličinama.",
         ],
         "en": [
             "Added: you can now drag directly on the player's timeline to mark "
             "a clip, instead of only using the 'Set start/end' buttons — a "
             "live time range tooltip shows above the timeline while dragging.",
+            "Added: an existing clip on the timeline now has edge handles — "
+            "drag left/right to move the start or end without creating a new "
+            "selection, or drag the middle to move the whole clip.",
             "Added: a clip's row in the list is now visually highlighted (blue "
             "border) when you click its Start/End field.",
+            "Fixed: the app icon (on the Desktop, in Explorer, and on the "
+            "installer) was blurry — it's now sharp at every size.",
         ],
     },
 }
@@ -1398,8 +1408,19 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       #timeline-selection {{
         position: absolute; top: 0; bottom: 0; background: rgba(10, 132, 255, 0.32);
         border-left: 2px solid {ACCENT}; border-right: 2px solid {ACCENT};
-        pointer-events: none; display: none; border-radius: 14px;
+        pointer-events: auto; display: none; border-radius: 14px; cursor: grab;
       }}
+      #timeline-selection:active {{ cursor: grabbing; }}
+      .selection-handle {{
+        position: absolute; top: 0; bottom: 0; width: 14px; cursor: ew-resize;
+        z-index: 4; display: flex; align-items: center; justify-content: center;
+      }}
+      .selection-handle::after {{
+        content: ""; width: 4px; height: 60%; border-radius: 3px;
+        background: rgba(255,255,255,0.9); box-shadow: 0 0 4px rgba(0,0,0,0.4);
+      }}
+      #handle-left {{ left: -7px; }}
+      #handle-right {{ right: -7px; }}
       #timeline-playhead {{
         position: absolute; top: 0; bottom: 0; width: 3px; background: {SUCCESS}; left: 0%;
         pointer-events: none; box-shadow: 0 0 10px {SUCCESS}; z-index: 3;
@@ -1515,7 +1536,10 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       </div>
 
       <div id="timeline-container">
-        <div id="timeline-selection"></div>
+        <div id="timeline-selection">
+          <div class="selection-handle" id="handle-left"></div>
+          <div class="selection-handle" id="handle-right"></div>
+        </div>
         <div id="timeline-playhead"></div>
         <div id="drag-tooltip"></div>
       </div>
@@ -1592,9 +1616,14 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
 
       // ---- klik za premotavanje ILI povlacenje (drag) da izravno oznacis
       // isjecak na traci - stil kao u referentnom editoru (NVIDIA ShadowPlay).
-      // Klik (bez pomicanja) = premotaj. Povlacenje (pomak > 6px) = oznaci OD/DO. ----
+      // Klik (bez pomicanja) na praznu traku = premotaj. Povlacenje po praznoj
+      // traci = napravi novu selekciju. Povlacenje LIJEVOG/DESNOG hvatista
+      // postojece selekcije = pomjeri POCETAK ili KRAJ. Povlacenje SREDINE
+      // postojece selekcije = pomjeri CIJELI isjecak (zadrzavajuci trajanje). ----
       var dragTooltip = document.getElementById('drag-tooltip');
       var timelineEl = document.getElementById('timeline-container');
+      var handleLijevo = document.getElementById('handle-left');
+      var handleDesno = document.getElementById('handle-right');
       var dragPocetnaX = null, dragJePravaSelekcija = false;
 
       function pozicijaUSekundama(clientX) {{
@@ -1606,12 +1635,75 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
 
       function prikaziTooltip(sekOd, sekDo) {{
         if (!trajanjeVid) return;
-        var lijevo = (Math.min(sekOd, sekDo) / trajanjeVid) * 100;
         var sredina = ((sekOd + sekDo) / 2 / trajanjeVid) * 100;
         dragTooltip.style.left = sredina + '%';
         dragTooltip.innerText = formatiraj(Math.min(sekOd, sekDo)) + ' → ' + formatiraj(Math.max(sekOd, sekDo));
         dragTooltip.style.display = 'block';
       }}
+
+      function primijeniOdDo(od, doo) {{
+        pocSec = od; krajSec = doo;
+        document.getElementById('input-od').value = formatiraj(pocSec);
+        document.getElementById('input-do').value = formatiraj(krajSec);
+        window.pywebview.api.oznaci_pocetak(pocSec);
+        window.pywebview.api.oznaci_kraj(krajSec);
+        azurirajRaspon();
+      }}
+
+      function zapocniPomjeranjeRuba(e, rubKojiSePomjera) {{
+        e.stopPropagation();
+        function naPomicanje(ev) {{
+          var nova = pozicijaUSekundama(ev.clientX);
+          var od = (rubKojiSePomjera === 'od') ? Math.min(nova, krajSec - 0.1) : pocSec;
+          var doo = (rubKojiSePomjera === 'do') ? Math.max(nova, pocSec + 0.1) : krajSec;
+          selectionBox.style.left = (od / trajanjeVid * 100) + '%';
+          selectionBox.style.width = ((doo - od) / trajanjeVid * 100) + '%';
+          prikaziTooltip(od, doo);
+        }}
+        function naOtpustanje(ev) {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+          var nova = pozicijaUSekundama(ev.clientX);
+          var od = (rubKojiSePomjera === 'od') ? Math.min(nova, krajSec - 0.1) : pocSec;
+          var doo = (rubKojiSePomjera === 'do') ? Math.max(nova, pocSec + 0.1) : krajSec;
+          primijeniOdDo(od, doo);
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }}
+
+      function zapocniPomjeranjeCijele(e) {{
+        e.stopPropagation();
+        var trajanjeIsjecka = krajSec - pocSec;
+        var pocetniX = e.clientX;
+        var pocetniOd = pocSec;
+        function naPomicanje(ev) {{
+          var pomakSek = pozicijaUSekundama(ev.clientX) - pozicijaUSekundama(pocetniX);
+          var od = Math.min(Math.max(pocetniOd + pomakSek, 0), trajanjeVid - trajanjeIsjecka);
+          var doo = od + trajanjeIsjecka;
+          selectionBox.style.left = (od / trajanjeVid * 100) + '%';
+          selectionBox.style.width = ((doo - od) / trajanjeVid * 100) + '%';
+          prikaziTooltip(od, doo);
+        }}
+        function naOtpustanje(ev) {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+          var pomakSek = pozicijaUSekundama(ev.clientX) - pozicijaUSekundama(pocetniX);
+          var od = Math.min(Math.max(pocetniOd + pomakSek, 0), trajanjeVid - trajanjeIsjecka);
+          primijeniOdDo(od, od + trajanjeIsjecka);
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }}
+
+      handleLijevo.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeRuba(e, 'od'); }});
+      handleDesno.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeRuba(e, 'do'); }});
+      selectionBox.addEventListener('mousedown', function(e) {{
+        if (pocSec === null || krajSec === null) return;
+        zapocniPomjeranjeCijele(e);
+      }});
 
       timelineEl.addEventListener('mousedown', function(e) {{
         if (!spreman || !trajanjeVid) {{
@@ -1648,16 +1740,12 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
             return;
           }}
 
-          // stvarno povlacenje - oznaci OD/DO isjecka direktno na traci
+          // stvarno povlacenje po PRAZNOJ traci - napravi novu selekciju
+          // (povlacenje hvatista/sredine postojece selekcije se hvata gore,
+          // prije nego stigne ovamo - e.stopPropagation() to sprijeci)
           var sekPocetak = pozicijaUSekundama(dragPocetnaX);
           var sekKraj = pozicijaUSekundama(ev.clientX);
-          pocSec = Math.min(sekPocetak, sekKraj);
-          krajSec = Math.max(sekPocetak, sekKraj);
-          document.getElementById('input-od').value = formatiraj(pocSec);
-          document.getElementById('input-do').value = formatiraj(krajSec);
-          window.pywebview.api.oznaci_pocetak(pocSec);
-          window.pywebview.api.oznaci_kraj(krajSec);
-          azurirajRaspon();
+          primijeniOdDo(Math.min(sekPocetak, sekKraj), Math.max(sekPocetak, sekKraj));
         }}
 
         document.addEventListener('mousemove', naPomicanje);
