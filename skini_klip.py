@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "1.1"
+APP_VERZIJA = "1.5"
 
 
 def _bazni_folder():
@@ -70,6 +70,23 @@ def _bazni_folder():
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def _log_pokretanja(poruka):
+    """Biljezi napredak POKRETANJA u trajan log fajl (mister_muscle_pokretanje.txt,
+    pored .exe-a) - NAMJERNO odvojeno od STATUS loga UNUTAR app-a, jer ako se
+    app povremeno uopce ne prikaze (poznat, isprekidan problem - "radi nakon
+    ponovnog pokretanja"), korisnik taj STATUS log nikad ni ne vidi. Ovaj fajl
+    se moze pogledati RUCNO (obican tekst) i nakon neuspjelog pokretanja, i
+    pokazat ce TOCNO do koje faze je stiglo prije nego je zapelo/palo -
+    slobodno se moze obrisati bilo kad, ponovo ce se sam napraviti."""
+    try:
+        putanja = os.path.join(_bazni_folder(), "mister_muscle_pokretanje.txt")
+        vrijeme = time.strftime("%H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
+        with open(putanja, "a", encoding="utf-8") as f:
+            f.write(f"{vrijeme}  {poruka}\n")
+    except Exception:
+        pass
 
 
 def _ikona_putanja():
@@ -86,6 +103,131 @@ def _ikona_putanja():
                 return put
     put = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ikona.ico")
     return put if os.path.isfile(put) else None
+
+
+def _radni_prostor_ekrana(root):
+    """Vraca (x, y, sirina, visina) RADNOG PROSTORA ekrana (BEZ taskbara) -
+    winfo_screenwidth/height vracaju CIJELI ekran ukljucujuci prostor koji
+    zauzima taskbar, pa bi "maksimiziran" prozor njime prekrio taskbar da
+    umjesto ovoga koristimo njih."""
+    if JE_WINDOWS:
+        try:
+            import ctypes
+            import ctypes.wintypes
+            SPI_GETWORKAREA = 0x0030
+            rect = ctypes.wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0)
+            return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+
+def _boja_u_colorref(hex_boja):
+    """Pretvara '#rrggbb' u Windows COLORREF format (0x00BBGGRR - obrnut
+    redoslijed bajtova od uobicajenog RGB) koji DWM API ocekuje."""
+    hex_boja = hex_boja.lstrip("#")
+    r, g, b = int(hex_boja[0:2], 16), int(hex_boja[2:4], 16), int(hex_boja[4:6], 16)
+    return (b << 16) | (g << 8) | r
+
+
+def _omoguci_tamnu_naslovnu_traku(root, ispisi=None):
+    """Na Windows 10/11 prisiljava TAMNU naslovnu traku (regija s minimize/
+    maximize/close dugmadima) umjesto zadane bijele, preko sluzbenog DWM API-ja
+    (isti mehanizam koji koriste npr. Windows Terminal, VS Code...). Na
+    Windows 11 (22H2+) dodatno pokusa postaviti TOCNU boju naslovne trake
+    (DWMWA_CAPTION_COLOR) da odgovara BG boji app-a, umjesto samo generickog
+    tamnog stila - na starijim Windowsima taj dio jednostavno tiho ne uspije
+    i ostane obican tamni stil. Tiho ne radi nista na drugim OS-ovima.
+
+    'ispisi' je opcionalna callback funkcija (npr. App.ispisi) - ako je
+    proslijedjena, funkcija u STATUS log zapise TOCNO koje HWND-ove i
+    rezultate je dobila, za dijagnostiku ako naslovna traka ostane bijela."""
+    def _log(tekst):
+        if ispisi:
+            try:
+                ispisi(tekst)
+            except Exception:
+                pass
+
+    if not JE_WINDOWS:
+        _log("🔍 [tamna traka] Preskočeno - nije Windows.")
+        return
+    try:
+        import ctypes
+        import ctypes.wintypes
+        GetParent = ctypes.windll.user32.GetParent
+        GetParent.restype = ctypes.wintypes.HWND
+        GetParent.argtypes = [ctypes.wintypes.HWND]
+
+        DwmSetWindowAttribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        DwmSetWindowAttribute.restype = ctypes.wintypes.LONG
+        DwmSetWindowAttribute.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.DWORD,
+                                          ctypes.c_void_p, ctypes.wintypes.DWORD]
+
+        SetWindowPos = ctypes.windll.user32.SetWindowPos
+        SetWindowPos.restype = ctypes.wintypes.BOOL
+        SetWindowPos.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.HWND, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.wintypes.UINT]
+
+        # Plain Python int (ne rucno omotan u HWND()) - ctypes ga sam
+        # pretvori u HWND kad poziva funkciju, po deklariranim argtypes.
+        tk_hwnd = root.winfo_id()
+        kandidati = []
+        try:
+            # ctypes SAM "raspakira" proste tipove (HWND je c_void_p) u obican
+            # Python int/None kad ih funkcija VRATI (restype) - to je drugacije
+            # od slanja argumenata, gdje se rucno pretvaraju. Znaci "roditelj"
+            # je vec obican int (ili None), ne treba (i NE SMIJE) .value.
+            roditelj = GetParent(tk_hwnd)
+            kandidati.append(("GetParent(winfo_id)", roditelj or 0))
+        except Exception as e:
+            _log(f"🔍 [tamna traka] GetParent nije uspio: {e}")
+        kandidati.append(("winfo_id direktno", tk_hwnd))
+
+        _log(f"🔍 [tamna traka] winfo_id={tk_hwnd}, kandidati={kandidati}")
+
+        for naziv, hwnd in kandidati:
+            if not hwnd:
+                _log(f"🔍 [tamna traka] {naziv}: HWND je 0/None, preskačem.")
+                continue
+            uspjelo_tamno = False
+            for atribut in (20, 19):
+                vrijednost = ctypes.c_int(1)
+                rezultat = DwmSetWindowAttribute(
+                    hwnd, atribut, ctypes.byref(vrijednost), ctypes.sizeof(vrijednost)
+                )
+                _log(f"🔍 [tamna traka] {naziv} (hwnd={hwnd}), atribut={atribut} → rezultat={rezultat}"
+                     f"{' (USPJEH)' if rezultat == 0 else ''}")
+                if rezultat == 0:
+                    uspjelo_tamno = True
+                    break
+            if not uspjelo_tamno:
+                continue
+
+            # Windows 11 22H2+ - pokusaj JOS i tocnu boju (ne samo "tamno")
+            # DWMWA_CAPTION_COLOR=35, DWMWA_TEXT_COLOR=36, DWMWA_BORDER_COLOR=34.
+            # Ovo je NEOVISNO o gornjem - ako ne uspije (stariji Windows), i
+            # dalje ostaje generican tamni stil od gore, samo bez tocne boje.
+            try:
+                caption = ctypes.wintypes.DWORD(_boja_u_colorref(BG))
+                r1 = DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+                tekst_boja = ctypes.wintypes.DWORD(_boja_u_colorref(TEXT))
+                r2 = DwmSetWindowAttribute(hwnd, 36, ctypes.byref(tekst_boja), ctypes.sizeof(tekst_boja))
+                rub = ctypes.wintypes.DWORD(_boja_u_colorref(BORDER))
+                r3 = DwmSetWindowAttribute(hwnd, 34, ctypes.byref(rub), ctypes.sizeof(rub))
+                _log(f"🔍 [tamna traka] boja naslovne trake: caption={r1}, tekst={r2}, rub={r3}")
+            except Exception as e:
+                _log(f"🔍 [tamna traka] postavljanje tocne boje nije uspjelo: {e}")
+
+            try:
+                SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x27)
+            except Exception as e:
+                _log(f"🔍 [tamna traka] SetWindowPos nije uspio: {e}")
+            return
+        _log("🔍 [tamna traka] Nijedan pokušaj nije uspio (svi rezultati ≠ 0).")
+    except Exception as e:
+        _log(f"🔍 [tamna traka] Neočekivana greška: {type(e).__name__}: {e}")
 
 
 def _je_upisiv(folder):
@@ -305,10 +447,20 @@ def pokreni_yt_dlp(argumenti, **kwargs):
 
 
 def pokreni_yt_dlp_popen(argumenti, **kwargs):
+    # PYTHONUNBUFFERED=1: yt-dlp.exe je i sam (upakiran) Python program - kad
+    # mu se stdout preusmjeri u cijev (kao ovdje, da mi citamo progress), C
+    # runtime po defaultu prelazi s "red-po-red" na "blok" bafiranje (poznato
+    # ponasanje kad izlaz nije pravi terminal) - izgleda kao da je skidanje
+    # "zaledeno" jer se hrpa redaka isprazni odjednom (cesto tek na kraju)
+    # umjesto postupno. Ova varijabla okoline prisiljava yt-dlp da ispisuje
+    # red-po-red ODMAH, pa se postotak/brzina azuriraju uzivo, ne skokovito.
+    okolina = os.environ.copy()
+    okolina["PYTHONUNBUFFERED"] = "1"
     return subprocess.Popen(
         [yt_dlp_exe_putanja(), *argumenti],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
+        env=okolina,
         **_SUBPROCESS_FLAGS, **kwargs
     )
 
@@ -928,7 +1080,7 @@ PROMJENE = {
             "staying at their original position from the source video.",
         ],
     },
-    "1.4": {
+    "1.5": {
         "hr": [
             "Dodano: sad možeš povući (drag) izravno po traci u playeru da "
             "označiš isječak, umjesto da moraš koristiti samo 'Postavi OD/DO' "
@@ -938,6 +1090,8 @@ PROMJENE = {
             "nove selekcije, ili povuci sredinu da pomjeriš cijeli isječak.",
             "Dodano: red u listi isječaka se sad vizualno istakne (plavi okvir) "
             "kad klikneš na njegovo Od/Do polje.",
+            "Popravljeno: ikona aplikacije (na Desktopu, u Exploreru i na "
+            "instalateru) bila je zamućena — sad je oštra na svim veličinama.",
         ],
         "en": [
             "Added: you can now drag directly on the player's timeline to mark "
@@ -948,6 +1102,47 @@ PROMJENE = {
             "selection, or drag the middle to move the whole clip.",
             "Added: a clip's row in the list is now visually highlighted (blue "
             "border) when you click its Start/End field.",
+            "Fixed: the app icon (on the Desktop, in Explorer, and on the "
+            "installer) was blurry — it's now sharp at every size.",
+        ],
+    },
+    "1.6": {
+        "hr": [
+            "Popravljeno: prazan prostor ispod playera — sad ispunjava sav "
+            "raspoloživi prostor, od vrha do dna.",
+            "Dodano: potpuno prilagođena naslovna traka i traka izbornika u "
+            "bojama aplikacije (tamna tema), umjesto Windows-ovog zadanog "
+            "bijelog stila.",
+            "Uklonjeno dugme 'Provjeri ažuriranja' iz zaglavlja — ista opcija "
+            "postoji u meniju Alati.",
+            "Popravljeno: povremeni bljesak praznog, bijelog prozora playera "
+            "prilikom pokretanja.",
+            "Dodano: trajni dnevnik pokretanja (mister_muscle_pokretanje.txt) "
+            "za lakše rješavanje rijetkih problema s pokretanjem aplikacije.",
+        ],
+        "en": [
+            "Fixed: empty space below the player — it now fills all "
+            "available space, from top to bottom.",
+            "Added: a fully custom title bar and menu bar in the app's own "
+            "colors (dark theme), instead of Windows' default white style.",
+            "Removed the 'Check for updates' button from the header — the "
+            "same option exists in the Tools menu.",
+            "Fixed: an occasional flash of an empty, white player window "
+            "during startup.",
+            "Added: a persistent startup log (mister_muscle_pokretanje.txt) "
+            "to help troubleshoot rare app-launch issues.",
+        ],
+    },
+    "1.7": {
+        "hr": [
+            "Popravljeno: prikaz postotka i brzine skidanja znao je izgledati "
+            "'zaleđeno' i skočiti odjednom na kraju — sad se ažurira uživo, "
+            "red po red, tijekom cijelog skidanja.",
+        ],
+        "en": [
+            "Fixed: the download percentage/speed display could look "
+            "'frozen' and jump all at once at the end — it now updates "
+            "live, line by line, throughout the whole download.",
         ],
     },
 }
@@ -2024,8 +2219,10 @@ def pokreni_webview_proces(preview_url, queue_sanjac):
 
 class App:
     def __init__(self, root):
+        _log_pokretanja("App.__init__ ušao")
         self.root = root
         self.cfg = ucitaj_config()
+        _log_pokretanja("config učitan")
         self.jezik = self.cfg.get("jezik", "en")
         if self.jezik not in PRIJEVODI:
             self.jezik = "en"
@@ -2104,8 +2301,13 @@ class App:
         self.var_metapodaci = tk.BooleanVar(value=bool(self.cfg["metapodaci"]))
 
         self._pripremi_stilove()
+        self._prilagodjena_traka_ok = self._izgradi_prilagodjenu_naslovnu_traku()
+        if not self._prilagodjena_traka_ok:
+            # Fallback ako prilagodjena traka nije uspjela (nije Windows, ili
+            # je nesto puklo) - barem DWM "tamni" stil na obicnom OS okviru.
+            _omoguci_tamnu_naslovnu_traku(self.root)
+            self.root.after(300, lambda: _omoguci_tamnu_naslovnu_traku(self.root, ispisi=self.ispisi))
         self._izgradi_meni()
-        self._izgradi_zaglavlje()
         self._izgradi_glavni_dio()
         self._izgradi_donju_traku()
         self._izgradi_statusnu_traku()
@@ -2124,9 +2326,12 @@ class App:
         if PYWEBVIEW_DOSTUPAN and JE_WINDOWS:
             self.root.after(800, lambda: self._provjeri_webview2_pri_pokretanju(tih=True))
         if PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
+            _log_pokretanja("pozivam _pripremi_ugradjeni_webview()")
             self._pripremi_ugradjeni_webview()
+            _log_pokretanja("_pripremi_ugradjeni_webview() gotovo (samo registracija, ugradnja je async)")
         self.root.after(400, self._provjeri_i_prikazi_novosti)
         self.provjeri_queue()
+        _log_pokretanja("App.__init__ završio")
 
     # ------------------------------------------------------------------ UI ---
     def t(self, kljuc):
@@ -2176,51 +2381,296 @@ class App:
         self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
         self.root.option_add("*TCombobox*Listbox.selectForeground", "white")
 
+    def _izgradi_prilagodjenu_naslovnu_traku(self):
+        """Potpuno prilagođena naslovna traka umjesto Windows-ove zadane -
+        uklanja STVARNI OS okvir prozora (overrideredirect), pa se sve što OS
+        inače radi sam (pomjeranje, minimize/maximize/close dugmad, promjena
+        veličine, taskbar ikonica) mora RUČNO implementirati ovdje. Vraća
+        True ako je uspjelo, False ako ne (npr. nije Windows) - pozivatelj
+        tad koristi obični OS okvir (samo s DWM tamnim stilom) kao fallback.
+
+        SVE JE U JEDNOM TRY/EXCEPT - ako BILO ŠTA ovdje pukne, odmah se vrati
+        na normalan OS okvir umjesto da korisnik ostane zaglavljen s
+        prozorom koji se ne može ni pomjeriti ni zatvoriti.
+
+        POZNATA OGRANIČENJA (svjesna odluka, nisu bugovi):
+        - Gubi se Windows "Snap" (automatsko poravnanje na pola/četvrtinu
+          ekrana povlačenjem uz rub) - to je OS funkcija vezana uz pravi
+          prozorski okvir koji ovdje namjerno uklanjamo.
+        - Promjena veličine je moguća SAMO preko malog "grip" znaka u donjem
+          desnom kutu, ne povlačenjem bilo kojeg ruba.
+        - Samo na Windowsu - drugi OS-ovi zadržavaju normalan okvir."""
+        if not JE_WINDOWS:
+            return False
+        try:
+            self.root.overrideredirect(True)
+            self._omoguci_taskbar_ikonu()
+
+            self._maksimiziran = False
+            self._geometrija_prije_max = None
+
+            traka = tk.Frame(self.root, bg=CARD, height=34, cursor="fleur")
+            traka.pack(fill="x", side="top")
+            traka.pack_propagate(False)
+            staklena_linija(traka, posvijetli(CARD, 0.16)).pack(fill="x", side="bottom")
+
+            lijevo = tk.Frame(traka, bg=CARD, cursor="fleur")
+            lijevo.pack(side="left", fill="both", expand=True)
+            tk.Label(lijevo, text="💪", font=("Segoe UI Emoji", 11), bg=CARD, fg=TEXT,
+                    cursor="fleur").pack(side="left", padx=(12, 6))
+            tk.Label(lijevo, text=self.t("naslov_prozora"), font=("Segoe UI", 9), bg=CARD, fg=SUBTEXT,
+                    cursor="fleur").pack(side="left")
+
+            desno = tk.Frame(traka, bg=CARD)
+            desno.pack(side="right", fill="y")
+
+            self._btn_max_naslov = self._dugme_naslovne_trake(desno, "🗖", self._toggle_maksimiziraj)
+            btn_min = self._dugme_naslovne_trake(desno, "🗕", self._minimiziraj)
+            btn_close = self._dugme_naslovne_trake(desno, "✕", self.zatvori,
+                                                   hover_bg="#e81123", hover_fg="white")
+            btn_close.pack(side="right", fill="y")
+            self._btn_max_naslov.pack(side="right", fill="y")
+            btn_min.pack(side="right", fill="y")
+
+            for w in (traka, lijevo):
+                w.bind("<ButtonPress-1>", self._zapocni_pomjeranje_prozora)
+                w.bind("<B1-Motion>", self._pomjeri_prozor)
+                w.bind("<Double-Button-1>", lambda e: self._toggle_maksimiziraj())
+
+            # mali "grip" znak u donjem desnom kutu - jedini nacin za rucnu
+            # promjenu velicine kad nema pravog OS okvira s rubovima za to
+            grip = tk.Label(self.root, text="◢", font=("Segoe UI", 9), bg=BG, fg=BORDER, cursor="size_nw_se")
+            grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-2)
+            grip.bind("<ButtonPress-1>", self._zapocni_promjenu_velicine)
+            grip.bind("<B1-Motion>", self._izvrsi_promjenu_velicine)
+            self._grip_naslovne_trake = grip
+            return True
+        except Exception:
+            try:
+                self.root.overrideredirect(False)
+            except Exception:
+                pass
+            return False
+
+    def _dugme_naslovne_trake(self, parent, tekst, komanda, hover_bg=None, hover_fg=None):
+        hover_bg = hover_bg or PAUSE_BG
+        hover_fg = hover_fg or TEXT
+        lbl = tk.Label(parent, text=tekst, font=("Segoe UI", 10), bg=CARD, fg=SUBTEXT, width=5, cursor="arrow")
+        lbl.bind("<Button-1>", lambda e: komanda())
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=hover_bg, fg=hover_fg))
+        lbl.bind("<Leave>", lambda e: lbl.config(bg=CARD, fg=SUBTEXT))
+        return lbl
+
+    def _zapocni_pomjeranje_prozora(self, event):
+        if self._maksimiziran:
+            return
+        self._drag_x = event.x_root - self.root.winfo_x()
+        self._drag_y = event.y_root - self.root.winfo_y()
+
+    def _pomjeri_prozor(self, event):
+        if self._maksimiziran:
+            return
+        self.root.geometry(f"+{event.x_root - self._drag_x}+{event.y_root - self._drag_y}")
+
+    def _minimiziraj(self):
+        # overrideredirect prozori se na Windowsima ne minimiziraju pouzdano
+        # sami preko iconify() (znaju "nestati" bez traga u taskbaru) -
+        # privremeno se vrati na normalan OS okvir, minimizira, pa se pri
+        # restauraciji opet ukloni okvir.
+        try:
+            self.root.overrideredirect(False)
+        except Exception:
+            pass
+        self.root.iconify()
+        self.root.bind("<Map>", self._na_restauraciju_prozora)
+
+    def _na_restauraciju_prozora(self, event=None):
+        if self.root.state() != "normal":
+            return
+        try:
+            self.root.unbind("<Map>")
+        except Exception:
+            pass
+        try:
+            self.root.overrideredirect(True)
+        except Exception:
+            pass
+
+    def _toggle_maksimiziraj(self):
+        if self._maksimiziran:
+            if self._geometrija_prije_max:
+                self.root.geometry(self._geometrija_prije_max)
+            self._maksimiziran = False
+            self._btn_max_naslov.config(text="🗖")
+        else:
+            self._geometrija_prije_max = self.root.geometry()
+            x, y, sirina, visina = _radni_prostor_ekrana(self.root)
+            self.root.geometry(f"{sirina}x{visina}+{x}+{y}")
+            self._maksimiziran = True
+            self._btn_max_naslov.config(text="🗗")
+
+    def _zapocni_promjenu_velicine(self, event):
+        self._resize_start_x = event.x_root
+        self._resize_start_y = event.y_root
+        self._resize_start_w = self.root.winfo_width()
+        self._resize_start_h = self.root.winfo_height()
+
+    def _izvrsi_promjenu_velicine(self, event):
+        if self._maksimiziran:
+            return
+        nova_sirina = max(360, self._resize_start_w + (event.x_root - self._resize_start_x))
+        nova_visina = max(480, self._resize_start_h + (event.y_root - self._resize_start_y))
+        self.root.geometry(f"{nova_sirina}x{nova_visina}")
+
+    def _omoguci_taskbar_ikonu(self):
+        """overrideredirect(True) zna sakriti app iz taskbara (Windows takve
+        prozore po defaultu tretira kao "alatne", ne kao prave aplikacije) -
+        eksplicitno postavimo WS_EX_APPWINDOW stil da se ikonica ipak
+        pojavi u taskbaru kao i inače."""
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_APPWINDOW = 0x00040000
+            WS_EX_TOOLWINDOW = 0x00000080
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            stil = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            stil = (stil | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, stil)
+            # ponovno prikazi prozor da Windows odmah primijeni novi stil na taskbar
+            self.root.withdraw()
+            self.root.after(10, self.root.deiconify)
+        except Exception:
+            pass
+
     def _izgradi_meni(self):
-        menubar = tk.Menu(self.root, bg=CARD, fg=TEXT, activebackground=ACCENT, activeforeground=TEXT, relief="flat")
+        """Vlastita, ručno nacrtana traka izbornika (umjesto Windows-ovog
+        ugrađenog Menu widgeta preko root.config(menu=...)) - Windows NE
+        dozvoljava mijenjanje boja svog klasičnog izbornika (za razliku od
+        naslovne trake, koju smo već zatamnili preko DWM API-ja), pa je ovo
+        jedini pouzdan način da traka izbornika bude u bojama app-a umjesto
+        zadano bijela."""
+        self._otvoreni_dropdown = None
 
-        m_alati = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT, activebackground=ACCENT, activeforeground=TEXT)
-        m_alati.add_command(label=self.t("meni_provjeri_azuriranja"), command=self.provjeri_azuriranja)
-        m_alati.add_separator()
-        m_alati.add_command(label=self.t("meni_azuriraj_ytdlp"), command=lambda: self.provjeri_azuriranja(samo="yt-dlp"))
-        m_alati.add_command(label=self.t("meni_reinstaliraj_ffmpeg"), command=lambda: self.provjeri_azuriranja(samo="ffmpeg"))
+        traka = tk.Frame(self.root, bg=CARD)
+        traka.pack(fill="x", side="top")
+        staklena_linija(traka, posvijetli(CARD, 0.14)).pack(fill="x", side="bottom")
+
+        stavke_alati = [
+            ("cmd", self.t("meni_provjeri_azuriranja"), self.provjeri_azuriranja),
+            ("sep",),
+            ("cmd", self.t("meni_azuriraj_ytdlp"), lambda: self.provjeri_azuriranja(samo="yt-dlp")),
+            ("cmd", self.t("meni_reinstaliraj_ffmpeg"), lambda: self.provjeri_azuriranja(samo="ffmpeg")),
+        ]
         if JE_WINDOWS:
-            m_alati.add_command(label=self.t("meni_webview2"), command=self._provjeri_webview2_pri_pokretanju)
-        m_alati.add_separator()
-        m_alati.add_command(label=self.t("meni_folder_alati"), command=lambda: self._otvori_putanju(_alati_folder()))
-        m_alati.add_command(label=self.t("meni_config"), command=lambda: self._otvori_putanju(os.path.dirname(CONFIG_PATH)))
-        m_alati.add_separator()
-        m_alati.add_command(label=self.t("meni_reset_prozor"), command=self.resetiraj_velicinu_prozora)
-        menubar.add_cascade(label=self.t("meni_alati"), menu=m_alati)
+            stavke_alati.append(("cmd", self.t("meni_webview2"), self._provjeri_webview2_pri_pokretanju))
+        stavke_alati += [
+            ("sep",),
+            ("cmd", self.t("meni_folder_alati"), lambda: self._otvori_putanju(_alati_folder())),
+            ("cmd", self.t("meni_config"), lambda: self._otvori_putanju(os.path.dirname(CONFIG_PATH))),
+            ("sep",),
+            ("cmd", self.t("meni_reset_prozor"), self.resetiraj_velicinu_prozora),
+        ]
+        self._dugme_menija(traka, self.t("meni_alati"), stavke_alati)
 
-        m_jezik = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT, activebackground=ACCENT, activeforeground=TEXT)
         self.var_jezik_meni = tk.StringVar(value=self.jezik)
-        m_jezik.add_radiobutton(label=self.t("meni_jezik_hr"), value="hr", variable=self.var_jezik_meni,
-                                command=lambda: self._postavi_jezik("hr"))
-        m_jezik.add_radiobutton(label=self.t("meni_jezik_en"), value="en", variable=self.var_jezik_meni,
-                                command=lambda: self._postavi_jezik("en"))
-        menubar.add_cascade(label=self.t("meni_jezik"), menu=m_jezik)
+        stavke_jezik = [
+            ("radio", self.t("meni_jezik_hr"), "hr", self.var_jezik_meni, lambda: self._postavi_jezik("hr")),
+            ("radio", self.t("meni_jezik_en"), "en", self.var_jezik_meni, lambda: self._postavi_jezik("en")),
+        ]
+        self._dugme_menija(traka, self.t("meni_jezik"), stavke_jezik)
 
-        m_pomoc = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT, activebackground=ACCENT, activeforeground=TEXT)
-        m_pomoc.add_command(label=self.t("meni_o_aplikaciji"), command=self.o_aplikaciji)
-        menubar.add_cascade(label=self.t("meni_pomoc"), menu=m_pomoc)
+        stavke_pomoc = [("cmd", self.t("meni_o_aplikaciji"), self.o_aplikaciji)]
+        self._dugme_menija(traka, self.t("meni_pomoc"), stavke_pomoc)
 
-        self.root.config(menu=menubar)
+    def _dugme_menija(self, traka, naslov, stavke):
+        """Jedan klikabilan naslov u traci izbornika (npr. 'Alati') - klik
+        otvara/zatvara padajući izbornik ispod njega."""
+        lbl = tk.Label(traka, text=naslov, font=("Segoe UI", 9), bg=CARD, fg=TEXT,
+                       padx=12, pady=7, cursor="hand2")
+        lbl.pack(side="left")
+        lbl.bind("<Button-1>", lambda e: self._toggle_dropdown(lbl, stavke))
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=PAUSE_BG))
+        lbl.bind("<Leave>", lambda e: lbl.config(
+            bg=CARD if not (self._otvoreni_dropdown and self._otvoreni_dropdown[0] is lbl) else PAUSE_BG))
+        return lbl
 
-    def _izgradi_zaglavlje(self):
-        traka = tk.Frame(self.root, bg=BG)
-        traka.pack(fill="x", padx=22, pady=(16, 4))
+    def _toggle_dropdown(self, dugme, stavke):
+        if self._otvoreni_dropdown and self._otvoreni_dropdown[0] is dugme:
+            self._zatvori_dropdown()
+            return
+        self._zatvori_dropdown()
 
-        lijevo = tk.Frame(traka, bg=BG)
-        lijevo.pack(side="left")
-        tk.Label(lijevo, text=self.t("naslov_app"), font=(FONT_NASLOV, 20),
-                 bg=BG, fg=TEXT).pack(anchor="w")
-        tk.Label(lijevo, text=self.t("podnaslov_app"),
-                 font=("Segoe UI", 9), bg=BG, fg=SUBTEXT).pack(anchor="w", pady=(2, 0))
+        x = dugme.winfo_rootx()
+        y = dugme.winfo_rooty() + dugme.winfo_height()
 
-        self.btn_update = self._napravi_dugme(traka, self.t("gumb_azuriranja"), self.provjeri_azuriranja,
-                                              bg=PAUSE_BG, hover=PAUSE_HOVER, font_size=9, padx=14, pady=8)
-        self.btn_update.pack(side="right", pady=(6, 0))
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.configure(bg=BORDER)
+        try:
+            top.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        okvir = tk.Frame(top, bg=CARD)
+        okvir.pack(padx=1, pady=1)
+
+        for stavka in stavke:
+            if stavka[0] == "sep":
+                tk.Frame(okvir, bg=BORDER, height=1).pack(fill="x", padx=6, pady=4)
+            elif stavka[0] == "cmd":
+                _, tekst, callback = stavka
+                self._stavka_dropdowna(okvir, tekst, callback)
+            elif stavka[0] == "radio":
+                _, tekst, vrijednost, varijabla, callback = stavka
+                oznaka = ("●  " if varijabla.get() == vrijednost else "     ") + tekst
+                self._stavka_dropdowna(okvir, oznaka, callback)
+
+        top.update_idletasks()
+        top.geometry(f"+{x}+{y}")
+        dugme.config(bg=PAUSE_BG)
+        self._otvoreni_dropdown = (dugme, top)
+
+        top.bind("<FocusOut>", lambda e: self._zatvori_dropdown())
+        top.focus_set()
+        self.root.bind("<Button-1>", self._klik_izvan_dropdowna, add="+")
+
+    def _stavka_dropdowna(self, okvir, tekst, callback):
+        lbl = tk.Label(okvir, text=tekst, font=("Segoe UI", 9), bg=CARD, fg=TEXT,
+                       anchor="w", padx=14, pady=7, cursor="hand2")
+        lbl.pack(fill="x")
+
+        def pokreni(e=None):
+            self._zatvori_dropdown()
+            callback()
+
+        lbl.bind("<Button-1>", pokreni)
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=ACCENT))
+        lbl.bind("<Leave>", lambda e: lbl.config(bg=CARD))
+
+    def _klik_izvan_dropdowna(self, event):
+        if not self._otvoreni_dropdown:
+            return
+        dugme, top = self._otvoreni_dropdown
+        if event.widget is dugme:
+            return  # toggle logika u _toggle_dropdown to vec hendla
+        self._zatvori_dropdown()
+
+    def _zatvori_dropdown(self):
+        if self._otvoreni_dropdown:
+            dugme, top = self._otvoreni_dropdown
+            try:
+                dugme.config(bg=CARD)
+            except Exception:
+                pass
+            try:
+                top.destroy()
+            except Exception:
+                pass
+            self._otvoreni_dropdown = None
+        try:
+            self.root.unbind("<Button-1>")
+        except Exception:
+            pass
 
     # Ispod ove sirine prozora (u pikselima) lijevi i desni panel idu jedan ispod
     # drugog umjesto jedan pored drugog - da app moze biti i malen/uzak prozor,
@@ -2229,11 +2679,23 @@ class App:
     SIRINA_LIJEVOG_STUPCA = 460  # koristi se SAMO u sirokom (dvostupcnom) rasporedu
 
     def _izgradi_glavni_dio(self):
+        # Naslov/podnaslov app-a se gradi UNUTAR lijeve kolone (ispod), ne kao
+        # zaseban red preko cijele sirine kao ranije - tako desna kolona
+        # (player) krene od SAMOG vrha umjesto ispod tog naslova, i iskoristi
+        # taj prostor. "Provjeri azuriranja" dugme je uklonjeno (postoji u
+        # meniju Alati).
         self.glavni = tk.Frame(self.root, bg=BG)
         self.glavni.pack(fill="both", expand=True, padx=22, pady=(8, 0))
 
         self.lijevo = tk.Frame(self.glavni, bg=BG)
         self.desno = tk.Frame(self.glavni, bg=BG)
+
+        naslov_red = tk.Frame(self.lijevo, bg=BG)
+        naslov_red.pack(fill="x", pady=(6, 12))
+        tk.Label(naslov_red, text=self.t("naslov_app"), font=(FONT_NASLOV, 20),
+                 bg=BG, fg=TEXT).pack(anchor="w")
+        tk.Label(naslov_red, text=self.t("podnaslov_app"),
+                 font=("Segoe UI", 9), bg=BG, fg=SUBTEXT).pack(anchor="w", pady=(2, 0))
 
         self._kartica_linkovi(self.lijevo)
         self._kartica_opcije(self.lijevo)
@@ -2243,6 +2705,45 @@ class App:
         self._raspored_je_uzak = None  # None = jos nepoznato, postavlja se u nastavku
         self._primijeni_raspored(uzak=False)
         self.root.bind("<Configure>", self._na_promjenu_velicine_prozora)
+        # Sigurnosni ponovni pokusaj malo nakon starta - na nekim sustavima/
+        # velicinama prozora prvi grid raspored (prije nego je prozor STVARNO
+        # realiziran i nacrtan na ekranu) ne primijeni tezine (weight) do
+        # kraja ispravno, pa desni panel ostane kraci nego bi trebao (prazan
+        # prostor ispod njega). Ponovno pozivanje nakon kratke odgode - kad
+        # prozor sigurno vec postoji - to popravi.
+        # Sigurnosno PONAVLJANJE (ne samo jednom) u prvih par sekundi nakon
+        # starta - potvrdjeno dijagnostikom da desni panel zna "zaostati" za
+        # stvarnom visinom glavnog okvira kad se NAKNADNO (asinkrono, nakon
+        # sto pozadinska nit provjeri alate) promijeni visina donje statusne
+        # trake - to promijeni koliko prostora glavni okvir uopce dobije, a
+        # grid to ne "uhvati" pouzdano bez eksplicitnog ponovnog poziva.
+        self._raspored_reapply_pokusaji = 0
+        self._periodicna_reprovjera_rasporeda()
+        self.root.after(600, self._dijagnostika_rasporeda)
+
+    def _periodicna_reprovjera_rasporeda(self):
+        self._primijeni_raspored(self._raspored_je_uzak)
+        self._raspored_reapply_pokusaji += 1
+        if self._raspored_reapply_pokusaji < 10:  # ~3s ukupno (10 x 300ms)
+            self.root.after(300, self._periodicna_reprovjera_rasporeda)
+
+    def _dijagnostika_rasporeda(self):
+        """Ispisuje u STATUS log stvarnu (izmjerenu) velicinu svakog panela u
+        lancu desne kolone - privremena dijagnostika da se vidi TOCNO gdje
+        'nestaje' prostor kad desni panel ne ispuni prozor do dna."""
+        try:
+            self.glavni.update_idletasks()
+            redovi = [
+                ("glavni", self.glavni),
+                ("desno", self.desno),
+                ("desni_panel", self.desni_panel),
+                ("desni_sadrzaj", self.desni_sadrzaj),
+            ]
+            dijelovi = [f"{naziv}={w.winfo_width()}x{w.winfo_height()}" for naziv, w in redovi]
+            self.ispisi(f"🔍 [raspored] prozor={self.root.winfo_width()}x{self.root.winfo_height()}  "
+                       f"{'  '.join(dijelovi)}")
+        except Exception as e:
+            self.ispisi(f"🔍 [raspored] greška pri mjerenju: {e}")
 
     def _na_promjenu_velicine_prozora(self, event):
         if event.widget is not self.root:
@@ -2271,7 +2772,7 @@ class App:
             self.glavni.columnconfigure(0, minsize=self.SIRINA_LIJEVOG_STUPCA, weight=0)
             self.glavni.columnconfigure(1, weight=1)
             self.glavni.rowconfigure(0, weight=1)
-            self.glavni.rowconfigure(1, weight=0)
+            self.glavni.rowconfigure(1, weight=0, minsize=0)
             self.lijevo.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
             self.desno.grid(row=0, column=1, sticky="nsew")
 
@@ -2547,6 +3048,17 @@ class App:
         if sirina > 1 and visina > 1:
             try:
                 win32gui.MoveWindow(self._webview_hwnd, 0, 0, sirina, visina, True)
+                # WebView2 (Edge) crta preko DirectComposition-a i zna ostati
+                # nacrtan NA STAROJ velicini kratko nakon sto se sam Windows
+                # prozor promijeni - isti "gubitak kompozicije" problem kao pri
+                # prvoj ugradnji (vidi _cekaj_pa_ugradi_webview). Bez ovog
+                # "kick-a" nakon svakog resiza, prazan/taman prostor ostaje
+                # ispod stvarnog sadrzaja dok se WebView2 sam ne odluci
+                # ponovno nacrtati (npr. pri sljedecem repaintu).
+                win32gui.SetWindowPos(
+                    self._webview_hwnd, None, 0, 0, 0, 0,
+                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED
+                )
             except Exception:
                 pass
 
@@ -2565,13 +3077,18 @@ class App:
             api = PlayerAPI(self.queue_sanjac)
             self._player_api = api
             self._webview_window = webview.create_window(
-                WEBVIEW_NASLOV_PROZORA, url="about:blank", js_api=api, width=100, height=100
+                WEBVIEW_NASLOV_PROZORA, url="about:blank", js_api=api, width=100, height=100,
+                hidden=True,  # BITNO: skriven dok se stvarno ne ugradi (vidi _cekaj_pa_ugradi_webview)
+                              # - bez ovoga, ako ugradnja ikad zakasni/omane, korisnik na tren
+                              # (ili trajno, ako ugradnja stvarno ne uspije) vidi mali goli,
+                              # bijeli Windows prozor kako "lebdi" sam za sebe umjesto app-a.
             )
             threading.Thread(target=self._cekaj_pa_ugradi_webview, daemon=True).start()
         except Exception as err:
             self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_embed_prep_failed").format(em)))
 
     def _cekaj_pa_ugradi_webview(self):
+        _log_pokretanja("_cekaj_pa_ugradi_webview() ušao (nova nit) - tražim webview prozor po imenu")
         hwnd = None
         for _ in range(150):  # do ~15s čekanja da OS stvarno stvori prozor
             hwnd = win32gui.FindWindow(None, WEBVIEW_NASLOV_PROZORA)
@@ -2579,8 +3096,10 @@ class App:
                 break
             time.sleep(0.1)
         if not hwnd:
+            _log_pokretanja("_cekaj_pa_ugradi_webview() NIJE NAŠAO prozor nakon ~15s (odustao)")
             self.root.after(0, self.ispisi, self.t("msg_embed_not_found"))
             return
+        _log_pokretanja(f"_cekaj_pa_ugradi_webview() našao hwnd={hwnd} - ugrađujem")
         try:
             parent_hwnd = self.player_embed_frame.winfo_id()
             stil = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
@@ -2589,6 +3108,13 @@ class App:
             stil |= win32con.WS_CHILD
             win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, stil)
             win32gui.SetParent(hwnd, parent_hwnd)
+            # Prozor je stvoren SKRIVEN (vidi _pripremi_ugradjeni_webview) bas
+            # da ne bi ovaj kratki trenutak (dok se gore mijenja stil i
+            # reparenta) bio vidljiv kao goli, bijeli Windows prozor. Tek SAD,
+            # kad je vec pravi WS_CHILD unutar naseg embed-frame-a, ga
+            # pokazujemo - sad ce se pojaviti UNUTAR app-a, ne kao zaseban
+            # prozor.
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
             self._webview_hwnd = hwnd
             self.root.after(0, self._namjesti_velicinu_playera)
             # WebView2 (Edge) crta preko DirectComposition-a i zna "izgubiti"
@@ -2630,8 +3156,8 @@ class App:
         traka.pack(fill="x", padx=22, pady=(14, 6))
 
         self.btn_download = self._napravi_dugme(traka, self.t("skini_video"), self.pokreni_preuzimanje,
-                                                bg=ACCENT, hover=ACCENT_HOVER, font_size=12, height=2)
-        self.btn_download.pack(side="left", fill="x", expand=True)
+                                                bg=ACCENT, hover=ACCENT_HOVER, font_size=12, height=2, width=22)
+        self.btn_download.pack(side="left")
 
         self.btn_pause = self._napravi_dugme(traka, self.t("gumb_pauziraj"), self.toggle_pauza, bg=PAUSE_BG,
                                              hover=PAUSE_HOVER, font_size=10, height=2, width=12)
@@ -2693,13 +3219,18 @@ class App:
             "metapodaci": self.var_metapodaci.get(),
         })
         try:
-            # NE spremaj velicinu dok je prozor maksimiziran ("zoomed") - u tom
-            # stanju geometry() vraca velicinu CIJELOG EKRANA, a ne "normalnu"
+            # NE spremaj velicinu dok je prozor maksimiziran - u tom stanju
+            # geometry() vraca velicinu RADNOG PROSTORA EKRANA, a ne "normalnu"
             # velicinu prozora prije maksimiziranja. Da smo je ovdje spremili,
-            # svako sljedece pokretanje app bi bio ogroman prozor koji izgleda
-            # kao da NIJE maksimiziran (jer tehnicki i nije) ali se svejedno ne
-            # da smanjiti klikom - upravo problem koji je korisnik prijavio.
-            if self.root.state() != "zoomed":
+            # svako sljedece pokretanje app bi bio ogroman prozor. Provjeravamo
+            # I self._maksimiziran (nasa prilagodjena naslovna traka, gdje
+            # root.state() ostaje "normal" jer se maksimiziranje radi rucno
+            # preko geometry(), ne preko root.state('zoomed')) I sam
+            # root.state() (obican OS okvir, ako prilagodjena traka nije
+            # aktivna na ovom sustavu).
+            if getattr(self, "_maksimiziran", False):
+                pass
+            elif self.root.state() != "zoomed":
                 self.cfg["prozor"] = self.root.geometry().split("+")[0]
         except Exception:
             pass
@@ -2733,6 +3264,12 @@ class App:
             self.root.state("normal")
         except Exception:
             pass
+        if getattr(self, "_maksimiziran", False):
+            self._maksimiziran = False
+            try:
+                self._btn_max_naslov.config(text="🗖")
+            except Exception:
+                pass
         self.root.geometry("1240x820")
         self._centriraj_prozor()
         self.cfg["prozor"] = "1240x820"
@@ -3069,7 +3606,7 @@ class App:
         if self.aktivno_preuzimanje:
             messagebox.showwarning(self.t("update_in_progress_naslov"), self.t("update_in_progress_text"))
             return
-        self.btn_update.config(state="disabled", text=self.t("provjeravam"))
+        self.ispisi(self.t("msg_updating_ytdlp") if samo != "ffmpeg" else "🔄 " + self.t("meni_reinstaliraj_ffmpeg"))
         threading.Thread(target=self._tijek_azuriranja, args=(samo,), daemon=True).start()
 
     def _tijek_azuriranja(self, samo=None):
@@ -3084,7 +3621,6 @@ class App:
             sazetak.append(self._osiguraj_ffmpeg(prisilno=(samo == "ffmpeg")))
 
         self.root.after(0, self._osvjezi_statusnu_traku)
-        self.root.after(0, lambda: self.btn_update.config(state="normal", text=self.t("gumb_azuriranja")))
         self.root.after(0, lambda s="\n".join(sazetak): messagebox.showinfo(self.t("updates_naslov"), s))
 
     def _azuriraj_yt_dlp(self):
@@ -3789,7 +4325,9 @@ class App:
 
 
 if __name__ == "__main__":
+    _log_pokretanja("=== novo pokretanje ===")
     multiprocessing.freeze_support()
+    _log_pokretanja("multiprocessing.freeze_support() gotovo")
 
     def _pokreni_tkinter():
         """Stvara root prozor I pokreće mainloop() u ISTOJ niti - Tcl/Tk interpreter
@@ -3798,9 +4336,40 @@ if __name__ == "__main__":
         'Calling Tcl from different apartment' / 'main thread is not in main loop').
         Ovoj niti ne treba biti baš OS glavna nit procesa - samo mora biti DOSLJEDNO
         ista nit za sve Tk pozive, što ovdje i jest."""
+        _log_pokretanja("_pokreni_tkinter() ušao (nova nit)")
         root = tk.Tk()
-        App(root)
+        _log_pokretanja("tk.Tk() gotovo")
+        try:
+            App(root)
+            _log_pokretanja("App(root) gotovo")
+        except Exception:
+            # Ako pokretanje app-a (App.__init__) pukne iz BILO KOJEG razloga,
+            # ovo je JEDINA prilika da korisnik uopce vidi zasto - bez ovoga,
+            # ako se app pokrene dvoklikom (bez konzole), prozor se samo ugasi
+            # bez ikakve poruke i korisnik nema nista sto bi nam poslao. Prikazi
+            # PUNU gresku u obicnom Tkinter dijalogu (radi cak i ako App sam
+            # nije uspio ni krenuti) i zapisi je u fajl pored skripte/exe-a.
+            puna_greska = traceback.format_exc()
+            _log_pokretanja(f"App(root) PUKAO:\n{puna_greska}")
+            try:
+                putanja_loga = os.path.join(_bazni_folder(), "mister_muscle_greska.txt")
+                with open(putanja_loga, "w", encoding="utf-8") as f:
+                    f.write(puna_greska)
+            except Exception:
+                putanja_loga = None
+            try:
+                messagebox.showerror(
+                    "Mister Muscle Downloader — greška pri pokretanju",
+                    "Aplikacija se nije uspjela pokrenuti.\n\n"
+                    + puna_greska
+                    + (f"\n\n(Ovo je i spremljeno u: {putanja_loga})" if putanja_loga else "")
+                )
+            except Exception:
+                pass
+            raise
+        _log_pokretanja("root.mainloop() kreće")
         root.mainloop()
+        _log_pokretanja("root.mainloop() završio (prozor zatvoren)")
 
     if PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
         # 'webview.start()' mora biti pozvan iz GLAVNE niti (ograničenje same
@@ -3819,9 +4388,13 @@ if __name__ == "__main__":
         # prije nego što bi 'func' (Tkinter) stigao i pokrenuti. Rješenje: napravimo
         # mali nevidljiv "čuvar mjesta" prozor SAMO da zadovoljimo taj uvjet -
         # stvarni, vidljivi player-prozor i dalje nastaje kako je bilo, kasnije.
+        _log_pokretanja("PYWEBVIEW_DOSTUPAN i EMBED_PLAYERA_DOSTUPAN - pravim guard prozor")
         webview.create_window(
             "MisterMuscle_Init", url="about:blank", width=1, height=1, hidden=True
         )
+        _log_pokretanja("guard prozor registriran - pozivam webview.start(func=_pokreni_tkinter)")
         webview.start(func=_pokreni_tkinter, debug=False)
+        _log_pokretanja("webview.start() vratio kontrolu (app se gasi)")
     else:
+        _log_pokretanja("PYWEBVIEW/EMBED nedostupno - pokrecem obican _pokreni_tkinter() direktno")
         _pokreni_tkinter()

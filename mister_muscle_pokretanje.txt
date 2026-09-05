@@ -14,3 +14,20 @@
 21:50:47.045  _cekaj_pa_ugradi_webview() našao hwnd=2099270 - ugrađujem
 21:50:47.046  root.mainloop() kreće
 21:50:56.341  root.mainloop() završio (prozor zatvoren)
+21:54:25.424  root.mainloop() završio (prozor zatvoren)
+21:57:00.136  === novo pokretanje ===
+21:57:00.136  multiprocessing.freeze_support() gotovo
+21:57:00.136  PYWEBVIEW_DOSTUPAN i EMBED_PLAYERA_DOSTUPAN - pravim guard prozor
+21:57:00.137  guard prozor registriran - pozivam webview.start(func=_pokreni_tkinter)
+21:57:00.475  _pokreni_tkinter() ušao (nova nit)
+21:57:00.517  tk.Tk() gotovo
+21:57:00.517  App.__init__ ušao
+21:57:00.518  config učitan
+21:57:00.979  pozivam _pripremi_ugradjeni_webview()
+21:57:00.997  _pripremi_ugradjeni_webview() gotovo (samo registracija, ugradnja je async)
+21:57:00.997  _cekaj_pa_ugradi_webview() ušao (nova nit) - tražim webview prozor po imenu
+21:57:00.997  App.__init__ završio
+21:57:00.997  _cekaj_pa_ugradi_webview() našao hwnd=2623642 - ugrađujem
+21:57:00.997  App(root) gotovo
+21:57:00.998  root.mainloop() kreće
+22:02:20.328  root.mainloop() završio (prozor zatvoren)
