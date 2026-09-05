@@ -28,7 +28,7 @@
 ; ============================================================================
 
 #define MyAppName "Mister Muscle Downloader"
-#define MyAppVersion "1.7"
+#define MyAppVersion "1.9"
 #define MyAppPublisher "Mister Muscle"
 #define MyAppExeName "MisterMuscle.exe"
 

@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "1.7"
+APP_VERZIJA = "1.9"
 
 
 def _bazni_folder():
@@ -131,7 +131,7 @@ def _boja_u_colorref(hex_boja):
     return (b << 16) | (g << 8) | r
 
 
-def _omoguci_tamnu_naslovnu_traku(root, ispisi=None):
+def _omoguci_tamnu_naslovnu_traku(root):
     """Na Windows 10/11 prisiljava TAMNU naslovnu traku (regija s minimize/
     maximize/close dugmadima) umjesto zadane bijele, preko sluzbenog DWM API-ja
     (isti mehanizam koji koriste npr. Windows Terminal, VS Code...). Na
@@ -140,18 +140,9 @@ def _omoguci_tamnu_naslovnu_traku(root, ispisi=None):
     tamnog stila - na starijim Windowsima taj dio jednostavno tiho ne uspije
     i ostane obican tamni stil. Tiho ne radi nista na drugim OS-ovima.
 
-    'ispisi' je opcionalna callback funkcija (npr. App.ispisi) - ako je
-    proslijedjena, funkcija u STATUS log zapise TOCNO koje HWND-ove i
-    rezultate je dobila, za dijagnostiku ako naslovna traka ostane bijela."""
-    def _log(tekst):
-        if ispisi:
-            try:
-                ispisi(tekst)
-            except Exception:
-                pass
-
+    Ovo je FALLBACK - koristi se samo ako _izgradi_prilagodjenu_naslovnu_traku
+    (potpuno vlastita traka, ne Windows-ova) nije uspjela ili nije Windows."""
     if not JE_WINDOWS:
-        _log("🔍 [tamna traka] Preskočeno - nije Windows.")
         return
     try:
         import ctypes
@@ -177,19 +168,15 @@ def _omoguci_tamnu_naslovnu_traku(root, ispisi=None):
         try:
             # ctypes SAM "raspakira" proste tipove (HWND je c_void_p) u obican
             # Python int/None kad ih funkcija VRATI (restype) - to je drugacije
-            # od slanja argumenata, gdje se rucno pretvaraju. Znaci "roditelj"
-            # je vec obican int (ili None), ne treba (i NE SMIJE) .value.
+            # od slanja argumenata, gdje se rucno pretvaraju.
             roditelj = GetParent(tk_hwnd)
-            kandidati.append(("GetParent(winfo_id)", roditelj or 0))
-        except Exception as e:
-            _log(f"🔍 [tamna traka] GetParent nije uspio: {e}")
-        kandidati.append(("winfo_id direktno", tk_hwnd))
+            kandidati.append(roditelj or 0)
+        except Exception:
+            pass
+        kandidati.append(tk_hwnd)
 
-        _log(f"🔍 [tamna traka] winfo_id={tk_hwnd}, kandidati={kandidati}")
-
-        for naziv, hwnd in kandidati:
+        for hwnd in kandidati:
             if not hwnd:
-                _log(f"🔍 [tamna traka] {naziv}: HWND je 0/None, preskačem.")
                 continue
             uspjelo_tamno = False
             for atribut in (20, 19):
@@ -197,8 +184,6 @@ def _omoguci_tamnu_naslovnu_traku(root, ispisi=None):
                 rezultat = DwmSetWindowAttribute(
                     hwnd, atribut, ctypes.byref(vrijednost), ctypes.sizeof(vrijednost)
                 )
-                _log(f"🔍 [tamna traka] {naziv} (hwnd={hwnd}), atribut={atribut} → rezultat={rezultat}"
-                     f"{' (USPJEH)' if rezultat == 0 else ''}")
                 if rezultat == 0:
                     uspjelo_tamno = True
                     break
@@ -211,23 +196,21 @@ def _omoguci_tamnu_naslovnu_traku(root, ispisi=None):
             # dalje ostaje generican tamni stil od gore, samo bez tocne boje.
             try:
                 caption = ctypes.wintypes.DWORD(_boja_u_colorref(BG))
-                r1 = DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+                DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
                 tekst_boja = ctypes.wintypes.DWORD(_boja_u_colorref(TEXT))
-                r2 = DwmSetWindowAttribute(hwnd, 36, ctypes.byref(tekst_boja), ctypes.sizeof(tekst_boja))
+                DwmSetWindowAttribute(hwnd, 36, ctypes.byref(tekst_boja), ctypes.sizeof(tekst_boja))
                 rub = ctypes.wintypes.DWORD(_boja_u_colorref(BORDER))
-                r3 = DwmSetWindowAttribute(hwnd, 34, ctypes.byref(rub), ctypes.sizeof(rub))
-                _log(f"🔍 [tamna traka] boja naslovne trake: caption={r1}, tekst={r2}, rub={r3}")
-            except Exception as e:
-                _log(f"🔍 [tamna traka] postavljanje tocne boje nije uspjelo: {e}")
+                DwmSetWindowAttribute(hwnd, 34, ctypes.byref(rub), ctypes.sizeof(rub))
+            except Exception:
+                pass
 
             try:
                 SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x27)
-            except Exception as e:
-                _log(f"🔍 [tamna traka] SetWindowPos nije uspio: {e}")
+            except Exception:
+                pass
             return
-        _log("🔍 [tamna traka] Nijedan pokušaj nije uspio (svi rezultati ≠ 0).")
-    except Exception as e:
-        _log(f"🔍 [tamna traka] Neočekivana greška: {type(e).__name__}: {e}")
+    except Exception:
+        pass
 
 
 def _je_upisiv(folder):
@@ -447,10 +430,20 @@ def pokreni_yt_dlp(argumenti, **kwargs):
 
 
 def pokreni_yt_dlp_popen(argumenti, **kwargs):
+    # PYTHONUNBUFFERED=1: yt-dlp.exe je i sam (upakiran) Python program - kad
+    # mu se stdout preusmjeri u cijev (kao ovdje, da mi citamo progress), C
+    # runtime po defaultu prelazi s "red-po-red" na "blok" bafiranje (poznato
+    # ponasanje kad izlaz nije pravi terminal) - izgleda kao da je skidanje
+    # "zaledeno" jer se hrpa redaka isprazni odjednom (cesto tek na kraju)
+    # umjesto postupno. Ova varijabla okoline prisiljava yt-dlp da ispisuje
+    # red-po-red ODMAH, pa se postotak/brzina azuriraju uzivo, ne skokovito.
+    okolina = os.environ.copy()
+    okolina["PYTHONUNBUFFERED"] = "1"
     return subprocess.Popen(
         [yt_dlp_exe_putanja(), *argumenti],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
+        env=okolina,
         **_SUBPROCESS_FLAGS, **kwargs
     )
 
@@ -611,6 +604,7 @@ ZADANI_CONFIG = {
     "kvaliteta": "Najbolja",
     "video_format": "mp4",
     "audio_format": "mp3",
+    "omjer_slike": "Original",      # Original | 16:9 | 9:16 (TikTok/Reels/Shorts) | 1:1 (Square) | 4:5 (Instagram)
     "h264": False,
     "metapodaci": False,
     "prozor": "1240x820",
@@ -648,8 +642,9 @@ PRIJEVODI = {
         "kartica_1": "LINKOVI (jedan po retku)",
         "kartica_2": "ŠTO SKIDAMO",
         "kartica_3": "GDJE SE SPREMA",
+        "kartica_4": "POKRENI",
         "placeholder_linkovi": "Zalijepi YouTube / TikTok / Instagram link ovdje...",
-        "gumb_pregledaj": "🎬 Pregledaj i označi isječak",
+        "gumb_pregledaj": "🔄 Ponovno učitaj player",
         "gumb_zalijepi": "📋 Zalijepi",
         "gumb_ocisti": "🗑 Očisti",
         "gumb_ponisti_isjecak": "✕ Poništi",
@@ -662,6 +657,7 @@ PRIJEVODI = {
         "oznaka_kvaliteta": "Kvaliteta",
         "oznaka_format_videa": "Format videa",
         "oznaka_format_zvuka": "Format zvuka",
+        "oznaka_omjer_slike": "Omjer slike",
         "cb_h264": "Premiere-ready (H.264/avc1)",
         "cb_h264_opis": "traži avc1 i po potrebi pretvori — Premiere ga uvijek čita",
         "cb_metapodaci": "Ugradi naslovnicu i metapodatke",
@@ -679,7 +675,7 @@ PRIJEVODI = {
         "status_sakrij": "▾ sakrij",
         "status_prikazi": "▸ prikaži",
         "gumb_ocisti_log": "🗑 očisti log",
-        "player_placeholder": "🎬\n\nPlayer za označavanje isječka\nprikazat će se ovdje kad klikneš\n'Pregledaj i označi isječak'",
+        "player_placeholder": "🎬\n\nPlayer za označavanje isječka\nprikazat će se ovdje čim zalijepiš link\n(ili klikni '🔄 Ponovno učitaj player')",
         "player_zaseban_prozor": "🎬\n\nPlayer je otvoren u zasebnom prozoru\n(ugradnja u ovaj prozor zahtijeva Windows + pywin32)",
         "o_aplikaciji_naslov": "O aplikaciji",
         "o_aplikaciji_autor": "Razvio: Mr_muscle",
@@ -695,7 +691,7 @@ PRIJEVODI = {
         "skidam": "Skidam...",
         # --- dijaloski okviri i STATUS log poruke (dodano naknadno) ---
         "err_naslov": "Greška",
-        "msg_need_pywebview": "ℹ Za '🎬 Pregledaj i označi' treba biblioteka 'pywebview' (pip install pywebview).",
+        "msg_need_pywebview": "ℹ Za pregled/označavanje isječka treba biblioteka 'pywebview' (pip install pywebview).",
         "msg_need_pywin32": "ℹ Za player UGRAĐEN u prozor treba 'pywin32' (pip install pywin32) — za sad će se otvarati u zasebnom prozoru.",
         "msg_black_player_hint": "ℹ Ako ugrađeni player ostane crn nakon otvaranja, pričekaj sekundu-dvije (automatski se pokušava 'probuditi') ili malo rastegni prozor aplikacije.",
         "msg_window_reset": "🗔 Veličina prozora resetirana na 1240×820.",
@@ -704,6 +700,7 @@ PRIJEVODI = {
         "msg_folder_saved": "📁 Folder: {0} (zapamćen)",
         "msg_start_marked": "📍 Početak: {0}",
         "msg_end_marked": "📍 Kraj: {0}",
+        "msg_clipboard_auto_zalijepljen": "📋 Link iz clipboarda automatski zalijepljen.",
         "webview2_naslov": "WebView2 Runtime",
         "webview2_ok_text": "Sve u redu — WebView2 Runtime je već instaliran.",
         "msg_webview2_missing": "⚠ Microsoft Edge WebView2 Runtime nije pronađen — bez njega player (pregled/rezanje) neće raditi.",
@@ -715,7 +712,7 @@ PRIJEVODI = {
                                  "Preuzeti i instalirati je sada automatski?",
         "msg_webview2_skipped": "ℹ Preskočeno — player neće raditi dok se WebView2 Runtime ručno ne instalira "
                                 "(https://developer.microsoft.com/microsoft-edge/webview2/).",
-        "msg_webview2_ready": "ℹ Sad probaj otvoriti player ('🎬 Pregledaj i označi isječak').",
+        "msg_webview2_ready": "ℹ Sad probaj ponovno zalijepiti link (ili klikni '🔄 Ponovno učitaj player').",
         "msg_webview2_install_failed": "❌ WebView2 instalacija nije uspjela: {0}",
         "webview2_error_text": "Ne mogu instalirati WebView2 Runtime: {0}\n\nProbaj ručno preuzeti s https://developer.microsoft.com/microsoft-edge/webview2/",
         "msg_tool_missing_downloading": "⚠ {0} nedostaje — preuzimam...",
@@ -793,6 +790,10 @@ PRIJEVODI = {
         "msg_codec_converted": "✅ Pretvoreno u H.264.",
         "msg_codec_convert_failed": "⚠ Pretvorba nije uspjela — fajl je ostao u originalnom kodeku.",
         "msg_codec_check_failed": "⚠ Provjera kodeka nije uspjela: {0}",
+        "msg_cropping_aspect": "✂️ Rezanje na omjer {0}...",
+        "msg_aspect_done": "✅ Omjer slike prilagođen.",
+        "msg_aspect_failed": "⚠ Rezanje omjera slike nije uspjelo — fajl je ostao u originalnom omjeru.",
+        "msg_aspect_error": "⚠ Greška pri rezanju omjera slike: {0}",
         "msg_download_cancelled": "\n✕ Skidanje prekinuto.",
         "done_naslov": "Gotovo",
         "msg_all_done_log": "\n🎉 Gotovo! Folder: {0}",
@@ -838,8 +839,9 @@ PRIJEVODI = {
         "kartica_1": "LINKS (one per line)",
         "kartica_2": "WHAT TO DOWNLOAD",
         "kartica_3": "WHERE TO SAVE",
+        "kartica_4": "START",
         "placeholder_linkovi": "Paste a YouTube / TikTok / Instagram link here...",
-        "gumb_pregledaj": "🎬 Preview & mark clip",
+        "gumb_pregledaj": "🔄 Reload player",
         "gumb_zalijepi": "📋 Paste",
         "gumb_ocisti": "🗑 Clear",
         "gumb_ponisti_isjecak": "✕ Clear",
@@ -852,6 +854,7 @@ PRIJEVODI = {
         "oznaka_kvaliteta": "Quality",
         "oznaka_format_videa": "Video format",
         "oznaka_format_zvuka": "Audio format",
+        "oznaka_omjer_slike": "Aspect ratio",
         "cb_h264": "Premiere-ready (H.264/avc1)",
         "cb_h264_opis": "requests avc1 and converts if needed — Premiere always reads it",
         "cb_metapodaci": "Embed thumbnail and metadata",
@@ -869,7 +872,7 @@ PRIJEVODI = {
         "status_sakrij": "▾ hide",
         "status_prikazi": "▸ show",
         "gumb_ocisti_log": "🗑 clear log",
-        "player_placeholder": "🎬\n\nThe clip-marking player will\nappear here once you click\n'Preview & mark clip'",
+        "player_placeholder": "🎬\n\nThe clip-marking player will\nappear here as soon as you paste a link\n(or click '🔄 Reload player')",
         "player_zaseban_prozor": "🎬\n\nThe player opened in a separate window\n(embedding it here requires Windows + pywin32)",
         "o_aplikaciji_naslov": "About",
         "o_aplikaciji_autor": "Developed by Mr_muscle",
@@ -885,7 +888,7 @@ PRIJEVODI = {
         "skidam": "Downloading...",
         # --- dialogs and STATUS log messages (added later) ---
         "err_naslov": "Error",
-        "msg_need_pywebview": "ℹ️ The '🎬 Preview & mark clip' feature needs the 'pywebview' library (pip install pywebview).",
+        "msg_need_pywebview": "ℹ️ Previewing/marking a clip needs the 'pywebview' library (pip install pywebview).",
         "msg_need_pywin32": "ℹ️ An in-window EMBEDDED player needs 'pywin32' (pip install pywin32) — for now it will open in a separate window.",
         "msg_black_player_hint": "ℹ️ If the embedded player stays black after opening, wait a second or two (it auto-retries) or slightly resize the app window.",
         "msg_window_reset": "🗔 Window size reset to 1240×820.",
@@ -894,6 +897,7 @@ PRIJEVODI = {
         "msg_folder_saved": "📁 Folder: {0} (saved)",
         "msg_start_marked": "📍 Start: {0}",
         "msg_end_marked": "📍 End: {0}",
+        "msg_clipboard_auto_zalijepljen": "📋 Link from clipboard pasted automatically.",
         "webview2_naslov": "WebView2 Runtime",
         "webview2_ok_text": "All good — WebView2 Runtime is already installed.",
         "msg_webview2_missing": "⚠️ Microsoft Edge WebView2 Runtime was not found — without it the player (preview/trim) won't work.",
@@ -905,7 +909,7 @@ PRIJEVODI = {
                                  "Download and install it automatically now?",
         "msg_webview2_skipped": "ℹ️ Skipped — the player won't work until WebView2 Runtime is installed manually "
                                 "(https://developer.microsoft.com/microsoft-edge/webview2/).",
-        "msg_webview2_ready": "ℹ️ Now try opening the player ('🎬 Preview & mark clip').",
+        "msg_webview2_ready": "ℹ️ Now try pasting the link again (or click '🔄 Reload player').",
         "msg_webview2_install_failed": "❌ WebView2 installation failed: {0}",
         "webview2_error_text": "Can't install WebView2 Runtime: {0}\n\nTry downloading it manually from https://developer.microsoft.com/microsoft-edge/webview2/",
         "msg_tool_missing_downloading": "⚠️ {0} is missing — downloading...",
@@ -983,6 +987,10 @@ PRIJEVODI = {
         "msg_codec_converted": "✅ Converted to H.264.",
         "msg_codec_convert_failed": "⚠️ Conversion failed — the file stayed in its original codec.",
         "msg_codec_check_failed": "⚠️ Codec check failed: {0}",
+        "msg_cropping_aspect": "✂️ Cropping to {0} aspect ratio...",
+        "msg_aspect_done": "✅ Aspect ratio adjusted.",
+        "msg_aspect_failed": "⚠️ Aspect ratio crop failed — the file kept its original aspect ratio.",
+        "msg_aspect_error": "⚠️ Error while cropping aspect ratio: {0}",
         "msg_download_cancelled": "\n✕ Download cancelled.",
         "done_naslov": "Done",
         "msg_all_done_log": "\n🎉 Done! Folder: {0}",
@@ -1123,6 +1131,84 @@ PROMJENE = {
             "to help troubleshoot rare app-launch issues.",
         ],
     },
+    "1.7": {
+        "hr": [
+            "Popravljeno: prikaz postotka i brzine skidanja znao je izgledati "
+            "'zaleđeno' i skočiti odjednom na kraju — sad se ažurira uživo, "
+            "red po red, tijekom cijelog skidanja.",
+        ],
+        "en": [
+            "Fixed: the download percentage/speed display could look "
+            "'frozen' and jump all at once at the end — it now updates "
+            "live, line by line, throughout the whole download.",
+        ],
+    },
+    "1.8": {
+        "hr": [
+            "Dodano: kad skidaš više linkova odjednom, sad vidiš popis svakog "
+            "linka s njegovim statusom (čeka/skida se/uspjelo/nije uspjelo) — "
+            "odmah je jasno koji je link eventualno pao.",
+            "Uklonjena zelena crta koja je označavala trenutnu poziciju na "
+            "traci u playeru.",
+            "Manje čišćenje i optimizacije.",
+        ],
+        "en": [
+            "Added: when downloading multiple links at once, you now see a "
+            "list of each link with its status (waiting/downloading/succeeded/"
+            "failed) — instantly clear which link, if any, failed.",
+            "Removed the green line that marked the current position on the "
+            "player's timeline.",
+            "Minor cleanup and optimizations.",
+        ],
+    },
+    "1.9": {
+        "hr": [
+            "Redizajniran gumb za pokretanje skidanja — sad je '4. POKRENI' "
+            "kartica u istom stilu kao koraci 1-2-3 iznad, poravnata s lijevim "
+            "stupcem umjesto rastegnuta preko cijelog prozora.",
+            "Dugme 'Prekini' sad ima crvenkasti hover — jasnije naglašava da "
+            "je to ozbiljnija (nepovratna) akcija nego 'Pauziraj'.",
+            "Preimenovano dugme 'Pregledaj i označi isječak' u 'Ponovno "
+            "učitaj player' — otkako se player sam otvara čim zalijepiš link, "
+            "ovo dugme sad služi za ručno osvježavanje playera ako zatreba.",
+            "Dodano: aplikacija sad automatski prepozna link u clipboardu i "
+            "sama ga zalijepi u polje čim se vratiš na prozor aplikacije — "
+            "ne treba više ručno Ctrl+V.",
+            "Dodano: isječci koje si već dodao u listu sad imaju svoja "
+            "hvatišta direktno na traci — možeš ih povlačiti/rastezati kao i "
+            "trenutni odabir, umjesto da mijenjaš samo tekstualna polja.",
+            "Dodano: mali '+' gumb odmah pored trenutnog odabira na traci — "
+            "klik doda novi isječak spreman za podešavanje, brža prečica od "
+            "ručnog povlačenja nove selekcije od nule.",
+            "Dodano: izbor omjera slike (Original, 16:9, 9:16 za TikTok/"
+            "Reels/Shorts, 1:1, 4:5 za Instagram) — video se automatski "
+            "odreže na sredini da točno popuni odabrani omjer.",
+        ],
+        "en": [
+            "Redesigned the download button — it's now a '4. START' card in "
+            "the same style as steps 1-3 above, aligned with the left column "
+            "instead of stretched across the whole window.",
+            "The 'Cancel' button now has a reddish hover — makes it clearer "
+            "it's a more serious (irreversible) action than 'Pause'.",
+            "Renamed the 'Preview & mark clip' button to 'Reload player' — "
+            "since the player now opens itself as soon as you paste a link, "
+            "this button now serves to manually refresh the player if needed.",
+            "Added: the app now detects a link in your clipboard and pastes "
+            "it into the field automatically as soon as you switch back to "
+            "the app window — no more manual Ctrl+V needed.",
+            "Added: clips you've already added to the list now have their "
+            "own handles directly on the timeline — drag/resize them just "
+            "like the current selection, instead of only editing the text "
+            "fields.",
+            "Added: a small '+' button next to the current selection on the "
+            "timeline — click it to add another clip ready to adjust, a "
+            "faster shortcut than dragging a whole new selection from "
+            "scratch.",
+            "Added: an aspect ratio picker (Original, 16:9, 9:16 for TikTok/"
+            "Reels/Shorts, 1:1, 4:5 for Instagram) — the video is "
+            "automatically center-cropped to exactly fill the chosen ratio.",
+        ],
+    },
 }
 
 
@@ -1214,6 +1300,22 @@ def staklena_linija(parent, boja, visina=1):
 KVALITETE = ["Najbolja", "2160p (4K)", "1440p", "1080p", "720p", "480p", "360p"]
 VIDEO_FORMATI = ["mp4", "mkv", "webm", "mov", "original (bez pretvorbe)"]
 AUDIO_FORMATI = ["mp3", "m4a", "wav", "flac", "opus", "original (bez pretvorbe)"]
+OMJERI_SLIKE = [
+    "Original",
+    "16:9",
+    "9:16 (TikTok/Reels/Shorts)",
+    "1:1 (Square)",
+    "4:5 (Instagram)",
+]
+
+
+def _omjer_u_wh(naziv):
+    """Izvlaci (sirina, visina) iz naziva omjera (npr. '9:16 (TikTok...)' ->
+    (9, 16)) - vraca None za 'Original' (bez rezanja, zadrzi izvorni omjer)."""
+    m = re.match(r"(\d+):(\d+)", naziv)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
 
 
 def visina_iz_kvalitete(tekst):
@@ -1375,6 +1477,7 @@ _PLAYER_PRIJEVODI = {
         "remove_clip_title": "Ukloni ovaj isječak",
         "add_clip_warn": "⚠ Dodaj barem jedan isječak prije skidanja.",
         "download_started": "Preuzimanje {0} isječaka pokrenuto — pogledaj glavni prozor.",
+        "add_another_hint": "Dodaj još jedan isječak (možeš ga povući/rastegnuti nakon)",
         "drag_hint": "Povuci po traci da označiš isječak, ili klikni za premotavanje",
     },
     "en": {
@@ -1417,6 +1520,7 @@ _PLAYER_PRIJEVODI = {
         "remove_clip_title": "Remove this clip",
         "add_clip_warn": "⚠️ Add at least one clip before downloading.",
         "download_started": "Download of {0} clips started — check the main window.",
+        "add_another_hint": "Add another clip (you can drag/resize it afterward)",
         "drag_hint": "Drag on the timeline to mark a clip, or click to seek",
     },
 }
@@ -1590,10 +1694,14 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       }}
       #handle-left {{ left: -7px; }}
       #handle-right {{ right: -7px; }}
-      #timeline-playhead {{
-        position: absolute; top: 0; bottom: 0; width: 3px; background: {SUCCESS}; left: 0%;
-        pointer-events: none; box-shadow: 0 0 10px {SUCCESS}; z-index: 3;
+      #dodaj-plus {{
+        position: absolute; top: 50%; right: -26px; transform: translateY(-50%);
+        width: 20px; height: 20px; border-radius: 50%; background: {ACCENT};
+        color: white; font-size: 14px; font-weight: bold; line-height: 1;
+        display: none; align-items: center; justify-content: center; cursor: pointer;
+        z-index: 6; box-shadow: 0 2px 6px rgba(0,0,0,0.5); user-select: none;
       }}
+      #dodaj-plus:hover {{ background: {ACCENT_HOVER}; transform: translateY(-50%) scale(1.12); }}
       #drag-tooltip {{
         position: absolute; bottom: calc(100% + 8px); transform: translateX(-50%);
         background: {CARD}; color: {TEXT}; border: 1px solid {ACCENT};
@@ -1680,8 +1788,19 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       .timeline-multi-blok {{
         position: absolute; top: 0; bottom: 0; background: rgba(10, 132, 255, 0.28);
         border-left: 2px solid {ACCENT}; border-right: 2px solid {ACCENT}; border-radius: 14px;
-        pointer-events: none;
+        cursor: grab; z-index: 2;
       }}
+      .timeline-multi-blok:active {{ cursor: grabbing; }}
+      .multi-blok-handle {{
+        position: absolute; top: 0; bottom: 0; width: 12px; cursor: ew-resize;
+        z-index: 4; display: flex; align-items: center; justify-content: center;
+      }}
+      .multi-blok-handle::after {{
+        content: ""; width: 3px; height: 55%; border-radius: 3px;
+        background: rgba(255,255,255,0.85); box-shadow: 0 0 3px rgba(0,0,0,0.4);
+      }}
+      .multi-blok-handle-left {{ left: -6px; }}
+      .multi-blok-handle-right {{ right: -6px; }}
 
       #status-bar {{ margin-top: 10px; font-size: 12px; font-weight: 600; color: {SUCCESS}; text-align: center; min-height: 16px; }}
 
@@ -1708,8 +1827,8 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         <div id="timeline-selection">
           <div class="selection-handle" id="handle-left"></div>
           <div class="selection-handle" id="handle-right"></div>
+          <div id="dodaj-plus" title="{PT['add_another_hint']}">+</div>
         </div>
-        <div id="timeline-playhead"></div>
         <div id="drag-tooltip"></div>
       </div>
       <div class="timeline-hint">{PT['drag_hint']}</div>
@@ -1753,7 +1872,6 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
     <script>
       var player;
       var trajanjeVid = 0;
-      var playhead = document.getElementById('timeline-playhead');
       var selectionBox = document.getElementById('timeline-selection');
       var pocSec = null, krajSec = null;
       var seekTimeout = null;
@@ -1777,7 +1895,6 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       function azurirajPlayhead() {{
         if (!spreman || !trajanjeVid) return;
         var t = player.getCurrentTime();
-        playhead.style.left = (t / trajanjeVid) * 100 + '%';
         document.getElementById('vrijeme-trenutno').innerText = formatiraj(t);
         var stanje = player.getPlayerState();
         document.getElementById('btn-play').innerText = (stanje === 1) ? '{PT["pause_text"]}' : '{PT["play_text"]}';
@@ -1902,7 +2019,6 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
           if (!dragJePravaSelekcija) {{
             // obican klik (bez povlacenja) - samo premotaj, kao prije
             var novaPozicija = pozicijaUSekundama(ev.clientX);
-            playhead.style.left = (novaPozicija / trajanjeVid * 100) + '%';
             document.getElementById('vrijeme-trenutno').innerText = formatiraj(novaPozicija);
             if (seekTimeout) clearTimeout(seekTimeout);
             seekTimeout = setTimeout(function() {{ player.seekTo(novaPozicija, true); }}, 120);
@@ -1984,6 +2100,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
           selectionBox.style.left = (pocSec / trajanjeVid) * 100 + '%';
           selectionBox.style.width = ((krajSec - pocSec) / trajanjeVid) * 100 + '%';
           selectionBox.style.display = 'block';
+          document.getElementById('dodaj-plus').style.display = 'flex';
           document.getElementById('trajanje-isjecka-info').innerText =
             "{PT['isjecak_prefix']}: " + formatiraj(pocSec) + " → " + formatiraj(krajSec) +
             "  (" + formatiraj(krajSec - pocSec) + ")";
@@ -1993,13 +2110,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       // ---- lista više isječaka odjednom ----
       var brojacSelekcija = 0;
 
-      function dodajUListu() {{
-        var odVal = document.getElementById('input-od').value;
-        var doVal = document.getElementById('input-do').value;
-        if (!odVal || !doVal) {{
-          document.getElementById('status-bar').innerText = '{PT["add_selection_warn"]}';
-          return;
-        }}
+      function dodajRedUListu(odVal, doVal) {{
         brojacSelekcija += 1;
         var id = brojacSelekcija;
         var red = document.createElement('div');
@@ -2018,16 +2129,46 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         red.querySelector('.sel-od').addEventListener('focus', function() {{ oznaciAktivnuSelekciju(id); }});
         red.querySelector('.sel-do').addEventListener('focus', function() {{ oznaciAktivnuSelekciju(id); }});
         oznaciAktivnuSelekciju(id);
+        azurirajListu();
+        return id;
+      }}
+
+      function dodajUListu() {{
+        var odVal = document.getElementById('input-od').value;
+        var doVal = document.getElementById('input-do').value;
+        if (!odVal || !doVal) {{
+          document.getElementById('status-bar').innerText = '{PT["add_selection_warn"]}';
+          return;
+        }}
+        dodajRedUListu(odVal, doVal);
 
         // ocisti "trenutni odabir" polja da je spremno za sljedece oznacavanje
         document.getElementById('input-od').value = '';
         document.getElementById('input-do').value = '';
         pocSec = null; krajSec = null;
         selectionBox.style.display = 'none';
+        document.getElementById('dodaj-plus').style.display = 'none';
         document.getElementById('trajanje-isjecka-info').innerText = '{PT["isjecak_prefix"]}: {PT["nije_oznaceno"]}';
-
-        azurirajListu();
       }}
+
+      // ---- "+" na kraju hvatista - odmah doda JOS JEDAN isjecak (kratak,
+      // odmah nakon trenutnog, ili prije njega ako nema mjesta iza) direktno
+      // u listu, spreman da ga korisnik povuce/rastegne na tocno mjesto koje
+      // zeli - brzi precac umjesto rucnog povlacenja nove selekcije od nule ----
+      document.getElementById('dodaj-plus').addEventListener('click', function(e) {{
+        e.stopPropagation();
+        if (pocSec === null || krajSec === null || !trajanjeVid) return;
+        var trajanjeNovog = Math.min(krajSec - pocSec, 10);
+        var noviOd = krajSec;
+        var noviDo = Math.min(noviOd + trajanjeNovog, trajanjeVid);
+        if (noviDo - noviOd < 0.5) {{
+          // nema dovoljno prostora NAKON trenutne selekcije - probaj PRIJE nje
+          noviDo = pocSec;
+          noviOd = Math.max(noviDo - trajanjeNovog, 0);
+        }}
+        if (noviDo - noviOd < 0.5) return;  // ni tu nema mjesta (video prekratak) - odustani tiho
+        dodajRedUListu(formatiraj(noviOd), formatiraj(noviDo));
+      }});
 
       function obrisiSelekciju(id) {{
         var el = document.getElementById('sel-' + id);
@@ -2067,8 +2208,82 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
           blok.className = 'timeline-multi-blok';
           blok.style.left = (od / trajanjeVid * 100) + '%';
           blok.style.width = ((doo - od) / trajanjeVid * 100) + '%';
+
+          var hLijevo = document.createElement('div');
+          hLijevo.className = 'multi-blok-handle multi-blok-handle-left';
+          var hDesno = document.createElement('div');
+          hDesno.className = 'multi-blok-handle multi-blok-handle-right';
+          blok.appendChild(hLijevo);
+          blok.appendChild(hDesno);
+
+          var redId = red.id;
+          hLijevo.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeMultiRuba(e, redId, 'od'); }});
+          hDesno.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeMultiRuba(e, redId, 'do'); }});
+          blok.addEventListener('mousedown', function(e) {{
+            if (e.target === hLijevo || e.target === hDesno) return;
+            zapocniPomjeranjeMultiCijelog(e, redId, od, doo);
+          }});
+
           document.getElementById('timeline-container').appendChild(blok);
         }});
+      }}
+
+      // ---- povlacenje VEC DODANIH isjecaka izravno na traci - sinkronizira
+      // se s Od/Do poljima u listi ispod (koja su "izvor istine"), pa se
+      // azurirajTimelineSelekcije() samo ponovno iscrta prema njima ----
+      function zapocniPomjeranjeMultiRuba(e, redId, kojiRub) {{
+        e.stopPropagation();
+        var red = document.getElementById(redId);
+        var odInput = red.querySelector('.sel-od');
+        var doInput = red.querySelector('.sel-do');
+
+        function naPomicanje(ev) {{
+          var nova = pozicijaUSekundama(ev.clientX);
+          var trenOd = parseVrijemeJS(odInput.value);
+          var trenDo = parseVrijemeJS(doInput.value);
+          if (kojiRub === 'od') {{
+            nova = Math.min(nova, trenDo - 0.1);
+            odInput.value = formatiraj(nova);
+            prikaziTooltip(nova, trenDo);
+          }} else {{
+            nova = Math.max(nova, trenOd + 0.1);
+            doInput.value = formatiraj(nova);
+            prikaziTooltip(trenOd, nova);
+          }}
+          azurirajTimelineSelekcije();
+        }}
+        function naOtpustanje() {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }}
+
+      function zapocniPomjeranjeMultiCijelog(e, redId, pocOd, pocDo) {{
+        e.stopPropagation();
+        var red = document.getElementById(redId);
+        var odInput = red.querySelector('.sel-od');
+        var doInput = red.querySelector('.sel-do');
+        var trajanjeIsjecka = pocDo - pocOd;
+        var pocetniX = e.clientX;
+
+        function naPomicanje(ev) {{
+          var pomakSek = pozicijaUSekundama(ev.clientX) - pozicijaUSekundama(pocetniX);
+          var od = Math.min(Math.max(pocOd + pomakSek, 0), trajanjeVid - trajanjeIsjecka);
+          odInput.value = formatiraj(od);
+          doInput.value = formatiraj(od + trajanjeIsjecka);
+          azurirajTimelineSelekcije();
+          prikaziTooltip(od, od + trajanjeIsjecka);
+        }}
+        function naOtpustanje() {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
       }}
 
       function parseVrijemeJS(tekst) {{
@@ -2270,11 +2485,14 @@ class App:
         self.do_sek = None
         self._auto_ucitaj_after_id = None      # zakazani (debounced) poziv auto-ucitavanja playera
         self._zadnji_auto_ucitani_link = None  # da se isti link ne ucitava iznova u krug
+        self._zadnji_clipboard_link = None     # zadnji link iz clipboarda koji smo vec obradili
+        self._prozor_ima_fokus = True          # pretpostavka pri pokretanju (prozor se tek otvorio)
 
         self.var_nacin = tk.StringVar(value=self.cfg["nacin"])
         self.var_kvaliteta = tk.StringVar(value=self.cfg["kvaliteta"])
         self.var_video_format = tk.StringVar(value=self.cfg.get("video_format", "mp4"))
         self.var_audio_format = tk.StringVar(value=self.cfg["audio_format"])
+        self.var_omjer_slike = tk.StringVar(value=self.cfg.get("omjer_slike", "Original"))
         self.var_h264 = tk.BooleanVar(value=bool(self.cfg["h264"]))
         self.var_metapodaci = tk.BooleanVar(value=bool(self.cfg["metapodaci"]))
 
@@ -2284,7 +2502,7 @@ class App:
             # Fallback ako prilagodjena traka nije uspjela (nije Windows, ili
             # je nesto puklo) - barem DWM "tamni" stil na obicnom OS okviru.
             _omoguci_tamnu_naslovnu_traku(self.root)
-            self.root.after(300, lambda: _omoguci_tamnu_naslovnu_traku(self.root, ispisi=self.ispisi))
+            self.root.after(300, lambda: _omoguci_tamnu_naslovnu_traku(self.root))
         self._izgradi_meni()
         self._izgradi_glavni_dio()
         self._izgradi_donju_traku()
@@ -2308,6 +2526,9 @@ class App:
             self._pripremi_ugradjeni_webview()
             _log_pokretanja("_pripremi_ugradjeni_webview() gotovo (samo registracija, ugradnja je async)")
         self.root.after(400, self._provjeri_i_prikazi_novosti)
+        self.root.bind("<FocusIn>", self._na_fokus_prozora)
+        self.root.bind("<FocusOut>", self._na_gubitak_fokusa_prozora)
+        self.root.after(1000, self._pokreni_pracenje_clipboarda)
         self.provjeri_queue()
         _log_pokretanja("App.__init__ završio")
 
@@ -2689,39 +2910,18 @@ class App:
         # kraja ispravno, pa desni panel ostane kraci nego bi trebao (prazan
         # prostor ispod njega). Ponovno pozivanje nakon kratke odgode - kad
         # prozor sigurno vec postoji - to popravi.
-        # Sigurnosno PONAVLJANJE (ne samo jednom) u prvih par sekundi nakon
-        # starta - potvrdjeno dijagnostikom da desni panel zna "zaostati" za
-        # stvarnom visinom glavnog okvira kad se NAKNADNO (asinkrono, nakon
-        # sto pozadinska nit provjeri alate) promijeni visina donje statusne
-        # trake - to promijeni koliko prostora glavni okvir uopce dobije, a
-        # grid to ne "uhvati" pouzdano bez eksplicitnog ponovnog poziva.
+        # Sigurnosno PONAVLJANJE (ne samo jednom) - stvarni uzrok (zaboravljen
+        # minsize od prijelaznog uskog rasporeda) je pronadjen i popravljen
+        # (vidi _primijeni_raspored), ali ostavljamo par ponovnih pokusaja kao
+        # jeftinu dodatnu sigurnost za slucaj neke slicne buduce sitnice.
         self._raspored_reapply_pokusaji = 0
         self._periodicna_reprovjera_rasporeda()
-        self.root.after(600, self._dijagnostika_rasporeda)
 
     def _periodicna_reprovjera_rasporeda(self):
         self._primijeni_raspored(self._raspored_je_uzak)
         self._raspored_reapply_pokusaji += 1
-        if self._raspored_reapply_pokusaji < 10:  # ~3s ukupno (10 x 300ms)
+        if self._raspored_reapply_pokusaji < 2:
             self.root.after(300, self._periodicna_reprovjera_rasporeda)
-
-    def _dijagnostika_rasporeda(self):
-        """Ispisuje u STATUS log stvarnu (izmjerenu) velicinu svakog panela u
-        lancu desne kolone - privremena dijagnostika da se vidi TOCNO gdje
-        'nestaje' prostor kad desni panel ne ispuni prozor do dna."""
-        try:
-            self.glavni.update_idletasks()
-            redovi = [
-                ("glavni", self.glavni),
-                ("desno", self.desno),
-                ("desni_panel", self.desni_panel),
-                ("desni_sadrzaj", self.desni_sadrzaj),
-            ]
-            dijelovi = [f"{naziv}={w.winfo_width()}x{w.winfo_height()}" for naziv, w in redovi]
-            self.ispisi(f"🔍 [raspored] prozor={self.root.winfo_width()}x{self.root.winfo_height()}  "
-                       f"{'  '.join(dijelovi)}")
-        except Exception as e:
-            self.ispisi(f"🔍 [raspored] greška pri mjerenju: {e}")
 
     def _na_promjenu_velicine_prozora(self, event):
         if event.widget is not self.root:
@@ -2753,6 +2953,8 @@ class App:
             self.glavni.rowconfigure(1, weight=0, minsize=0)
             self.lijevo.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
             self.desno.grid(row=0, column=1, sticky="nsew")
+
+        self._primijeni_raspored_donje_trake(uzak)
 
     def _naslov_kartice(self, roditelj, broj, tekst):
         red = tk.Frame(roditelj, bg=BG)
@@ -2852,6 +3054,14 @@ class App:
                                      state="readonly", style="Cyber.TCombobox", width=20)
         self.cb_audio.grid(row=1, column=2, sticky="w", padx=(18, 0))
 
+        red_omjer = tk.Frame(card, bg=CARD)
+        red_omjer.pack(fill="x", padx=14, pady=(12, 14))
+        tk.Label(red_omjer, text=self.t("oznaka_omjer_slike"), font=("Segoe UI", 8, "bold"), bg=CARD,
+                 fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
+        self.cb_omjer = ttk.Combobox(red_omjer, values=OMJERI_SLIKE, textvariable=self.var_omjer_slike,
+                                     state="readonly", style="Cyber.TCombobox", width=28)
+        self.cb_omjer.pack(anchor="w")
+
         tk.Frame(card, bg=CARD).pack(pady=4)
 
     def _kartica_folder(self, roditelj):
@@ -2927,7 +3137,15 @@ class App:
         # -- STATUS log + napredak --
         self.status_body = tk.Frame(self.desni_sadrzaj, bg=BG)
 
+        # Popis pojedinačnih linkova sa statusom - prikazuje se SAMO kad se
+        # skida VIŠE OD JEDNOG linka odjednom (vidi _prikazi_status_linkova),
+        # da se odmah vidi KOJI je link uspio/pao umjesto da se to mora
+        # traziti skrolanjem kroz STATUS log.
+        self.frame_status_linkova = tk.Frame(self.status_body, bg=BG)
+        self._redovi_status_linkova = []
+
         okvir = tk.Frame(self.status_body, bg=LOG_BG, highlightbackground=BORDER, highlightthickness=1)
+        self._log_okvir = okvir
         okvir.pack(fill="both", expand=True, pady=(8, 0))
         self.log = scrolledtext.ScrolledText(okvir, height=10, font=("Consolas", 9), state="disabled",
                                              bg=LOG_BG, fg=LOG_TEXT, relief="flat", highlightthickness=0)
@@ -3130,22 +3348,64 @@ class App:
             pass
 
     def _izgradi_donju_traku(self):
-        traka = tk.Frame(self.root, bg=BG)
-        traka.pack(fill="x", padx=22, pady=(14, 6))
+        # Vanjski omot preko CIJELE širine prozora (nevidljiv, boja pozadine) -
+        # unutar njega, kartica s dugmadima se poravna na LIJEVU stranu i
+        # suzuje na širinu lijevog stupca (izgleda kao prirodan "4. korak"
+        # nastavak kartica 1-2-3 iznad, umjesto odvojene trake preko cijelog
+        # prozora) - u uskom rasporedu se proširi na sve. Isti grid+minsize
+        # trik kao za sam lijevi/desni stupac (_primijeni_raspored), samo
+        # primijenjen ovdje na jedan red umjesto na cijeli glavni raspored.
+        omot = tk.Frame(self.root, bg=BG)
+        omot.pack(fill="x", padx=22, pady=(14, 6))
+        self._donja_traka_omot = omot
 
-        self.btn_download = self._napravi_dugme(traka, self.t("skini_video"), self.pokreni_preuzimanje,
-                                                bg=ACCENT, hover=ACCENT_HOVER, font_size=12, height=2, width=22)
-        self.btn_download.pack(side="left")
+        uzi = tk.Frame(omot, bg=BG)
+        uzi.grid(row=0, column=0, sticky="ew")
+        self._donja_traka_uzi = uzi
 
-        self.btn_pause = self._napravi_dugme(traka, self.t("gumb_pauziraj"), self.toggle_pauza, bg=PAUSE_BG,
-                                             hover=PAUSE_HOVER, font_size=10, height=2, width=12)
-        self.btn_pause.pack(side="left", padx=(10, 0))
+        self._naslov_kartice(uzi, "4", self.t("kartica_4"))
+
+        card = tk.Frame(uzi, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x")
+        staklena_linija(card, posvijetli(CARD, 0.22)).pack(fill="x", side="top")
+
+        unutra = tk.Frame(card, bg=CARD)
+        unutra.pack(fill="x", padx=14, pady=14)
+
+        self.btn_download = self._napravi_dugme(unutra, self.t("skini_video"), self.pokreni_preuzimanje,
+                                                bg=ACCENT, hover=ACCENT_HOVER, font_size=12, height=2)
+        self.btn_download.pack(fill="x")
+
+        red_dugmadi = tk.Frame(unutra, bg=CARD)
+        red_dugmadi.pack(fill="x", pady=(8, 0))
+
+        self.btn_pause = self._napravi_dugme(red_dugmadi, self.t("gumb_pauziraj"), self.toggle_pauza,
+                                             bg=PAUSE_BG, hover=PAUSE_HOVER, font_size=10, height=1)
+        self.btn_pause.pack(side="left", fill="x", expand=True)
         self.btn_pause.config(state="disabled")
 
-        self.btn_prekini = self._napravi_dugme(traka, self.t("gumb_prekini"), self.prekini_preuzimanje, bg=PAUSE_BG,
-                                               hover=PAUSE_HOVER, font_size=10, height=2, width=12)
-        self.btn_prekini.pack(side="left", padx=(10, 0))
+        # Prekini dobiva CRVENKASTI hover (umjesto istog sivog kao Pauziraj) -
+        # to je ozbiljnija/nepovratna akcija, pa boja to sad i vizualno odražava.
+        self.btn_prekini = self._napravi_dugme(red_dugmadi, self.t("gumb_prekini"), self.prekini_preuzimanje,
+                                               bg=PAUSE_BG, hover="#7a2a35", font_size=10, height=1)
+        self.btn_prekini.pack(side="left", fill="x", expand=True, padx=(8, 0))
         self.btn_prekini.config(state="disabled")
+
+        self._primijeni_raspored_donje_trake(getattr(self, "_raspored_je_uzak", False))
+
+    def _primijeni_raspored_donje_trake(self, uzak):
+        """Sirina kartice s dugmadima za skidanje prati isto pravilo kao lijevi
+        stupac (vidi _primijeni_raspored) - fiksna sirina poravnata lijevo u
+        sirokom rasporedu (stupac 1 ostaje prazan prostor desno), puna sirina
+        u uskom (stupac 1 se iskljuci, da stupac 0 uzme sve)."""
+        if not hasattr(self, "_donja_traka_omot"):
+            return
+        if uzak:
+            self._donja_traka_omot.columnconfigure(0, minsize=0, weight=1)
+            self._donja_traka_omot.columnconfigure(1, weight=0)
+        else:
+            self._donja_traka_omot.columnconfigure(0, minsize=self.SIRINA_LIJEVOG_STUPCA, weight=0)
+            self._donja_traka_omot.columnconfigure(1, weight=1)
 
     def _izgradi_statusnu_traku(self):
         traka = tk.Frame(self.root, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
@@ -3193,6 +3453,7 @@ class App:
             "kvaliteta": self.var_kvaliteta.get(),
             "video_format": self.var_video_format.get(),
             "audio_format": self.var_audio_format.get(),
+            "omjer_slike": self.var_omjer_slike.get(),
             "h264": self.var_h264.get(),
             "metapodaci": self.var_metapodaci.get(),
         })
@@ -3334,7 +3595,7 @@ class App:
     def _auto_ucitaj_player(self):
         """Ako prvi redak izgleda kao pravi link i razlikuje se od zadnjeg koji
         smo vec automatski otvorili, otvori/osvjezi player - BEZ da korisnik mora
-        kliknuti '🎬 Pregledaj i označi isječak'."""
+        kliknuti '🔄 Ponovno učitaj player'."""
         self._auto_ucitaj_after_id = None
         if not PYWEBVIEW_DOSTUPAN:
             return
@@ -3372,6 +3633,51 @@ class App:
             return None
         return sirovi.splitlines()[0].strip()
 
+    # ------------------------------------------------- auto-zalijepi iz clipboarda ---
+    def _pokreni_pracenje_clipboarda(self):
+        """Periodicki (svake ~1s) provjerava je li u clipboardu novi link, i ako
+        JEST, sam ga upisuje u polje za linkove - bez da korisnik mora sam
+        pritisnuti Ctrl+V ili 'Zalijepi'. Radi SAMO dok prozor ima fokus (vidi
+        _na_fokus_prozora) - ne diramo clipboard dok korisnik radi u NEKOJ
+        DRUGOJ aplikaciji, samo kad se stvarno vrati na nas prozor (npr. nakon
+        sto je kopirao link u browseru)."""
+        if getattr(self, "_prozor_ima_fokus", False) and not self.aktivno_preuzimanje:
+            self._provjeri_clipboard_za_link()
+        self.root.after(1000, self._pokreni_pracenje_clipboarda)
+
+    def _na_fokus_prozora(self, event):
+        if event.widget is not self.root:
+            return
+        self._prozor_ima_fokus = True
+
+    def _na_gubitak_fokusa_prozora(self, event):
+        if event.widget is not self.root:
+            return
+        self._prozor_ima_fokus = False
+
+    def _provjeri_clipboard_za_link(self):
+        try:
+            tekst = self.root.clipboard_get().strip()
+        except Exception:
+            return  # clipboard prazan ili ne sadrzi tekst (npr. slika) - nema se sto raditi
+
+        if tekst == self._zadnji_clipboard_link:
+            return  # vec smo ovo vidjeli/obradili - ne radi nista (izbjegava ponavljanje)
+        self._zadnji_clipboard_link = tekst
+
+        if not re.match(r"^https?://\S+$", tekst, re.IGNORECASE):
+            return  # nije (samo) link - ne diraj polje
+
+        sirovi = self.text_links.get("1.0", "end").strip()
+        if sirovi and sirovi != self._placeholder:
+            if tekst in sirovi.splitlines():
+                return  # vec je u polju - ne dodaji duplikat
+            self.text_links.insert("end", "\n" + tekst)
+        else:
+            self._obrisi_placeholder()
+            self.text_links.insert("1.0", tekst)
+        self.ispisi(self.t("msg_clipboard_auto_zalijepljen"))
+
     def otvori_output_folder(self):
         self._otvori_putanju(self.trenutni_folder)
 
@@ -3400,6 +3706,53 @@ class App:
 
     def azuriraj_brzinu(self, tekst):
         self.lbl_brzina.config(text=tekst)
+
+    def _prikazi_status_linkova(self, linkovi):
+        """Gradi popis linkova sa statusom (⏳ čeka / 🔄 skida se / ✅ uspjelo /
+        ❌ nije uspjelo) - poziva se SAMO kad ima VIŠE OD JEDNOG linka, da se
+        odmah vidi koji je link uspio/pao, umjesto da se to mora tražiti
+        skrolanjem kroz STATUS log."""
+        for w in self.frame_status_linkova.winfo_children():
+            w.destroy()
+        self._redovi_status_linkova = []
+
+        if len(linkovi) <= 1:
+            self.frame_status_linkova.pack_forget()
+            return
+
+        self.frame_status_linkova.pack(fill="x", pady=(0, 8), before=self._log_okvir)
+        for i, url in enumerate(linkovi):
+            red = tk.Frame(self.frame_status_linkova, bg=CARD)
+            red.pack(fill="x", pady=1)
+            ikona = tk.Label(red, text="⏳", font=("Segoe UI", 9), bg=CARD, fg=SUBTEXT, width=2)
+            ikona.pack(side="left", padx=(6, 4), pady=3)
+            skraceno = url if len(url) <= 70 else url[:67] + "..."
+            tekst = tk.Label(red, text=skraceno, font=("Segoe UI", 8), bg=CARD, fg=SUBTEXT, anchor="w")
+            tekst.pack(side="left", fill="x", expand=True, pady=3)
+            self._redovi_status_linkova.append((ikona, tekst))
+
+    def _azuriraj_status_link(self, indeks, stanje):
+        """'stanje' je jedno od: 'skida', 'uspjeh', 'neuspjeh'."""
+        if indeks < 0 or indeks >= len(self._redovi_status_linkova):
+            return
+        ikona, tekst = self._redovi_status_linkova[indeks]
+        mapa = {
+            "skida": ("🔄", TEXT),
+            "uspjeh": ("✅", SUCCESS),
+            "neuspjeh": ("❌", DANGER),
+        }
+        simbol, boja = mapa.get(stanje, ("⏳", SUBTEXT))
+        try:
+            ikona.config(text=simbol, fg=boja)
+            tekst.config(fg=boja if stanje != "skida" else TEXT)
+        except Exception:
+            pass
+
+    def _sakrij_status_linkova(self):
+        self.frame_status_linkova.pack_forget()
+        for w in self.frame_status_linkova.winfo_children():
+            w.destroy()
+        self._redovi_status_linkova = []
 
     def ponisti_isjecak(self):
         self.od_sek = None
@@ -3884,6 +4237,7 @@ class App:
 
     def _skini_visestruke_isjecke(self, linkovi, isjecci, nacin):
         napravi_folder(self.trenutni_folder)
+        self.root.after(0, self._sakrij_status_linkova)  # popis linkova je za skini_sve, ne za ovo
 
         if not yt_dlp_dostupan():
             try:
@@ -4036,11 +4390,13 @@ class App:
 
         uspjesni = 0
         neuspjesni = 0
+        self.root.after(0, self._prikazi_status_linkova, linkovi)
 
         for i, url in enumerate(linkovi, start=1):
             if self.otkazano:
                 break
             self.root.after(0, self.ispisi, f"\n[{i}/{len(linkovi)}] {url}")
+            self.root.after(0, self._azuriraj_status_link, i - 1, "skida")
             platforma = prepoznaj_platformu(url)
 
             argumenti_url = [url, *self._argumenti_za_nacin(nacin, platforma), *zajednicki, *raspon]
@@ -4052,8 +4408,10 @@ class App:
 
             if uspjelo:
                 uspjesni += 1
+                self.root.after(0, self._azuriraj_status_link, i - 1, "uspjeh")
             elif not self.otkazano:
                 neuspjesni += 1
+                self.root.after(0, self._azuriraj_status_link, i - 1, "neuspjeh")
                 self.root.after(0, lambda em=zadnja_greska: self.ispisi(self.t("msg_error_generic").format(em)))
 
         self._zavrsi_preuzimanje(uspjesni, neuspjesni)
@@ -4116,6 +4474,8 @@ class App:
                     self._osiguraj_h264(vrijeme_prije)
                 if nacin != "samo_zvuk" and "--download-sections" in argumenti_url:
                     self._popravi_trajanje_isjecka(vrijeme_prije)
+                if nacin != "samo_zvuk":
+                    self._primijeni_omjer_slike(vrijeme_prije)
                 self.root.after(0, self.azuriraj_progress, 100)
                 return True, None
 
@@ -4173,6 +4533,7 @@ class App:
             self.root.after(0, self.ispisi, self.t("msg_audio_removed"))
         if "--download-sections" in argumenti_url:
             self._popravi_trajanje_isjecka(vrijeme_prije)
+        self._primijeni_omjer_slike(vrijeme_prije)
         return True, None
 
     def _popravi_trajanje_isjecka(self, vrijeme_prije):
@@ -4272,6 +4633,46 @@ class App:
                 self.root.after(0, self.ispisi, self.t("msg_codec_convert_failed"))
         except Exception as err:
             self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_codec_check_failed").format(em)))
+
+    def _primijeni_omjer_slike(self, vrijeme_prije):
+        """Nakon skidanja, ako je korisnik odabrao ciljni omjer slike (npr. 9:16
+        za TikTok/Reels/Shorts umjesto izvornog 16:9), video se prereze preko
+        ffmpega da TOCNO popuni taj omjer - crop na sredini, BEZ crnih traka.
+        Ovisno je li izvor "sirok" ili "uzak" u odnosu na ciljni omjer, malo
+        se odsijece ili s lijeva/desna ili s vrha/dna (nikad oboje)."""
+        omjer = _omjer_u_wh(self.var_omjer_slike.get())
+        if omjer is None:
+            return  # "Original" - ne diraj nista
+        ffmpeg = ffmpeg_putanja()
+        if not ffmpeg:
+            self.root.after(0, self.ispisi, self.t("msg_codec_check_skipped"))
+            return
+        try:
+            putanja = self._zadnji_fajl(vrijeme_prije)
+            if not putanja:
+                return
+            tw, th = omjer
+            self.root.after(0, self.ispisi, self.t("msg_cropping_aspect").format(f"{tw}:{th}"))
+            # "a" je ffmpegov ugradjeni izraz za trenutni omjer slike (iw/ih)
+            # unutar crop filtera. Ako je izvor SIRI od ciljnog omjera, drzi
+            # visinu i odsijeci sirinu; inace drzi sirinu i odsijeci visinu.
+            crop_w = f"if(gt(a,{tw}/{th}),ih*{tw}/{th},iw)"
+            crop_h = f"if(gt(a,{tw}/{th}),ih,iw*{th}/{tw})"
+            privremena = putanja + ".omjer.mp4"
+            subprocess.run(
+                [ffmpeg, "-y", "-i", putanja, "-vf", f"crop={crop_w}:{crop_h}",
+                 "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+                 "-c:a", "copy", privremena],
+                capture_output=True, timeout=3600, **_SUBPROCESS_FLAGS
+            )
+            if os.path.exists(privremena) and os.path.getsize(privremena) > 0:
+                os.remove(putanja)
+                os.rename(privremena, putanja)
+                self.root.after(0, self.ispisi, self.t("msg_aspect_done"))
+            else:
+                self.root.after(0, self.ispisi, self.t("msg_aspect_failed"))
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_aspect_error").format(em)))
 
     def _zavrsi_preuzimanje(self, uspjesni, neuspjesni):
         if self.otkazano:
