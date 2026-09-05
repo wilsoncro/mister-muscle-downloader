@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "1.9"
+APP_VERZIJA = "2.0"
 
 
 def _bazni_folder():
@@ -1161,7 +1161,7 @@ PROMJENE = {
             "Minor cleanup and optimizations.",
         ],
     },
-    "1.9": {
+    "2.0": {
         "hr": [
             "Redizajniran gumb za pokretanje skidanja — sad je '4. POKRENI' "
             "kartica u istom stilu kao koraci 1-2-3 iznad, poravnata s lijevim "
@@ -1173,7 +1173,8 @@ PROMJENE = {
             "ovo dugme sad služi za ručno osvježavanje playera ako zatreba.",
             "Dodano: aplikacija sad automatski prepozna link u clipboardu i "
             "sama ga zalijepi u polje čim se vratiš na prozor aplikacije — "
-            "ne treba više ručno Ctrl+V.",
+            "ne treba više ručno Ctrl+V (pamti i koristi uvijek samo zadnji "
+            "kopirani link, ne gomila stare).",
             "Dodano: isječci koje si već dodao u listu sad imaju svoja "
             "hvatišta direktno na traci — možeš ih povlačiti/rastezati kao i "
             "trenutni odabir, umjesto da mijenjaš samo tekstualna polja.",
@@ -1183,6 +1184,9 @@ PROMJENE = {
             "Dodano: izbor omjera slike (Original, 16:9, 9:16 za TikTok/"
             "Reels/Shorts, 1:1, 4:5 za Instagram) — video se automatski "
             "odreže na sredini da točno popuni odabrani omjer.",
+            "Popravljeno: traka za rezanje isječka (i kontrole ispod nje) "
+            "znala se prikazati jako stisnuto/sitno kod vertikalnih TikTok i "
+            "Instagram videa — sad uvijek zadrži punu, normalnu veličinu.",
         ],
         "en": [
             "Redesigned the download button — it's now a '4. START' card in "
@@ -1195,7 +1199,8 @@ PROMJENE = {
             "this button now serves to manually refresh the player if needed.",
             "Added: the app now detects a link in your clipboard and pastes "
             "it into the field automatically as soon as you switch back to "
-            "the app window — no more manual Ctrl+V needed.",
+            "the app window — no more manual Ctrl+V needed (it always keeps "
+            "just the latest copied link, not a growing pile of old ones).",
             "Added: clips you've already added to the list now have their "
             "own handles directly on the timeline — drag/resize them just "
             "like the current selection, instead of only editing the text "
@@ -1207,6 +1212,9 @@ PROMJENE = {
             "Added: an aspect ratio picker (Original, 16:9, 9:16 for TikTok/"
             "Reels/Shorts, 1:1, 4:5 for Instagram) — the video is "
             "automatically center-cropped to exactly fill the chosen ratio.",
+            "Fixed: the clip-trimming timeline (and the controls below it) "
+            "could render extremely squeezed/tiny for vertical TikTok and "
+            "Instagram videos — it now always keeps its full, normal size.",
         ],
     },
 }
@@ -1676,6 +1684,13 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         -webkit-backdrop-filter: blur(18px) saturate(160%);
         box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
         transition: border-color 0.15s;
+        flex-shrink: 0;
+        /* BEZ ovoga, kad ukupna visina fali (npr. vertikalan TikTok/Instagram
+           video u #player-wrap trazi vise prostora), flexbox po defaultu
+           STISKA i ovaj element ispod njegove zadane 38px visine da nadje
+           mjesta - traka onda ispadne kao tanka crta umjesto prave trake za
+           rezanje. flex-shrink:0 to sprijeci - ova traka ZADRZAVA 38px bez
+           obzira sto se desava s ostatkom rasporeda. */
       }}
       #timeline-container:hover {{ border-color: {ACCENT}; }}
       #timeline-selection {{
@@ -1709,12 +1724,12 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         white-space: nowrap; pointer-events: none; display: none; z-index: 5;
         box-shadow: 0 4px 14px rgba(0,0,0,0.4);
       }}
-      .timeline-hint {{ font-size: 10px; color: {SUBTEXT}; text-align: center; margin-top: 6px; }}
+      .timeline-hint {{ font-size: 10px; color: {SUBTEXT}; text-align: center; margin-top: 6px; flex-shrink: 0; }}
 
-      .info-red {{ display:flex; justify-content:space-between; width:100%; margin-top:10px; font-size:12px; color:{SUBTEXT}; }}
+      .info-red {{ display:flex; justify-content:space-between; width:100%; margin-top:10px; font-size:12px; color:{SUBTEXT}; flex-shrink: 0; }}
       .info-red span {{ font-weight: 600; color: {TEXT}; }}
 
-      .kontrole {{ margin-top:14px; display:flex; align-items:center; gap:8px; width:100%; justify-content:center; flex-wrap:wrap; }}
+      .kontrole {{ margin-top:14px; display:flex; align-items:center; gap:8px; width:100%; justify-content:center; flex-wrap:wrap; flex-shrink: 0; }}
       button {{
         background: linear-gradient(135deg, {ACCENT}, #5e5ce6);
         color:white; border:none; border-radius:999px;
@@ -1739,6 +1754,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         justify-content: space-between; gap: 12px; flex-wrap: wrap;
         backdrop-filter: blur(18px) saturate(160%); -webkit-backdrop-filter: blur(18px) saturate(160%);
         box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
+        flex-shrink: 0;
       }}
       .shorts-panel label {{ font-size: 12px; font-weight: bold; color: {SUBTEXT}; }}
       .shorts-panel input {{
@@ -1755,7 +1771,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       .btn-dodaj-odabir:hover {{ background: rgba(10,132,255,0.28); filter: none; }}
 
       /* --- lista više isječaka odjednom --- */
-      #multi-panel {{ width: 100%; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }}
+      #multi-panel {{ width: 100%; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }}
       .selekcija-red {{
         background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
         border-radius: 14px; padding: 10px 14px; display: flex; align-items: center; gap: 14px;
@@ -1802,7 +1818,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       .multi-blok-handle-left {{ left: -6px; }}
       .multi-blok-handle-right {{ right: -6px; }}
 
-      #status-bar {{ margin-top: 10px; font-size: 12px; font-weight: 600; color: {SUCCESS}; text-align: center; min-height: 16px; }}
+      #status-bar {{ margin-top: 10px; font-size: 12px; font-weight: 600; color: {SUCCESS}; text-align: center; min-height: 16px; flex-shrink: 0; }}
 
       #volume-wrap {{
         position: absolute; bottom: 12px; right: 12px; display:flex; align-items:center;
@@ -3668,14 +3684,15 @@ class App:
         if not re.match(r"^https?://\S+$", tekst, re.IGNORECASE):
             return  # nije (samo) link - ne diraj polje
 
+        # ZAMIJENI cijeli sadrzaj poljem - pamti SAMO zadnji link iz clipboarda,
+        # ne gomila ih (raniji pokusaj je dodavao kao novi red, pa su se stari
+        # linkovi gomilali cak i kad bi ih korisnik rucno obrisao iz polja).
         sirovi = self.text_links.get("1.0", "end").strip()
-        if sirovi and sirovi != self._placeholder:
-            if tekst in sirovi.splitlines():
-                return  # vec je u polju - ne dodaji duplikat
-            self.text_links.insert("end", "\n" + tekst)
-        else:
-            self._obrisi_placeholder()
-            self.text_links.insert("1.0", tekst)
+        if sirovi == tekst:
+            return  # vec tocno ovo pise u polju - nema se sto raditi
+        self.text_links.delete("1.0", "end")
+        self.text_links.config(fg=TEXT)
+        self.text_links.insert("1.0", tekst)
         self.ispisi(self.t("msg_clipboard_auto_zalijepljen"))
 
     def otvori_output_folder(self):
