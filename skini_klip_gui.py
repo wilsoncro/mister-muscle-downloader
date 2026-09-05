@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.0"
+APP_VERZIJA = "2.2"
 
 
 def _bazni_folder():
@@ -674,6 +674,8 @@ PRIJEVODI = {
         "player_naslov": "PLAYER",
         "status_sakrij": "▾ sakrij",
         "status_prikazi": "▸ prikaži",
+        "link_prikazi_log": "📋 Prikaži log",
+        "link_prikazi_player": "🎬 Prikaži player",
         "gumb_ocisti_log": "🗑 očisti log",
         "player_placeholder": "🎬\n\nPlayer za označavanje isječka\nprikazat će se ovdje čim zalijepiš link\n(ili klikni '🔄 Ponovno učitaj player')",
         "player_zaseban_prozor": "🎬\n\nPlayer je otvoren u zasebnom prozoru\n(ugradnja u ovaj prozor zahtijeva Windows + pywin32)",
@@ -871,6 +873,8 @@ PRIJEVODI = {
         "player_naslov": "PLAYER",
         "status_sakrij": "▾ hide",
         "status_prikazi": "▸ show",
+        "link_prikazi_log": "📋 Show log",
+        "link_prikazi_player": "🎬 Show player",
         "gumb_ocisti_log": "🗑 clear log",
         "player_placeholder": "🎬\n\nThe clip-marking player will\nappear here as soon as you paste a link\n(or click '🔄 Reload player')",
         "player_zaseban_prozor": "🎬\n\nThe player opened in a separate window\n(embedding it here requires Windows + pywin32)",
@@ -1217,6 +1221,24 @@ PROMJENE = {
             "Instagram videos — it now always keeps its full, normal size.",
         ],
     },
+    "2.1": {
+        "hr": [
+            "Popravljeno: rijedak bug gdje bi aplikacija povremeno nestala "
+            "iz taskbara dok se ne minimiziraju svi drugi otvoreni prozori.",
+            "Popravljeno: kad automatski pregled ne uspije (npr. za YouTube "
+            "video s onemogućenim ugrađivanjem), player više ne ostaje "
+            "zaglavljen na tuđoj poruci o grešci — sad se prikaže naša "
+            "jasna poruka unutar samog playera.",
+        ],
+        "en": [
+            "Fixed: a rare bug where the app would occasionally disappear "
+            "from the taskbar until all other open windows were minimized.",
+            "Fixed: when the automatic preview fails (e.g. for a YouTube "
+            "video with embedding disabled), the player no longer gets "
+            "stuck showing someone else's error message — it now shows a "
+            "clear message of our own inside the player.",
+        ],
+    },
 }
 
 
@@ -1534,6 +1556,47 @@ _PLAYER_PRIJEVODI = {
 }
 
 
+def _greska_player_html(poruka, jezik="hr"):
+    """Jednostavna stranica u stilu app-a koja se ucita UMJESTO playera kad
+    dohvat pregleda (fallback za YouTube s onemogucenim embedom, ili TikTok/
+    Instagram) ne uspije - bez ovoga bi player ostao zaglavljen na cemu god
+    je prije bilo prikazano (npr. YouTube-ova vlastita "Video unavailable"
+    poruka), sto je zbunjujuce jer izgleda kao da je YouTube kriv, ne nas
+    fallback."""
+    naslov = "Pregled nije uspio" if jezik == "hr" else "Preview failed"
+    podnaslov = ("Skidanje kraceg lokalnog pregleda nije uspjelo. I dalje "
+                 "možeš pokušati skinuti cijeli video ili isječak preko "
+                 "glavnog obrasca lijevo.") if jezik == "hr" else (
+                 "Downloading a shorter local preview didn't work. You can "
+                 "still try downloading the full video or a clip via the "
+                 "main form on the left.")
+    poruka_sigurna = (poruka or "").replace("<", "&lt;").replace(">", "&gt;")
+    return f"""<!DOCTYPE html>
+<html lang="{jezik}">
+<head><meta charset="utf-8">
+<style>
+  body {{
+    margin:0; height:100vh; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; background:{BG}; color:{TEXT}; font-family:"Segoe UI",sans-serif;
+    text-align:center; padding:24px; box-sizing:border-box;
+  }}
+  .ikona {{ font-size:40px; margin-bottom:14px; }}
+  h1 {{ font-size:17px; margin:0 0 8px; color:{DANGER}; }}
+  p {{ font-size:13px; color:{SUBTEXT}; max-width:480px; line-height:1.5; margin:0 0 14px; }}
+  .detalji {{
+    font-family:Consolas,monospace; font-size:11px; color:{SUBTEXT}; background:{LOG_BG};
+    border:1px solid {BORDER}; border-radius:10px; padding:10px 14px; max-width:560px;
+    max-height:120px; overflow:auto; text-align:left; white-space:pre-wrap;
+  }}
+</style></head>
+<body>
+  <div class="ikona">⚠️</div>
+  <h1>{naslov}</h1>
+  <p>{podnaslov}</p>
+  <div class="detalji">{poruka_sigurna}</div>
+</body></html>"""
+
+
 def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
     PT = _PLAYER_PRIJEVODI.get(jezik, _PLAYER_PRIJEVODI["hr"])
     video_id_json = json.dumps(video_id)
@@ -1550,6 +1613,34 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
 
     if je_youtube:
         init_script = f"""
+      function pozovi_lokalni_pregled_fallback() {{
+        // Zajednicka, sigurna verzija poziva prema Pythonu - probamo VISE
+        // puta ako 'window.pywebview.api' jos nije spreman (pywebview most
+        // izmedju JS i Pythona zna zatrebati koji trenutak nakon ucitavanja
+        // stranice da se uspostavi - nasi automatski (bez klika korisnika)
+        // pokusaji mogu stici PRIJE toga), i GRESKU STVARNO PRIKAZEMO u
+        // statusnoj traci playera umjesto da nestane bez traga ako poziv
+        // ipak ne uspije.
+        var pokusaji = 0;
+        function pokusaj() {{
+          pokusaji++;
+          try {{
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.zatrazi_lokalni_pregled) {{
+              window.pywebview.api.zatrazi_lokalni_pregled();
+            }} else if (pokusaji < 20) {{
+              setTimeout(pokusaj, 250);
+            }} else {{
+              document.getElementById('status-bar').innerText =
+                '❌ pywebview API nikad nije postao dostupan (window.pywebview.api ne postoji).';
+            }}
+          }} catch (err) {{
+            document.getElementById('status-bar').innerText =
+              '❌ Greška pri pozivu fallbacka: ' + (err && err.message ? err.message : err);
+          }}
+        }}
+        pokusaj();
+      }}
+
       function onYouTubeIframeAPIReady() {{
         player = new YT.Player('player', {{
           videoId: {video_id_json},
@@ -1562,12 +1653,50 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         player.addEventListener('onError', onPlayerError);
       }}
 
+      // SIGURNOSNA MREZA (razina 1, sira od one u onPlayerReady): ako se
+      // YouTube-ova iframe_api skripta uopce ne ucita/pokrene ispravno (npr.
+      // mrezni/firewall problem specifican za WebView2 kontekst, ili YouTube
+      // blokira bas ovaj tip ugradnje), 'onYouTubeIframeAPIReady' se NIKAD
+      // ne pozove - sto znaci da ni 'player' varijabla nikad ne postane
+      // pravi objekt, pa NI onPlayerReady NI onPlayerError nikad nemaju
+      // priliku ni pokusati (oba su vezana UZ player objekt koji ovdje
+      // uopce ne postoji). Bez ove provjere, ostali bismo zaglavljeni
+      // zauvijek na golom "Player ugraden i spreman" bez ikakvog daljnjeg
+      // pomaka - ni greske, ni videa, ni fallbacka.
+      setTimeout(function() {{
+        if (!player && !fallbackPokrenut) {{
+          fallbackPokrenut = true;
+          document.getElementById('status-bar').innerText = '{PT["embed_fallback_status"]}';
+          pozovi_lokalni_pregled_fallback();
+        }}
+      }}, 8000);
+
       function onPlayerReady(e) {{
         spreman = true;
         trajanjeVid = player.getDuration();
         document.getElementById('vrijeme-ukupno').innerText = formatiraj(trajanjeVid);
         document.getElementById('status-bar').innerText = "{PT['spremno']}";
         setInterval(azurirajPlayhead, 250);
+
+        // SIGURNOSNA MREZA: YouTube zna prikazati SVOJU "Video unavailable"
+        // poruku UNUTAR iframea a da onPlayerError uopce ne pozove nas kod
+        // (ne za sve razloge nedostupnosti postoji sluzbeni error-kod koji
+        // YouTube-ova IFrame API stvarno posalje) - u tom slucaju bi ostali
+        // zaglavljeni zauvijek, bez ikakvog fallbacka. Zato provjerimo SAMI,
+        // par sekundi nakon "ready": ako trajanje nije ispravno dohvaceno
+        // (0 ili NaN) ili se stanje playera nikad nije pomaknulo dalje od
+        // "unstarted", tretiramo to kao da je embed propao i sami pokrenemo
+        // isti fallback (lokalni pregled) koji bi inace pokrenuo onPlayerError.
+        setTimeout(function() {{
+          if (fallbackPokrenut) return;
+          var trajanjeOk = trajanjeVid && !isNaN(trajanjeVid) && trajanjeVid > 0;
+          var stanje = player.getPlayerState();
+          if (!trajanjeOk || stanje === -1) {{
+            fallbackPokrenut = true;
+            document.getElementById('status-bar').innerText = '{PT["embed_fallback_status"]}';
+            pozovi_lokalni_pregled_fallback();
+          }}
+        }}, 6000);
       }}
 
       function onPlayerError(e) {{
@@ -1578,15 +1707,14 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
           101: '{PT["err_embed_disabled"]}',
           150: '{PT["err_embed_disabled"]}'
         }};
-        if ((e.data === 101 || e.data === 150) && !fallbackPokrenut) {{
-          // Vlasnik je iskljucio YouTubeov sluzbeni embed player za ovaj video -
-          // to je ogranicenje koje YouTube nametne po videu i ne moze se
-          // zaobici u sluzbenom iframe playeru. Umjesto toga automatski
-          // trazimo od Pythona da skine kraci lokalni pregled (isto kao za
-          // TikTok/Instagram) i ucita GA - i dalje unutar ovog istog playera.
+        if (!fallbackPokrenut) {{
+          // v2.2: fallback se sad pokusa za BILO KOJI kod greske, ne samo
+          // 101/150 - neki razlozi nedostupnosti YouTube prijavi drugim
+          // kodovima (ili uopce ne pozove ovaj handler, vidi timeout gore u
+          // onPlayerReady), pa je siri pokusaj pouzdaniji nego uski popis.
           fallbackPokrenut = true;
           document.getElementById('status-bar').innerText = '{PT["embed_fallback_status"]}';
-          window.pywebview.api.zatrazi_lokalni_pregled();
+          pozovi_lokalni_pregled_fallback();
           return;
         }}
         document.getElementById('status-bar').innerText =
@@ -1886,6 +2014,13 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
     </div>
     {head_script}
     <script>
+      // DIJAGNOSTIKA: ovo MORA promijeniti tekst odmah, bez obzira sto se
+      // dalje desava - ako korisnik ovo NIKAD ne vidi (status-bar ostaje na
+      // "Ucitavam player..."), znaci da se JavaScript unutar playera uopce
+      // ne izvrsava - potpuno drugaciji, dublji problem od bilo cega u
+      // logici ispod (koja se onda ionako nikad ne stigne pokrenuti).
+      document.getElementById('status-bar').innerText = 'JS pokrenut - čekam...';
+
       var player;
       var trajanjeVid = 0;
       var selectionBox = document.getElementById('timeline-selection');
@@ -2377,6 +2512,8 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_len}")
                 self.send_header("Content-Length", str(length))
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                self.send_header("Pragma", "no-cache")
                 self.end_headers()
                 f.seek(start)
                 self._raspon_duljina = length
@@ -2386,6 +2523,8 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(file_len))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self._raspon_duljina = None
         return f
@@ -2741,7 +2880,15 @@ class App:
         """overrideredirect(True) zna sakriti app iz taskbara (Windows takve
         prozore po defaultu tretira kao "alatne", ne kao prave aplikacije) -
         eksplicitno postavimo WS_EX_APPWINDOW stil da se ikonica ipak
-        pojavi u taskbaru kao i inače."""
+        pojavi u taskbaru kao i inače.
+
+        v2.1: PRIJE smo prozor sakrili pa odmah ponovo prikazali (withdraw +
+        deiconify) da Windows "primijeti" promjenu stila - ali to je znalo
+        zbuniti Windows oko toga koji je prozor trenutno aktivan/na vrhu ako
+        su POSTOJALI drugi otvoreni prozori u tom trenu, i app bi povremeno
+        "nestala" iz taskbara dok se sve ostalo ne minimizira. SetWindowPos s
+        SWP_FRAMECHANGED postize isto (natjera Windows da ponovo procijeni
+        stil prozora) BEZ ikakvog sakrivanja/prikazivanja - sigurnije."""
         try:
             import ctypes
             GWL_EXSTYLE = -20
@@ -2751,9 +2898,8 @@ class App:
             stil = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             stil = (stil | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, stil)
-            # ponovno prikazi prozor da Windows odmah primijeni novi stil na taskbar
-            self.root.withdraw()
-            self.root.after(10, self.root.deiconify)
+            # SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED = 0x1|0x2|0x4|0x20
+            ctypes.windll.user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x27)
         except Exception:
             pass
 
@@ -3123,6 +3269,16 @@ class App:
                                           bg=CARD, fg=SUBTEXT, cursor="hand2")
         self.lbl_status_naslov.pack(side="left", pady=9)
 
+        # Zaseban gumb za PREBACIVANJE izmedju playera i STATUS loga (dok je
+        # panel otvoren) - "sakrij/prikaži" desno od ovoga samo SKUPLJA/SIRI
+        # cijeli panel, ne prebacuje sadrzaj, pa bez ovoga nema nacina da
+        # korisnik RUCNO pogleda log dok je player otvoren (npr. da provjeri
+        # detalje greske nakon neuspjelog pregleda).
+        self.lbl_prebaci_prikaz = tk.Label(zaglavlje, text="", font=("Segoe UI", 8, "underline"),
+                                           bg=CARD, fg=ACCENT, cursor="hand2")
+        self.lbl_prebaci_prikaz.pack(side="left", padx=(10, 0), pady=9)
+        self.lbl_prebaci_prikaz.bind("<Button-1>", self._prebaci_player_log)
+
         self.lbl_status_strelica = tk.Label(zaglavlje, text=self.t("status_sakrij"), font=("Segoe UI", 8),
                                             bg=CARD, fg=SUBTEXT, cursor="hand2")
         self.lbl_status_strelica.pack(side="right", padx=12, pady=9)
@@ -3187,9 +3343,22 @@ class App:
         if self._status_expanded:
             self.desni_sadrzaj.pack(fill="both", expand=True, side="top")
             self.lbl_status_strelica.config(text=self.t("status_sakrij"))
+            if (EMBED_PLAYERA_DOSTUPAN and getattr(self, "_webview_hwnd", None)
+                    and getattr(self, "_desni_mod", None) == "player"):
+                try:
+                    win32gui.ShowWindow(self._webview_hwnd, win32con.SW_SHOW)
+                except Exception:
+                    pass
         else:
             self.desni_sadrzaj.pack_forget()
             self.lbl_status_strelica.config(text=self.t("status_prikazi"))
+            # isti razlog kao u _prikazi_sadrzaj - pravi Windows prozor se ne
+            # sakrije sam kad se Tkinter roditelj skupi, mora se rucno sakriti.
+            if EMBED_PLAYERA_DOSTUPAN and getattr(self, "_webview_hwnd", None):
+                try:
+                    win32gui.ShowWindow(self._webview_hwnd, win32con.SW_HIDE)
+                except Exception:
+                    pass
 
     def _prikazi_sadrzaj(self, mod):
         """Prebacuje ono sto je prikazano u zajednickom prostoru (self.desni_sadrzaj)
@@ -3201,8 +3370,20 @@ class App:
         self.player_placeholder.place_forget()
         self.player_embed_frame.place_forget()
         self.status_body.pack_forget()
+        # BITNO: ugradjeni webview je PRAVI Windows prozor (spojen preko
+        # SetParent, ne obican Tkinter widget) - place_forget() na Tkinter
+        # OKVIRU koji ga sadrzi NE sakrije i sam taj pravi prozor, on ostaje
+        # vidljiv PREKO svega (npr. preko STATUS loga) jer Tkinter uopce ne
+        # zna za njega. Mora se rucno sakriti/prikazati preko Win32 poziva.
+        if EMBED_PLAYERA_DOSTUPAN and getattr(self, "_webview_hwnd", None):
+            try:
+                win32gui.ShowWindow(self._webview_hwnd,
+                                    win32con.SW_SHOW if mod == "player" else win32con.SW_HIDE)
+            except Exception:
+                pass
         if mod == "player":
             self.lbl_status_naslov.config(text=self.t("player_naslov"))
+            self.lbl_prebaci_prikaz.config(text=self.t("link_prikazi_log"))
             if EMBED_PLAYERA_DOSTUPAN:
                 self.player_embed_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
             else:
@@ -3210,9 +3391,19 @@ class App:
                 self.player_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         else:
             self.lbl_status_naslov.config(text=self.t("status_naslov"))
+            self.lbl_prebaci_prikaz.config(
+                text=self.t("link_prikazi_player") if getattr(self, "_zadnji_video_id", None) else "")
             self.status_body.pack(fill="both", expand=True)
         if not self._status_expanded:
             self._toggle_status()
+
+    def _prebaci_player_log(self, event=None):
+        """Klik na 'Prikaži log'/'Prikaži player' link - RUCNO prebacivanje
+        izmedju ta dva prikaza, neovisno o skupi/rasiri gumbu pored njega."""
+        if self._desni_mod == "player":
+            self._prikazi_sadrzaj("log")
+        elif getattr(self, "_zadnji_video_id", None):
+            self._prikazi_sadrzaj("player")
 
     # ------------------------------------------------------- status svjetlo ---
     def _status_light(self, boja):
@@ -3809,7 +4000,15 @@ class App:
                         self.pokreni_preuzimanje_visestrukih_isjecaka(vrijednost)
                     elif tip == "lokalni_pregled":
                         self._fallback_lokalni_pregled()
-            except Exception:
+            except Exception as err:
+                # PRIJE (v2.2) se ovo tiho gutalo (samo 'break', bez ikakvog
+                # traga) - ako bi BILO STA u obradi poruke iz reda (npr.
+                # _fallback_lokalni_pregled()) puklo, korisnik NIKAD ne bi
+                # saznao zasto se nista ne desava, jer bi greska jednostavno
+                # nestala bez traga - upravo ono sto nam se dogadjalo. Sad se
+                # barem ispise puni trag u STATUS log.
+                self.ispisi(self.t("msg_error_generic").format(f"{type(err).__name__}: {err}"))
+                self.ispisi(self.t("msg_full_error_details").format(traceback.format_exc()))
                 break
         self.root.after(100, self.provjeri_queue)
 
@@ -4076,9 +4275,30 @@ class App:
                 self.root.after(0, lambda em=kratka_poruka: messagebox.showerror(
                     self.t("err_naslov"), self.t("err_cant_fetch_preview").format(em)))
                 self.root.after(0, lambda pt=puni_trag: self.ispisi(self.t("msg_preview_failed_log").format(pt)))
+                # BITNO: bez ovoga, player ostaje zauvijek "zaglavljen" na
+                # STAROM (najcesce YouTubeovom vlastitom "Video unavailable")
+                # ekranu, jer se nista nikad ne ucita PREKO njega - korisnik
+                # vidi tudju, zbunjujucu poruku umjesto nase jasne greske.
+                self._ucitaj_u_player(_greska_player_html(kratka_poruka, self.jezik), identifikator)
                 return
             html = _player_html("generic", video_src=f"/{naziv_video_fajla}", jezik=self.jezik)
 
+        self._ucitaj_u_player(html, identifikator)
+
+    def _ucitaj_u_player(self, html, identifikator):
+        """Zapisuje HTML u privremeni fajl i ucitava ga u player - ugradjeni
+        prozor ako je dostupan, inace zaseban fallback prozor. Dijeljeno
+        izmedju uspjesnog ucitavanja I prikaza greske (obje trebaju isti
+        mehanizam da STVARNO zamijene ono sto je prije bilo prikazano).
+
+        v2.2: URL dobiva jedinstven "?v=<broj>" dodatak SVAKI PUT - bez ovoga,
+        YouTube-ov pokusaj i naknadni lokalni fallback pokusaj dijele ISTI
+        identifikator, pa bi load_url() dobio POTPUNO ISTI URL kao pri prvom
+        pokusaju. WebView2 zna to protumaciti kao "vec sam na ovoj stranici"
+        i NE ponovno stvarno navigirati/nacrtati NOVI sadrzaj fajla (iako se
+        sadrzaj fajla na disku promijenio) - upravo zasto je fallback prikaz
+        znao ostati zaglavljen na STAROM (YouTube-ovom) prikazu."""
+        self._brojac_ucitavanja_playera = getattr(self, "_brojac_ucitavanja_playera", 0) + 1
         naziv_fajla = f"preview_{identifikator}.html"
         putanja = os.path.join(self.temp_dir, naziv_fajla)
         try:
@@ -4089,7 +4309,7 @@ class App:
                 self.t("err_naslov"), self.t("err_cant_prepare_player").format(em)))
             return
 
-        preview_url = f"http://127.0.0.1:{self.http_port}/{naziv_fajla}"
+        preview_url = f"http://127.0.0.1:{self.http_port}/{naziv_fajla}?v={self._brojac_ucitavanja_playera}"
 
         if EMBED_PLAYERA_DOSTUPAN and self._webview_window is not None:
             # cekaj (kratko) da je prozor vec ugradjen prvi put, pa mu samo promijeni URL
@@ -4114,13 +4334,22 @@ class App:
     def _skini_generic_preview(self, url, identifikator):
         """Skida manju kopiju videa lokalno - TikTokov CDN link trazi ista HTTP
         zaglavlja kojima ga je yt-dlp izvukao, pa <video src="..."> direktno cesto
-        vrati 403. Lokalna kopija to zaobilazi."""
+        vrati 403. Lokalna kopija to zaobilazi.
+
+        v2.2: format selektor promijenjen s "best[height<=480]..." (trazi VEC
+        SPOJEN video+zvuk u jednom formatu) na "bestvideo[height<=480]+bestaudio"
+        (trazi odvojene tokove pa ih SAM spoji preko ffmpega, isto kao sto vec
+        radi glavno skidanje). Moderni YouTube za mnoge videe VISE NE NUDI
+        pre-spojene ("progressive") formate iznad ~360p (ponekad nijedan) - stari
+        selektor je davao "Requested format is not available" bas za takve
+        videe, sto je bio pravi uzrok "zaglavljenog" YouTube fallback pregleda."""
         if not yt_dlp_dostupan():
             preuzmi_yt_dlp_exe()
         naziv_fajla = f"preview_{identifikator}.mp4"
         putanja = os.path.join(self.temp_dir, naziv_fajla)
         argumenti = [
-            url, "-f", "best[height<=480][ext=mp4]/best[height<=480]/best",
+            url, "-f", "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+            "--merge-output-format", "mp4",
             "-o", putanja, "--no-playlist", "--playlist-items", "1", "--quiet", "--no-warnings",
             "--impersonate", "chrome",
             *ffmpeg_argumenti(),
