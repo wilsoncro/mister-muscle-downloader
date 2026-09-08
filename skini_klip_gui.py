@@ -272,6 +272,19 @@ CONFIG_PATH = os.path.join(_config_folder(), "mister_muscle_config.json")
 
 JE_WINDOWS = os.name == "nt"
 
+# v2.3: PRILAGODJENA naslovna traka (vlastita, ne Windows-ova - vidi
+# App._izgradi_prilagodjenu_naslovnu_traku) je NAMJERNO ISKLJUCENA po
+# defaultu - korisnici su prijavili da app zna povremeno nestati iz
+# taskbara dok se sve ostalo ne minimizira, cak i nakon dva razlicita
+# pokusaja popravka (razliciti nacini forsiranja WS_EX_APPWINDOW stila).
+# To je previse rizika za cisto kozmeticku prednost. App i dalje dobiva
+# TAMNU naslovnu traku (i na Windows 11 22H2+ TOCNU boju app-a) preko
+# sluzbenog, puno stabilnijeg DWM API-ja (_omoguci_tamnu_naslovnu_traku) -
+# samo bez potpune zamjene min/maximize/close dugmadi. Ako se u buducnosti
+# nadje pouzdaniji nacin da se taskbar problem rijesi, ovo se moze vratiti
+# na True.
+KORISTI_PRILAGODJENU_NASLOVNU_TRAKU = True
+
 _SUBPROCESS_FLAGS = {}
 if JE_WINDOWS:
     _SUBPROCESS_FLAGS["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -1239,6 +1252,47 @@ PROMJENE = {
             "clear message of our own inside the player.",
         ],
     },
+    "2.2": {
+        "hr": [
+            "Popravljeno: video s onemogućenim YouTube ugrađivanjem znao se "
+            "trajno zaglaviti na YouTube-ovoj 'Video unavailable' poruci — "
+            "automatski lokalni pregled sad pouzdano preuzima cijeli lanac "
+            "problema (pogrešan format skidanja, spor/nikad-pozvan YouTube "
+            "signal o grešci, i sam prikaz koji se znao 'zamrznuti' na "
+            "starom sadržaju).",
+            "Popravljeno: rijetka, tiha greška u pozadinskoj obradi poruka "
+            "playera koja je mogla sakriti pravi uzrok problema.",
+        ],
+        "en": [
+            "Fixed: a video with YouTube embedding disabled could get "
+            "permanently stuck on YouTube's own 'Video unavailable' message "
+            "— the automatic local preview now reliably takes over (fixed "
+            "the whole chain: a wrong download format, a slow/never-fired "
+            "YouTube error signal, and the display itself sometimes "
+            "'freezing' on stale content).",
+            "Fixed: a rare, silent bug in background player-message "
+            "handling that could hide the real cause of a problem.",
+        ],
+    },
+    "2.3": {
+        "hr": [
+            "Popravljeno: rijedak slučaj gdje bi VLC (i drugi playeri) "
+            "pokazivali pogrešno (predugo) trajanje isječka kad se koristi "
+            "zajedno s H.264 pretvorbom ili rezanjem omjera slike.",
+            "Popravljeno: aplikacija je povremeno znala nestati iz taskbara "
+            "dok se svi drugi otvoreni prozori ne minimiziraju — riješeno "
+            "pouzdanijom tehnikom (umjesto Windows-a da nagađa, sad ga "
+            "eksplicitno vodimo za ruku).",
+        ],
+        "en": [
+            "Fixed: a rare case where VLC (and other players) would show "
+            "the wrong (too long) clip duration when used together with "
+            "H.264 conversion or aspect ratio cropping.",
+            "Fixed: the app would occasionally disappear from the taskbar "
+            "until all other open windows were minimized — resolved with a "
+            "more reliable technique.",
+        ],
+    },
 }
 
 
@@ -2014,13 +2068,6 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
     </div>
     {head_script}
     <script>
-      // DIJAGNOSTIKA: ovo MORA promijeniti tekst odmah, bez obzira sto se
-      // dalje desava - ako korisnik ovo NIKAD ne vidi (status-bar ostaje na
-      // "Ucitavam player..."), znaci da se JavaScript unutar playera uopce
-      // ne izvrsava - potpuno drugaciji, dublji problem od bilo cega u
-      // logici ispod (koja se onda ionako nikad ne stigne pokrenuti).
-      document.getElementById('status-bar').innerText = 'JS pokrenut - čekam...';
-
       var player;
       var trajanjeVid = 0;
       var selectionBox = document.getElementById('timeline-selection');
@@ -2754,11 +2801,16 @@ class App:
         - Promjena veličine je moguća SAMO preko malog "grip" znaka u donjem
           desnom kutu, ne povlačenjem bilo kojeg ruba.
         - Samo na Windowsu - drugi OS-ovi zadržavaju normalan okvir."""
-        if not JE_WINDOWS:
+        if not JE_WINDOWS or not KORISTI_PRILAGODJENU_NASLOVNU_TRAKU:
             return False
         try:
             self.root.overrideredirect(True)
             self._omoguci_taskbar_ikonu()
+            # Sigurnosni ponovni pokusaj s odgodom - ako je prvi put bilo
+            # prerano (prozor jos nije stvarno realiziran na OS razini),
+            # isti obrazac koji je vec pomogao za slicne Windows probleme
+            # drugdje u ovoj app.
+            self.root.after(500, self._omoguci_taskbar_ikonu)
 
             self._maksimiziran = False
             self._geometrija_prije_max = None
@@ -2878,23 +2930,77 @@ class App:
 
     def _omoguci_taskbar_ikonu(self):
         """overrideredirect(True) zna sakriti app iz taskbara (Windows takve
-        prozore po defaultu tretira kao "alatne", ne kao prave aplikacije) -
-        eksplicitno postavimo WS_EX_APPWINDOW stil da se ikonica ipak
-        pojavi u taskbaru kao i inače.
+        prozore po defaultu tretira kao "alatne", ne kao prave aplikacije).
 
-        v2.1: PRIJE smo prozor sakrili pa odmah ponovo prikazali (withdraw +
-        deiconify) da Windows "primijeti" promjenu stila - ali to je znalo
-        zbuniti Windows oko toga koji je prozor trenutno aktivan/na vrhu ako
-        su POSTOJALI drugi otvoreni prozori u tom trenu, i app bi povremeno
-        "nestala" iz taskbara dok se sve ostalo ne minimizira. SetWindowPos s
-        SWP_FRAMECHANGED postize isto (natjera Windows da ponovo procijeni
-        stil prozora) BEZ ikakvog sakrivanja/prikazivanja - sigurnije."""
+        v2.3: PRIJE smo mijenjali WS_EX_APPWINDOW/TOOLWINDOW stil NA SAMOM
+        borderless prozoru NAKON sto je vec stvoren - dva razlicita pokusaja
+        toga (withdraw+deiconify, pa SetWindowPos+FRAMECHANGED) su OBA znala
+        povremeno rezultirati time da app nestane iz taskbara dok se ostalo
+        ne minimizira. Umjesto toga koristimo poznatiju, robusniju tehniku:
+        napravimo SITAN, TRAJNO SKRIVEN "vlasnicki" prozor koji ima NORMALAN
+        Windows stil OD SAMOG POCETKA (dakle stabilnu taskbar prisutnost bez
+        ikakvog naknadnog hakiranja stila), i njega postavimo kao VLASNIKA
+        (owner, preko GWLP_HWNDPARENT) naseg stvarnog borderless prozora.
+        Windows taskbar prati vlasnicki lanac, pa app dobije pouzdanu
+        ikonicu koja ne ovisi o Z-redu drugih prozora."""
         try:
             import ctypes
+            import ctypes.wintypes
+
+            GetWindowLongPtrW = getattr(ctypes.windll.user32, "GetWindowLongPtrW", None) \
+                or ctypes.windll.user32.GetWindowLongW
+            SetWindowLongPtrW = getattr(ctypes.windll.user32, "SetWindowLongPtrW", None) \
+                or ctypes.windll.user32.SetWindowLongW
+            # GetWindowLongPtrW/SetWindowLongPtrW postoje samo na 64-bit Pythonu;
+            # na 32-bit se automatski vrati na 32-bit inacicu (getattr fallback gore).
+
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+
+            # Sitan, TRAJNO skriven "vlasnicki" prozor - obican Tk Toplevel s
+            # normalnim (ne-overrideredirect) stilom, pozicioniran daleko izvan
+            # ekrana. Cuvamo referencu na self da ga garbage collector ne
+            # pokupi (i time unisti hwnd) dok app radi.
+            if not hasattr(self, "_taskbar_vlasnik"):
+                self._taskbar_vlasnik = tk.Toplevel(self.root)
+                self._taskbar_vlasnik.title(self.t("naslov_prozora"))
+                self._taskbar_vlasnik.geometry("1x1+-3000+-3000")
+                try:
+                    _ip = _ikona_putanja()
+                    if _ip:
+                        self._taskbar_vlasnik.iconbitmap(_ip)
+                except Exception:
+                    pass
+                self._taskbar_vlasnik.attributes("-alpha", 0.0)
+                self._taskbar_vlasnik.update_idletasks()
+                # BITNO: sam vlasnicki prozor MORA biti "alatni" (WS_EX_TOOLWINDOW)
+                # inace bi i ON dobio svoju (praznu, duh) taskbar ikonicu - cilj
+                # mu je SAMO da posluzi kao stabilna "kuka" za nas pravi prozor,
+                # ne da se sam vidi bilo gdje.
+                try:
+                    v_hwnd = (ctypes.windll.user32.GetParent(self._taskbar_vlasnik.winfo_id())
+                              or self._taskbar_vlasnik.winfo_id())
+                    GWL_EXSTYLE_V = -20
+                    WS_EX_TOOLWINDOW_V = 0x00000080
+                    WS_EX_APPWINDOW_V = 0x00040000
+                    v_stil = ctypes.windll.user32.GetWindowLongW(v_hwnd, GWL_EXSTYLE_V)
+                    v_stil = (v_stil | WS_EX_TOOLWINDOW_V) & ~WS_EX_APPWINDOW_V
+                    ctypes.windll.user32.SetWindowLongW(v_hwnd, GWL_EXSTYLE_V, v_stil)
+                    ctypes.windll.user32.SetWindowPos(v_hwnd, None, 0, 0, 0, 0, 0x27)
+                except Exception:
+                    pass
+
+            vlasnik_hwnd = (ctypes.windll.user32.GetParent(self._taskbar_vlasnik.winfo_id())
+                            or self._taskbar_vlasnik.winfo_id())
+
+            GWLP_HWNDPARENT = -8
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, vlasnik_hwnd)
+
+            # I dalje postavimo WS_EX_APPWINDOW/uklonimo TOOLWINDOW na glavnom
+            # prozoru kao dodatnu sigurnost (ne smeta, cak i ako vlasnicki
+            # trik sam po sebi vec rijesi problem).
             GWL_EXSTYLE = -20
             WS_EX_APPWINDOW = 0x00040000
             WS_EX_TOOLWINDOW = 0x00000080
-            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
             stil = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             stil = (stil | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, stil)
@@ -3692,6 +3798,11 @@ class App:
         if self._webview_window is not None:
             try:
                 self._webview_window.destroy()
+            except Exception:
+                pass
+        if hasattr(self, "_taskbar_vlasnik"):
+            try:
+                self._taskbar_vlasnik.destroy()
             except Exception:
                 pass
         self.root.destroy()
@@ -4718,10 +4829,16 @@ class App:
                     self.root.after(0, self.ispisi, self.t("msg_silent_video_done"))
                 if nacin != "samo_zvuk" and platforma != "youtube" and self.var_h264.get():
                     self._osiguraj_h264(vrijeme_prije)
-                if nacin != "samo_zvuk" and "--download-sections" in argumenti_url:
-                    self._popravi_trajanje_isjecka(vrijeme_prije)
                 if nacin != "samo_zvuk":
                     self._primijeni_omjer_slike(vrijeme_prije)
+                # BITNO: popravak trajanja/metapodataka MORA biti ZADNJI korak
+                # koji dira sam video fajl - i H.264 konverzija i rezanje
+                # omjera slike su SVOJI ffmpeg re-encode prolazi koji (bez
+                # ove garancije redoslijeda) mogu PONOVNO uneseti pogresne
+                # metapodatke/vremenske oznake koje je ovaj korak vec popravio
+                # da ih VLC ispravno cita.
+                if nacin != "samo_zvuk" and "--download-sections" in argumenti_url:
+                    self._popravi_trajanje_isjecka(vrijeme_prije)
                 self.root.after(0, self.azuriraj_progress, 100)
                 return True, None
 
@@ -4777,9 +4894,9 @@ class App:
             putanja = f"{korijen} [bez zvuka]{nastavak}"
             os.rename(bez_zvuka, putanja)
             self.root.after(0, self.ispisi, self.t("msg_audio_removed"))
+        self._primijeni_omjer_slike(vrijeme_prije)
         if "--download-sections" in argumenti_url:
             self._popravi_trajanje_isjecka(vrijeme_prije)
-        self._primijeni_omjer_slike(vrijeme_prije)
         return True, None
 
     def _popravi_trajanje_isjecka(self, vrijeme_prije):
@@ -4867,8 +4984,9 @@ class App:
             self.root.after(0, self.ispisi, self.t("msg_converting_codec").format(kodek.upper()))
             privremena = putanja + ".h264.mp4"
             subprocess.run(
-                [ffmpeg, "-y", "-i", putanja, "-c:v", "libx264", "-crf", "18",
-                 "-preset", "medium", "-c:a", "aac", "-b:a", "192k", privremena],
+                [ffmpeg, "-y", "-fflags", "+genpts", "-i", putanja, "-c:v", "libx264", "-crf", "18",
+                 "-preset", "medium", "-c:a", "aac", "-b:a", "192k",
+                 "-map_metadata", "-1", "-avoid_negative_ts", "make_zero", privremena],
                 capture_output=True, timeout=3600, **_SUBPROCESS_FLAGS
             )
             if os.path.exists(privremena) and os.path.getsize(privremena) > 0:
@@ -4906,9 +5024,9 @@ class App:
             crop_h = f"if(gt(a,{tw}/{th}),ih,iw*{th}/{tw})"
             privremena = putanja + ".omjer.mp4"
             subprocess.run(
-                [ffmpeg, "-y", "-i", putanja, "-vf", f"crop={crop_w}:{crop_h}",
-                 "-c:v", "libx264", "-crf", "18", "-preset", "medium",
-                 "-c:a", "copy", privremena],
+                [ffmpeg, "-y", "-fflags", "+genpts", "-i", putanja, "-vf", f"crop={crop_w}:{crop_h}",
+                 "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-c:a", "copy",
+                 "-map_metadata", "-1", "-avoid_negative_ts", "make_zero", privremena],
                 capture_output=True, timeout=3600, **_SUBPROCESS_FLAGS
             )
             if os.path.exists(privremena) and os.path.getsize(privremena) > 0:
