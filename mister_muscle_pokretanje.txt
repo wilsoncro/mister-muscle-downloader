@@ -562,3 +562,5 @@
 23:26:17.374  _cekaj_pa_ugradi_webview() našao hwnd=133604 - ugrađujem
 23:26:17.374  App(root) gotovo
 23:26:17.374  root.mainloop() kreće
+23:31:14.555  root.mainloop() završio (prozor zatvoren)
+23:31:16.047  root.mainloop() završio (prozor zatvoren)

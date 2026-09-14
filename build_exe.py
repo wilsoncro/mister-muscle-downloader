@@ -128,7 +128,18 @@ def main():
     argumenti = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
-        "--onefile",           # sve u jedan .exe
+        # v2.7: MAKNUT "--onefile". Onefile build RASPAKIRA CIJELI Python u
+        # privremeni %TEMP%\_MEIxxxxxx folder SVAKI PUT kad se .exe pokrene -
+        # ako antivirus/Windows Defender u tom trenu (npr. odmah nakon
+        # instalacije, dok Inno Setup jos "postinstall" pokrece app) jos
+        # skenira/zakljuca te tek-raspakirane fajlove, raspakiravanje zna
+        # pući s "Failed to load Python DLL ... python3XX.dll ... LoadLibrary:
+        # The specified module could not be found" - upravo bug koji su
+        # korisnici prijavili (prvi put ne radi, zatvore/otvore i onda radi).
+        # BEZ "--onefile" PyInstaller pravi "onedir" build (cijela mapa
+        # umjesto jednog .exe-a) - app se pokrene DIREKTNO odatle, bez
+        # raspakiravanja u temp pri svakom startu, pa ovaj citav razred buga
+        # nestaje. Instalater (.iss) sad kopira CIJELU tu mapu, ne jedan fajl.
         "--windowed",          # bez crnog konzolnog prozora iza GUI-ja
         "--name", NAZIV,
         "--collect-all", "webview",   # pywebview vuce podatke koje PyInstaller sam ne nade
@@ -156,15 +167,16 @@ def main():
 
     pokreni(argumenti, "Gradim .exe (traje 1-3 minute)")
 
-    gotov = os.path.join(OVDJE, "dist", NAZIV + (".exe" if os.name == "nt" else ""))
+    gotov = os.path.join(OVDJE, "dist", NAZIV, NAZIV + (".exe" if os.name == "nt" else ""))
     print("\n" + "=" * 60)
     if not os.path.isfile(gotov):
         print("Build je zavrsio, ali .exe nije na ocekivanom mjestu — pogledaj ispis iznad.")
         print("=" * 60)
         return
 
-    mb = os.path.getsize(gotov) / 1024 / 1024
-    print(f"GOTOVO:  {gotov}   ({mb:.1f} MB)")
+    mb = sum(os.path.getsize(os.path.join(korijen, f))
+             for korijen, _, fajlovi in os.walk(os.path.dirname(gotov)) for f in fajlovi) / 1024 / 1024
+    print(f"GOTOVO:  {gotov}   (cijela mapa: {mb:.1f} MB)")
     print("=" * 60)
 
     # ---- automatski nastavi i napravi pravi instalacijski program (Inno Setup) ----

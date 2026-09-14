@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.6"
+APP_VERZIJA = "2.7"
 
 
 def _bazni_folder():
@@ -826,6 +826,8 @@ PRIJEVODI = {
         "msg_embed_not_found": "⚠ Ugrađeni player nije pronađen — koristit će se zaseban prozor.",
         "msg_embed_failed": "⚠ Ugradnja playera nije uspjela: {0}",
         "app_update_naslov": "Dostupna nova verzija",
+        "msg_app_update_found_short": "🆕 Aplikacija: dostupna nova verzija v{0} (vidi ponudu za instalaciju)",
+        "msg_app_already_latest": "✅ Aplikacija: već najnovija verzija",
         "app_update_text": "Dostupna je nova verzija aplikacije: v{0}\n(trenutno imaš: v{1})\n\n"
                            "Preuzeti i pokrenuti instalaciju sada? Aplikacija će se zatvoriti da bi se "
                            "mogla nadograditi.",
@@ -1025,6 +1027,8 @@ PRIJEVODI = {
         "msg_embed_not_found": "⚠️ Embedded player not found — using a separate window instead.",
         "msg_embed_failed": "⚠️ Embedding the player failed: {0}",
         "app_update_naslov": "New version available",
+        "msg_app_update_found_short": "🆕 App: new version v{0} available (see install prompt)",
+        "msg_app_already_latest": "✅ App: already the latest version",
         "app_update_text": "A new app version is available: v{0}\n(you currently have: v{1})\n\n"
                            "Download and run the installer now? The app will close so it can be updated.",
         "msg_downloading_app_update": "⏳ Downloading the new app version...",
@@ -1344,6 +1348,28 @@ PROMJENE = {
             "Improved: when 'Audio only' is selected, the 'Aspect ratio' "
             "picker is now hidden too — cropping doesn't apply without "
             "video.",
+        ],
+    },
+    "2.7": {
+        "hr": [
+            "Popravljeno: klik na 'Provjeri ažuriranja' sad uvijek iznova "
+            "pita GitHub postoji li nova verzija same aplikacije, ne samo "
+            "yt-dlp/ffmpeg — prije se aplikacija provjeravala samo jednom, "
+            "tiho, pri pokretanju.",
+            "Popravljeno: rijedak slučaj gdje bi aplikacija odmah nakon "
+            "instalacije pukla s greškom 'Failed to load Python DLL' (radilo "
+            "je nakon zatvaranja i ponovnog pokretanja) — promijenjen način "
+            "izrade instalacije da se taj problem u korijenu izbjegne.",
+        ],
+        "en": [
+            "Fixed: clicking 'Check for updates' now always re-checks "
+            "GitHub for a new app version too, not just yt-dlp/ffmpeg — "
+            "previously the app itself was only checked once, silently, at "
+            "startup.",
+            "Fixed: a rare case where the app would fail right after "
+            "installation with a 'Failed to load Python DLL' error (it "
+            "worked after closing and reopening) — changed how the "
+            "installer is built to avoid this issue at the root.",
         ],
     },
 }
@@ -4364,6 +4390,20 @@ class App:
         # --- 2) ffmpeg ---
         if samo in (None, "ffmpeg"):
             sazetak.append(self._osiguraj_ffmpeg(prisilno=(samo == "ffmpeg")))
+
+        # --- 3) sama aplikacija (preko GitHub Releases) - PRIJE (v2.6) se ovo
+        # provjeravalo SAMO JEDNOM, tiho, pri prvom pokretanju app-a - ako je
+        # korisnik ostavio app otvorenu satima/danima, klik na "Provjeri
+        # ažuriranja" nikad nije ponovno pitao GitHub, samo bi javio da je
+        # yt-dlp/ffmpeg azurno i sutio o samoj app-i. Sad ovaj klik UVIJEK
+        # ponovno pita GitHub, ne oslanja se na provjeru od pri pokretanju.
+        if samo is None:
+            app_verzija, app_url = _najnovija_verzija_app()
+            if app_verzija and app_url and _usporedi_verzije(app_verzija, APP_VERZIJA) > 0:
+                sazetak.append(self.t("msg_app_update_found_short").format(app_verzija))
+                self.root.after(0, lambda av=app_verzija, au=app_url: self._ponudi_azuriranje_app(av, au))
+            else:
+                sazetak.append(self.t("msg_app_already_latest"))
 
         self.root.after(0, self._osvjezi_statusnu_traku)
         self.root.after(0, lambda s="\n".join(sazetak): messagebox.showinfo(self.t("updates_naslov"), s))

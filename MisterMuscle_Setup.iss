@@ -1,34 +1,35 @@
 ﻿; ============================================================================
 ;  MisterMuscle_Setup.iss
-;  Inno Setup skripta koja od VEÄ† IZGRAÄENOG dist\MisterMuscle.exe (napravljenog
-;  preko "python build_exe.py") pravi pravi Windows instalacijski program -
-;  s ikonicom u Start meniju, preÄicom na Desktopu i "Ukloni program" opcijom.
+;  Inno Setup skripta koja od VEĆ IZGRAĐENE dist\MisterMuscle\ mape
+;  (napravljene preko "python build_exe.py") pravi pravi Windows
+;  instalacijski program - s ikonicom u Start meniju, prečicom na Desktopu i
+;  "Ukloni program" opcijom.
 ;
-;  KAKO KORISTITI (jednom, na SVOM Windows raÄunalu):
-;    1) Prvo napravi MisterMuscle.exe:
+;  KAKO KORISTITI (jednom, na SVOM Windows računalu):
+;    1) Prvo napravi dist\MisterMuscle\ mapu:
 ;         python build_exe.py
-;       (mora se pokrenuti na Windowsu - .exe se ne moÅ¾e napraviti na
+;       (mora se pokrenuti na Windowsu - .exe se ne može napraviti na
 ;        Linuxu/Macu za Windows)
 ;
 ;    2) Skini i instaliraj Inno Setup (besplatan, ~5 min):
 ;         https://jrsoftware.org/isdl.php
 ;
-;    3) Desni klik na ovu datoteku (MisterMuscle_Setup.iss) â†’ "Compile"
-;       (ili je otvori u Inno Setup Compileru pa Build â†’ Compile / F9)
+;    3) Desni klik na ovu datoteku (MisterMuscle_Setup.iss) → "Compile"
+;       (ili je otvori u Inno Setup Compileru pa Build → Compile / F9)
 ;
 ;    4) Rezultat je:  Output\MisterMuscle_Setup.exe
-;       TO je jedina datoteka koju Å¡aljeÅ¡/dijeliÅ¡ korisnicima. Oni je
+;       TO je jedina datoteka koju šalješ/dijeliš korisnicima. Oni je
 ;       pokrenu, kliknu "Dalje" par puta, i gotovo - ne treba im Python,
 ;       yt-dlp ni ffmpeg, aplikacija to sve sama skine kod prvog pokretanja.
 ;
-;  Ova skripta instalira u pravi Program Files (traÅ¾i admin/UAC potvrdu pri
+;  Ova skripta instalira u pravi Program Files (traži admin/UAC potvrdu pri
 ;  instalaciji - to je normalno za Program Files) - alati (yt-dlp/ffmpeg) i
 ;  postavke svejedno idu u korisnikov profil (ne u Program Files), kako app
 ;  sama vec radi, pa nema problema s pravima pisanja ni nakon instalacije.
 ; ============================================================================
 
 #define MyAppName "Mister Muscle Downloader"
-#define MyAppVersion "2.6"
+#define MyAppVersion "2.7"
 #define MyAppPublisher "Mister Muscle"
 #define MyAppExeName "MisterMuscle.exe"
 
@@ -70,9 +71,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-; PRIJE compile-anja ove skripte mora vec postojati dist\MisterMuscle.exe -
-; napravi ga sa "python build_exe.py" (vidi upute na vrhu ove datoteke).
-Source: "dist\MisterMuscle.exe"; DestDir: "{app}"; Flags: ignoreversion
+; PRIJE compile-anja ove skripte mora vec postojati cijela mapa
+; dist\MisterMuscle\ - napravi je sa "python build_exe.py" (vidi upute na
+; vrhu ove datoteke). v2.7: kopiramo CIJELU mapu (recursesubdirs), ne samo
+; jedan .exe - build_exe.py je prebacen s "--onefile" na "--onedir" da
+; izbjegne bug gdje bi app na nekim racunalima pukla s "Failed to load
+; Python DLL" pri PRVOM pokretanju odmah nakon instalacije (onefile
+; raspakira Python u temp SVAKI put kad se pokrene - antivirus zna
+; zakljucati te fajlove bas u tom trenu; onedir to potpuno izbjegava, app
+; se pokrece direktno iz vec instalirane mape, bez ikakvog raspakiravanja).
+Source: "dist\MisterMuscle\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
