@@ -1,4 +1,4 @@
-('C:\\Users\\mario\\Desktop\\app final\\build\\MisterMuscle\\PYZ-00.pyz',
+('C:\\Users\\mario\\Desktop\\TEMP\\app final\\build\\MisterMuscle\\PYZ-00.pyz',
  [('PyInstaller',
    'C:\\Users\\mario\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\__init__.py',
    'PYMODULE'),

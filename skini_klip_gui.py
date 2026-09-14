@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.3"
+APP_VERZIJA = "2.4"
 
 
 def _bazni_folder():
@@ -283,7 +283,7 @@ JE_WINDOWS = os.name == "nt"
 # samo bez potpune zamjene min/maximize/close dugmadi. Ako se u buducnosti
 # nadje pouzdaniji nacin da se taskbar problem rijesi, ovo se moze vratiti
 # na True.
-KORISTI_PRILAGODJENU_NASLOVNU_TRAKU = True
+KORISTI_PRILAGODJENU_NASLOVNU_TRAKU = False
 
 _SUBPROCESS_FLAGS = {}
 if JE_WINDOWS:
@@ -1477,6 +1477,14 @@ def izgradi_format_string(platforma, nacin, visina, h264):
       nacin = 'samo_zvuk'  -> uzmi samo audio stream (slika se uopce ne skida)
       nacin = 'samo_video' -> uzmi samo video stream (nijemi fajl, ~30% manji)
       nacin = 'video_zvuk' -> klasicno, oba pa spoji (treba ffmpeg)
+
+    v2.4: 'video_zvuk' sad preferira 'bestaudio[ext=m4a]' (AAC) PRIJE golog
+    'bestaudio' - YouTube-ov "najbolji" audio je gotovo uvijek Opus (webm),
+    koji ffmpeg TEHNICKI moze ugurati u .mp4 spremnik bez greske, ali ga
+    Premiere Pro (i neki drugi editori) ne prepoznaju kao audio traku -
+    projekt djeluje kao da je fajl "sam video, bez zvuka" iako zvuk fizicki
+    postoji u fajlu. AAC/M4A je univerzalno podrzan u MP4-u. Pada natrag na
+    obican 'bestaudio' samo ako AAC opcija uopce ne postoji za taj video.
     """
     hf = f"[height<={visina}]" if visina else ""
 
@@ -1490,14 +1498,17 @@ def izgradi_format_string(platforma, nacin, visina, h264):
 
     if platforma == "youtube":
         if h264:
-            return _bez_duplikata(f"bestvideo[vcodec^=avc1]{hf}+bestaudio/bestvideo{hf}+bestaudio/best{hf}/best")
-        return _bez_duplikata(f"bestvideo{hf}+bestaudio/best{hf}/best")
+            return _bez_duplikata(f"bestvideo[vcodec^=avc1]{hf}+bestaudio[ext=m4a]/"
+                              f"bestvideo[vcodec^=avc1]{hf}+bestaudio/"
+                              f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
+        return _bez_duplikata(f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
 
     # TikTok/Instagram/ostalo: cesto dolazi kao jedan gotov (progressive) fajl.
     if h264:
-        return _bez_duplikata(f"best[vcodec^=avc1]{hf}/bestvideo[vcodec^=avc1]{hf}+bestaudio/"
-                          f"bestvideo{hf}+bestaudio/best{hf}/best")
-    return _bez_duplikata(f"bestvideo{hf}+bestaudio/best{hf}/best")
+        return _bez_duplikata(f"best[vcodec^=avc1]{hf}/bestvideo[vcodec^=avc1]{hf}+bestaudio[ext=m4a]/"
+                          f"bestvideo[vcodec^=avc1]{hf}+bestaudio/"
+                          f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
+    return _bez_duplikata(f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
 
 
 class PlayerAPI:
@@ -4859,6 +4870,13 @@ class App:
             prolazna = any(t in donji for t in [
                 "unable to extract", "rehydration", "webpage video data",
                 "http error 5", "timed out", "timeout", "connection",
+                "http error 403", "forbidden",
+                # HTTP 403 na YouTube-u je gotovo uvijek ISTEKAO potpisani link
+                # (googlevideo.com URL-ovi vrijede ograniceno, ponekad kratko) -
+                # ne stvarna zabrana pristupa. Ponovni pokusaj IZNOVA izvuce
+                # svjez link (nova "Extracting URL" faza), sto gotovo uvijek
+                # rijesi problem - upravo zasto "drugi put radi" bez ikakve
+                # izmjene s korisnikove strane.
             ])
             if prolazna and pokusaj < MAX_POKUSAJA:
                 self.root.after(0, lambda p=pokusaj: self.ispisi(self.t("msg_retry_attempt").format(p)))

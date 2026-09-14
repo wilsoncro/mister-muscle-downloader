@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('C:/Users/mario/Desktop/app final/ikona.ico', '.')]
+datas = [('C:/Users/mario/Desktop/TEMP/app final/ikona.ico', '.')]
 binaries = []
 hiddenimports = ['psutil', 'win32gui', 'win32con', 'win32timezone']
 tmp_ret = collect_all('webview')
@@ -9,7 +9,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['C:/Users/mario/Desktop/app final/skini_klip_gui.py'],
+    ['C:/Users/mario/Desktop/TEMP/app final/skini_klip_gui.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -42,5 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:/Users/mario/Desktop/app final/ikona.ico'],
+    icon=['C:/Users/mario/Desktop/TEMP/app final/ikona.ico'],
 )
