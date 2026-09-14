@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.4"
+APP_VERZIJA = "2.5"
 
 
 def _bazni_folder():
@@ -1291,6 +1291,34 @@ PROMJENE = {
             "Fixed: the app would occasionally disappear from the taskbar "
             "until all other open windows were minimized — resolved with a "
             "more reliable technique.",
+        ],
+    },
+    "2.4": {
+        "hr": [
+            "Popravljeno: skidanje s YouTube-a je znalo pući s 'HTTP 403 "
+            "Forbidden' greškom pri prvom pokušaju (radilo tek na ponovnom "
+            "pokušaju) — sad se to automatski, samo od sebe, ponovno "
+            "pokuša, bez potrebe da to sam radiš ručno.",
+            "Popravljeno: video skinut u modu 'Video + zvuk' je znao u "
+            "Premiereu izgledati kao da nema audio traku (zvuk je bio u "
+            "fajlu, ali u formatu koji Premiere ne prepoznaje) — sad se "
+            "bira audio format koji je univerzalno kompatibilan.",
+            "Vraćena standardna Windows naslovna traka (uz tamnu boju) — "
+            "prilagođena traka je povremeno uzrokovala nestajanje ikone "
+            "aplikacije iz taskbara.",
+        ],
+        "en": [
+            "Fixed: downloading from YouTube could fail with an 'HTTP 403 "
+            "Forbidden' error on the first attempt (only working on a "
+            "retry) — this now retries automatically on its own, no need "
+            "to do it manually.",
+            "Fixed: a video downloaded in 'Video + audio' mode could look "
+            "like it had no audio track in Premiere (the sound was in the "
+            "file, just in a format Premiere doesn't recognize) — now uses "
+            "a universally compatible audio format.",
+            "Restored the standard Windows title bar (with dark styling) — "
+            "the custom title bar was occasionally causing the app's "
+            "taskbar icon to disappear.",
         ],
     },
 }
@@ -3321,14 +3349,16 @@ class App:
                                          state="readonly", style="Cyber.TCombobox", width=16)
         self.cb_kvaliteta.grid(row=1, column=0, sticky="w")
 
-        tk.Label(red_kv, text=self.t("oznaka_format_videa"), font=("Segoe UI", 8, "bold"), bg=CARD, fg=SUBTEXT).grid(
-            row=0, column=1, sticky="w", padx=(18, 0), pady=(0, 3))
+        self.lbl_format_videa = tk.Label(red_kv, text=self.t("oznaka_format_videa"), font=("Segoe UI", 8, "bold"),
+                                         bg=CARD, fg=SUBTEXT)
+        self.lbl_format_videa.grid(row=0, column=1, sticky="w", padx=(18, 0), pady=(0, 3))
         self.cb_video_format = ttk.Combobox(red_kv, values=VIDEO_FORMATI, textvariable=self.var_video_format,
                                             state="readonly", style="Cyber.TCombobox", width=18)
         self.cb_video_format.grid(row=1, column=1, sticky="w", padx=(18, 0))
 
-        tk.Label(red_kv, text=self.t("oznaka_format_zvuka"), font=("Segoe UI", 8, "bold"), bg=CARD, fg=SUBTEXT).grid(
-            row=0, column=2, sticky="w", padx=(18, 0), pady=(0, 3))
+        self.lbl_format_zvuka = tk.Label(red_kv, text=self.t("oznaka_format_zvuka"), font=("Segoe UI", 8, "bold"),
+                                         bg=CARD, fg=SUBTEXT)
+        self.lbl_format_zvuka.grid(row=0, column=2, sticky="w", padx=(18, 0), pady=(0, 3))
         self.cb_audio = ttk.Combobox(red_kv, values=AUDIO_FORMATI, textvariable=self.var_audio_format,
                                      state="readonly", style="Cyber.TCombobox", width=20)
         self.cb_audio.grid(row=1, column=2, sticky="w", padx=(18, 0))
@@ -3760,11 +3790,29 @@ class App:
     # ------------------------------------------------------- male pomocne ---
     def _osvjezi_stanje_nacina(self):
         """Sivi opcije koje za odabrani nacin nemaju smisla - da korisnik ne bira
-        rezoluciju za mp3 ili audio format za nijemi video."""
+        rezoluciju za mp3 ili audio format za nijemi video. Dodatno, cijeli
+        stupac irelevantnog formata se SAKRIJE (ne samo sivi) - "Format zvuka"
+        nestane za 'Samo video', "Format videa" nestane za 'Samo zvuk' - manje
+        nereda na ekranu kad ta opcija ionako ne vrijedi nista."""
         nacin = self.var_nacin.get()
         self.cb_audio.config(state="readonly" if nacin == "samo_zvuk" else "disabled")
         self.cb_video_format.config(state="disabled" if nacin == "samo_zvuk" else "readonly")
         self.cb_kvaliteta.config(state="disabled" if nacin == "samo_zvuk" else "readonly")
+
+        if nacin == "samo_video":
+            self.lbl_format_zvuka.grid_remove()
+            self.cb_audio.grid_remove()
+        else:
+            self.lbl_format_zvuka.grid(row=0, column=2, sticky="w", padx=(18, 0), pady=(0, 3))
+            self.cb_audio.grid(row=1, column=2, sticky="w", padx=(18, 0))
+
+        if nacin == "samo_zvuk":
+            self.lbl_format_videa.grid_remove()
+            self.cb_video_format.grid_remove()
+        else:
+            self.lbl_format_videa.grid(row=0, column=1, sticky="w", padx=(18, 0), pady=(0, 3))
+            self.cb_video_format.grid(row=1, column=1, sticky="w", padx=(18, 0))
+
         oznake = {"video_zvuk": self.t("skini_video"), "samo_video": self.t("skini_video_bez_zvuka"),
                   "samo_zvuk": self.t("skini_zvuk")}
         if not self.aktivno_preuzimanje:
