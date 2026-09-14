@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.5"
+APP_VERZIJA = "2.6"
 
 
 def _bazni_folder():
@@ -1319,6 +1319,31 @@ PROMJENE = {
             "Restored the standard Windows title bar (with dark styling) — "
             "the custom title bar was occasionally causing the app's "
             "taskbar icon to disappear.",
+        ],
+    },
+    "2.5": {
+        "hr": [
+            "Poboljšano: kad je odabran 'Samo video', 'Format zvuka' "
+            "izbornik se sad sakrije (ne samo zasivi); kad je odabran "
+            "'Samo zvuk', 'Format videa' se sakrije — manje nereda na "
+            "ekranu za opcije koje ionako ne vrijede.",
+        ],
+        "en": [
+            "Improved: when 'Video only' is selected, the 'Audio format' "
+            "picker is now hidden (not just greyed out); when 'Audio only' "
+            "is selected, 'Video format' is hidden — less clutter for "
+            "options that don't apply anyway.",
+        ],
+    },
+    "2.6": {
+        "hr": [
+            "Poboljšano: kad je odabran 'Samo zvuk', sad se sakrije i "
+            "'Omjer slike' izbornik — rezanje omjera nema smisla bez videa.",
+        ],
+        "en": [
+            "Improved: when 'Audio only' is selected, the 'Aspect ratio' "
+            "picker is now hidden too — cropping doesn't apply without "
+            "video.",
         ],
     },
 }
@@ -3363,15 +3388,16 @@ class App:
                                      state="readonly", style="Cyber.TCombobox", width=20)
         self.cb_audio.grid(row=1, column=2, sticky="w", padx=(18, 0))
 
-        red_omjer = tk.Frame(card, bg=CARD)
-        red_omjer.pack(fill="x", padx=14, pady=(12, 14))
-        tk.Label(red_omjer, text=self.t("oznaka_omjer_slike"), font=("Segoe UI", 8, "bold"), bg=CARD,
+        self.red_omjer = tk.Frame(card, bg=CARD)
+        self.red_omjer.pack(fill="x", padx=14, pady=(12, 14))
+        tk.Label(self.red_omjer, text=self.t("oznaka_omjer_slike"), font=("Segoe UI", 8, "bold"), bg=CARD,
                  fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
-        self.cb_omjer = ttk.Combobox(red_omjer, values=OMJERI_SLIKE, textvariable=self.var_omjer_slike,
+        self.cb_omjer = ttk.Combobox(self.red_omjer, values=OMJERI_SLIKE, textvariable=self.var_omjer_slike,
                                      state="readonly", style="Cyber.TCombobox", width=28)
         self.cb_omjer.pack(anchor="w")
 
-        tk.Frame(card, bg=CARD).pack(pady=4)
+        self._donji_razmak_opcije = tk.Frame(card, bg=CARD)
+        self._donji_razmak_opcije.pack(pady=4)
 
     def _kartica_folder(self, roditelj):
         self._naslov_kartice(roditelj, "3", self.t("kartica_3"))
@@ -3809,9 +3835,11 @@ class App:
         if nacin == "samo_zvuk":
             self.lbl_format_videa.grid_remove()
             self.cb_video_format.grid_remove()
+            self.red_omjer.pack_forget()
         else:
             self.lbl_format_videa.grid(row=0, column=1, sticky="w", padx=(18, 0), pady=(0, 3))
             self.cb_video_format.grid(row=1, column=1, sticky="w", padx=(18, 0))
+            self.red_omjer.pack(fill="x", padx=14, pady=(12, 14), before=self._donji_razmak_opcije)
 
         oznake = {"video_zvuk": self.t("skini_video"), "samo_video": self.t("skini_video_bez_zvuka"),
                   "samo_zvuk": self.t("skini_zvuk")}
