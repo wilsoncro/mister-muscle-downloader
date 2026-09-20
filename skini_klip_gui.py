@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.7"
+APP_VERZIJA = "2.8"
 
 
 def _bazni_folder():
@@ -2044,6 +2044,19 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
 
       /* --- lista više isječaka odjednom --- */
       #multi-panel {{ width: 100%; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }}
+      #lista-selekcija {{
+        display: flex; flex-direction: column; gap: 6px;
+        max-height: 168px; overflow-y: auto; padding-right: 2px;
+        /* BITNO: body ima overflow:hidden (nema skrolanja stranice), a ova
+           lista (flex-shrink:0 na #multi-panel) je znala narasti VISE od
+           dostupnog prostora kod 6+ isjecaka - dugme "Skini sve isjecke"
+           (koje je ISPOD ove liste, ne unutar nje) je time postajalo fizicki
+           nedohvatljivo, bez ikakvog nacina da mu se dođe. Sad se SAMO ova
+           lista skrola interno (max-height + overflow-y), a dugme ostaje
+           uvijek vidljivo ispod nje, koliko god isjecaka bilo dodano. */
+      }}
+      #lista-selekcija::-webkit-scrollbar {{ width: 6px; }}
+      #lista-selekcija::-webkit-scrollbar-thumb {{ background: {BORDER}; border-radius: 3px; }}
       .selekcija-red {{
         background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
         border-radius: 14px; padding: 10px 14px; display: flex; align-items: center; gap: 14px;
