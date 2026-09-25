@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.8"
+APP_VERZIJA = "2.9"
 
 
 def _bazni_folder():
@@ -363,6 +363,49 @@ def preuzmi_yt_dlp_exe(callback_status=None, callback_postotak=None):
     return putanja
 
 
+# ============================================================================
+#  gallery-dl (SAMO za Instagram SLIKE - yt-dlp video-alat ne podrzava slike
+#  uopce, sluzbeno zatvoreno kao "nece se raditi" na yt-dlp GitHubu). Isti
+#  obrazac auto-preuzimanja kao za yt-dlp/ffmpeg iznad.
+# ============================================================================
+GALLERY_DL_EXE_NAZIV = "gallery-dl.exe" if JE_WINDOWS else "gallery-dl"
+GALLERY_DL_EXE_URL = "https://github.com/mikf/gallery-dl/releases/latest/download/" + GALLERY_DL_EXE_NAZIV
+
+
+def gallery_dl_exe_putanja():
+    return os.path.join(_alati_folder(), GALLERY_DL_EXE_NAZIV)
+
+
+def gallery_dl_dostupan():
+    return os.path.isfile(gallery_dl_exe_putanja())
+
+
+def preuzmi_gallery_dl_exe(callback_status=None, callback_postotak=None):
+    putanja = gallery_dl_exe_putanja()
+    if callback_status:
+        callback_status(f"⏳ Preuzimam {GALLERY_DL_EXE_NAZIV} s GitHub Releases...")
+    preuzmi_datoteku(GALLERY_DL_EXE_URL, putanja, callback_postotak, min_velicina=1_000_000)
+    if callback_status:
+        callback_status(f"✅ {GALLERY_DL_EXE_NAZIV} spreman: {putanja}")
+    return putanja
+
+
+def pokreni_gallery_dl_popen(argumenti, **kwargs):
+    okolina = os.environ.copy()
+    okolina["PYTHONUNBUFFERED"] = "1"
+    return subprocess.Popen(
+        [gallery_dl_exe_putanja(), *argumenti],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+        env=okolina,
+        **_SUBPROCESS_FLAGS, **kwargs
+    )
+
+
+def je_instagram_link(url):
+    return "instagram.com" in url.lower()
+
+
 def _najnovija_verzija_yt_dlp():
     """Provjerava (GitHub API, BEZ preuzimanja ičega) koja je najnovija objavljena
     verzija yt-dlp-a - koristi se za TIHU provjeru pri pokretanju (vidi
@@ -613,11 +656,12 @@ def preuzmi_i_instaliraj_webview2(callback_status=None):
 # ============================================================================
 ZADANI_CONFIG = {
     "izlazni_folder": IZLAZNI_FOLDER,
-    "nacin": "video_zvuk",          # video_zvuk | samo_video | samo_zvuk
+    "nacin": "video_zvuk",          # video_zvuk | samo_video | samo_zvuk | slika_instagram
     "kvaliteta": "Najbolja",
     "video_format": "mp4",
     "audio_format": "mp3",
     "omjer_slike": "Original",      # Original | 16:9 | 9:16 (TikTok/Reels/Shorts) | 1:1 (Square) | 4:5 (Instagram)
+    "cookies_browser": "Chrome",    # odakle gallery-dl vuce Instagram login kolacice
     "h264": False,
     "metapodaci": False,
     "prozor": "1240x820",
@@ -666,11 +710,13 @@ PRIJEVODI = {
         "nacin_samo_video": "🎞  Samo video (bez zvuka)",
         "nacin_samo_video_opis": "nijemi zapis za montažu / B-roll",
         "nacin_samo_zvuk": "🎵  Samo zvuk",
+        "nacin_slika_instagram": "📷  Slika (Instagram)",
         "nacin_samo_zvuk_opis": "mp3 / m4a / wav — bez slike",
         "oznaka_kvaliteta": "Kvaliteta",
         "oznaka_format_videa": "Format videa",
         "oznaka_format_zvuka": "Format zvuka",
         "oznaka_omjer_slike": "Omjer slike",
+        "oznaka_cookies_browser": "Kolačići iz browsera",
         "cb_h264": "Premiere-ready (H.264/avc1)",
         "cb_h264_opis": "traži avc1 i po potrebi pretvori — Premiere ga uvijek čita",
         "cb_metapodaci": "Ugradi naslovnicu i metapodatke",
@@ -680,6 +726,12 @@ PRIJEVODI = {
         "skini_video": "⬇   SKINI VIDEO",
         "skini_video_bez_zvuka": "⬇   SKINI VIDEO BEZ ZVUKA",
         "skini_zvuk": "⬇   SKINI ZVUK",
+        "skini_slike": "⬇   SKINI SLIKE",
+        "ig_slika_naslov": "Slike s Instagrama trebaju prijavu",
+        "ig_slika_objasnjenje": "Instagram od 2023. traži prijavu za skoro sav sadržaj. "
+                                 "Budi ulogiran na Instagram u browseru ispod, pa ćemo "
+                                 "posuditi te podatke za prijavu (kolačiće) — ne tražimo "
+                                 "tvoju lozinku niti je vidimo.",
         "gumb_pauziraj": "⏸ Pauziraj",
         "gumb_nastavi": "▶ Nastavi",
         "gumb_prekini": "✕ Prekini",
@@ -791,6 +843,9 @@ PRIJEVODI = {
         "msg_extracting_audio": "🎵 Izvlačim i pretvaram zvuk...",
         "msg_silent_video_done": "🔇 Skinut nijemi video (bez audio zapisa).",
         "msg_error_generic": "❌ Greška: {0}",
+        "msg_not_instagram_link": "⚠ Ovo nije Instagram link, preskačem: {0}",
+        "msg_ig_no_images_found": "Nije pronađena nijedna slika na tom linku (možda je post izbrisan, privatan, ili je zapravo video).",
+        "msg_ig_login_required": "Instagram traži prijavu za ovaj sadržaj — provjeri jesi li ulogiran na Instagram u odabranom browseru, pa probaj ponovno.",
         "err_cant_start_tool": "Ne mogu pokrenuti {0}: {1}",
         "msg_no_separate_video_stream": "ℹ Ovaj izvor nema odvojeni video zapis — skidam cijeli pa uklanjam zvuk...",
         "msg_tiktok_bug_download": "ℹ️ Poznat obrazac greške (TikTok je promijenio JS 'izazov'). Klikni "
@@ -867,11 +922,13 @@ PRIJEVODI = {
         "nacin_samo_video": "🎞  Video only (no audio)",
         "nacin_samo_video_opis": "silent clip for editing / B-roll",
         "nacin_samo_zvuk": "🎵  Audio only",
+        "nacin_slika_instagram": "📷  Photo (Instagram)",
         "nacin_samo_zvuk_opis": "mp3 / m4a / wav — no video",
         "oznaka_kvaliteta": "Quality",
         "oznaka_format_videa": "Video format",
         "oznaka_format_zvuka": "Audio format",
         "oznaka_omjer_slike": "Aspect ratio",
+        "oznaka_cookies_browser": "Cookies from browser",
         "cb_h264": "Premiere-ready (H.264/avc1)",
         "cb_h264_opis": "requests avc1 and converts if needed — Premiere always reads it",
         "cb_metapodaci": "Embed thumbnail and metadata",
@@ -881,6 +938,12 @@ PRIJEVODI = {
         "skini_video": "⬇   DOWNLOAD VIDEO",
         "skini_video_bez_zvuka": "⬇   DOWNLOAD VIDEO (NO AUDIO)",
         "skini_zvuk": "⬇   DOWNLOAD AUDIO",
+        "skini_slike": "⬇   DOWNLOAD PHOTOS",
+        "ig_slika_naslov": "Instagram photos need you to be logged in",
+        "ig_slika_objasnjenje": "Since 2023, Instagram requires login for almost all "
+                                 "content. Make sure you're logged into Instagram in the "
+                                 "browser below — we'll borrow that login (cookies) from "
+                                 "it. We never ask for or see your password.",
         "gumb_pauziraj": "⏸ Pause",
         "gumb_nastavi": "▶ Resume",
         "gumb_prekini": "✕ Cancel",
@@ -992,6 +1055,9 @@ PRIJEVODI = {
         "msg_extracting_audio": "🎵 Extracting and converting audio...",
         "msg_silent_video_done": "🔇 Downloaded a silent video (no audio track).",
         "msg_error_generic": "❌ Error: {0}",
+        "msg_not_instagram_link": "⚠ Not an Instagram link, skipping: {0}",
+        "msg_ig_no_images_found": "No images found at that link (the post may be deleted, private, or actually a video).",
+        "msg_ig_login_required": "Instagram requires login for this content — make sure you're logged into Instagram in the selected browser, then try again.",
         "err_cant_start_tool": "Can't start {0}: {1}",
         "msg_no_separate_video_stream": "ℹ️ This source has no separate video stream — downloading the full file and removing the audio...",
         "msg_tiktok_bug_download": "ℹ️ Known error pattern (TikTok changed its JS 'challenge'). Click "
@@ -1372,6 +1438,20 @@ PROMJENE = {
             "installer is built to avoid this issue at the root.",
         ],
     },
+    "2.8": {
+        "hr": [
+            "Popravljeno: kad bi se u playeru dodalo više od ~6 isječaka, "
+            "gumb 'Skini sve isječke' je postajao nedohvatljiv (nije bilo "
+            "moguće doskrolati do njega) — lista isječaka sad ima vlastiti "
+            "skrol, a gumb ostaje uvijek vidljiv ispod nje.",
+        ],
+        "en": [
+            "Fixed: adding more than ~6 clips in the player made the "
+            "'Download all clips' button unreachable (no way to scroll to "
+            "it) — the clip list now scrolls on its own, with the button "
+            "always visible below it.",
+        ],
+    },
 }
 
 
@@ -1470,6 +1550,12 @@ OMJERI_SLIKE = [
     "1:1 (Square)",
     "4:5 (Instagram)",
 ]
+
+# Prikazni naziv -> stvarna vrijednost za gallery-dl "--cookies-from-browser".
+# Instagram od 2023. zahtijeva prijavu za skoro sav sadrzaj (cak i javne
+# profile) - gallery-dl to rjesava tako da POSUDI kolacice iz vec ulogiranog
+# browsera na ovom racunalu, umjesto da mi sami trazimo korisnicko/lozinku.
+BROWSERI_COOKIES = ["Chrome", "Edge", "Firefox", "Brave", "Opera", "Vivaldi"]
 
 
 def _omjer_u_wh(naziv):
@@ -2798,6 +2884,7 @@ class App:
         self.var_video_format = tk.StringVar(value=self.cfg.get("video_format", "mp4"))
         self.var_audio_format = tk.StringVar(value=self.cfg["audio_format"])
         self.var_omjer_slike = tk.StringVar(value=self.cfg.get("omjer_slike", "Original"))
+        self.var_cookies_browser = tk.StringVar(value=self.cfg.get("cookies_browser", "Chrome"))
         self.var_h264 = tk.BooleanVar(value=bool(self.cfg["h264"]))
         self.var_metapodaci = tk.BooleanVar(value=bool(self.cfg["metapodaci"]))
 
@@ -3391,6 +3478,7 @@ class App:
             ("video_zvuk", self.t("nacin_video_zvuk")),
             ("samo_video", self.t("nacin_samo_video")),
             ("samo_zvuk", self.t("nacin_samo_zvuk")),
+            ("slika_instagram", self.t("nacin_slika_instagram")),
         ]
         for vrijednost, naslov in nacini:
             red = tk.Frame(card, bg=CARD)
@@ -3407,8 +3495,9 @@ class App:
         red_kv = tk.Frame(card, bg=CARD)
         red_kv.pack(fill="x", padx=14, pady=(0, 14))
 
-        tk.Label(red_kv, text=self.t("oznaka_kvaliteta"), font=("Segoe UI", 8, "bold"), bg=CARD, fg=SUBTEXT).grid(
-            row=0, column=0, sticky="w", pady=(0, 3))
+        self.lbl_kvaliteta = tk.Label(red_kv, text=self.t("oznaka_kvaliteta"), font=("Segoe UI", 8, "bold"),
+                                      bg=CARD, fg=SUBTEXT)
+        self.lbl_kvaliteta.grid(row=0, column=0, sticky="w", pady=(0, 3))
         self.cb_kvaliteta = ttk.Combobox(red_kv, values=KVALITETE, textvariable=self.var_kvaliteta,
                                          state="readonly", style="Cyber.TCombobox", width=16)
         self.cb_kvaliteta.grid(row=1, column=0, sticky="w")
@@ -3434,6 +3523,26 @@ class App:
         self.cb_omjer = ttk.Combobox(self.red_omjer, values=OMJERI_SLIKE, textvariable=self.var_omjer_slike,
                                      state="readonly", style="Cyber.TCombobox", width=28)
         self.cb_omjer.pack(anchor="w")
+
+        # Panel objasnjenja + odabir browsera za "Slika (Instagram)" nacin -
+        # skriven osim kad je taj nacin odabran (vidi _osvjezi_stanje_nacina).
+        # Namjerno vizualno izdvojen (obrub, druga nijansa) da odmah upada u
+        # oko da ovo NIJE isto kao obicno skidanje videa - treba prijava.
+        self.panel_ig_slika = tk.Frame(card, bg=posvijetli(CARD, 0.06),
+                                       highlightbackground=ACCENT, highlightthickness=1)
+        unutra_ig = tk.Frame(self.panel_ig_slika, bg=posvijetli(CARD, 0.06))
+        unutra_ig.pack(fill="x", padx=12, pady=10)
+        tk.Label(unutra_ig, text="📷 " + self.t("ig_slika_naslov"), font=("Segoe UI", 9, "bold"),
+                 bg=posvijetli(CARD, 0.06), fg=TEXT).pack(anchor="w")
+        tk.Label(unutra_ig, text=self.t("ig_slika_objasnjenje"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT, wraplength=380, justify="left").pack(
+            anchor="w", pady=(4, 8))
+        tk.Label(unutra_ig, text=self.t("oznaka_cookies_browser"), font=("Segoe UI", 8, "bold"),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
+        self.cb_cookies_browser = ttk.Combobox(unutra_ig, values=BROWSERI_COOKIES,
+                                               textvariable=self.var_cookies_browser,
+                                               state="readonly", style="Cyber.TCombobox", width=20)
+        self.cb_cookies_browser.pack(anchor="w")
 
         self._donji_razmak_opcije = tk.Frame(card, bg=CARD)
         self._donji_razmak_opcije.pack(pady=4)
@@ -3854,34 +3963,50 @@ class App:
 
     # ------------------------------------------------------- male pomocne ---
     def _osvjezi_stanje_nacina(self):
-        """Sivi opcije koje za odabrani nacin nemaju smisla - da korisnik ne bira
-        rezoluciju za mp3 ili audio format za nijemi video. Dodatno, cijeli
-        stupac irelevantnog formata se SAKRIJE (ne samo sivi) - "Format zvuka"
-        nestane za 'Samo video', "Format videa" nestane za 'Samo zvuk' - manje
-        nereda na ekranu kad ta opcija ionako ne vrijedi nista."""
+        """Sivi/sakriva opcije koje za odabrani nacin nemaju smisla - da korisnik
+        ne bira rezoluciju za mp3, audio format za nijemi video, ili bilo koju
+        video/audio opciju za 'Slika (Instagram)' (koja preko gallery-dl vuce
+        SLIKE, ne video - kvaliteta/format/omjer tu nemaju nikakvog smisla)."""
         nacin = self.var_nacin.get()
-        self.cb_audio.config(state="readonly" if nacin == "samo_zvuk" else "disabled")
-        self.cb_video_format.config(state="disabled" if nacin == "samo_zvuk" else "readonly")
-        self.cb_kvaliteta.config(state="disabled" if nacin == "samo_zvuk" else "readonly")
+        je_slika = (nacin == "slika_instagram")
 
-        if nacin == "samo_video":
+        self.cb_audio.config(state="readonly" if nacin == "samo_zvuk" else "disabled")
+        self.cb_video_format.config(state="disabled" if nacin in ("samo_zvuk", "slika_instagram") else "readonly")
+        self.cb_kvaliteta.config(state="disabled" if nacin in ("samo_zvuk", "slika_instagram") else "readonly")
+
+        if je_slika:
+            self.lbl_kvaliteta.grid_remove()
+            self.cb_kvaliteta.grid_remove()
+        else:
+            self.lbl_kvaliteta.grid(row=0, column=0, sticky="w", pady=(0, 3))
+            self.cb_kvaliteta.grid(row=1, column=0, sticky="w")
+
+        if nacin == "samo_video" or je_slika:
             self.lbl_format_zvuka.grid_remove()
             self.cb_audio.grid_remove()
         else:
             self.lbl_format_zvuka.grid(row=0, column=2, sticky="w", padx=(18, 0), pady=(0, 3))
             self.cb_audio.grid(row=1, column=2, sticky="w", padx=(18, 0))
 
-        if nacin == "samo_zvuk":
+        if nacin == "samo_zvuk" or je_slika:
             self.lbl_format_videa.grid_remove()
             self.cb_video_format.grid_remove()
-            self.red_omjer.pack_forget()
         else:
             self.lbl_format_videa.grid(row=0, column=1, sticky="w", padx=(18, 0), pady=(0, 3))
             self.cb_video_format.grid(row=1, column=1, sticky="w", padx=(18, 0))
+
+        if nacin == "samo_zvuk" or je_slika:
+            self.red_omjer.pack_forget()
+        else:
             self.red_omjer.pack(fill="x", padx=14, pady=(12, 14), before=self._donji_razmak_opcije)
 
+        if je_slika:
+            self.panel_ig_slika.pack(fill="x", padx=14, pady=(0, 14), before=self._donji_razmak_opcije)
+        else:
+            self.panel_ig_slika.pack_forget()
+
         oznake = {"video_zvuk": self.t("skini_video"), "samo_video": self.t("skini_video_bez_zvuka"),
-                  "samo_zvuk": self.t("skini_zvuk")}
+                  "samo_zvuk": self.t("skini_zvuk"), "slika_instagram": self.t("skini_slike")}
         if not self.aktivno_preuzimanje:
             self.btn_download.config(text=oznake.get(nacin, self.t("skini_video")))
 
@@ -4670,6 +4795,23 @@ class App:
         linkovi = [l.strip() for l in sirovi.splitlines() if l.strip()]
 
         nacin = self.var_nacin.get()
+
+        if nacin == "slika_instagram":
+            # Slike idu preko gallery-dl, ne yt-dlp/ffmpeg - potpuno odvojen
+            # put, bez provjere ffmpeg-a (slike se ne spajaju/re-enkodiraju).
+            self._spremi_postavke()
+            self.aktivno_preuzimanje = True
+            self.otkazano = False
+            self.pause_event.set()
+            self.btn_download.config(state="disabled", text=self.t("skidam"), bg=PAUSE_BG)
+            self.btn_pause.config(state="normal")
+            self.btn_prekini.config(state="normal")
+            self.azuriraj_progress(0)
+            self._status_light(ACCENT)
+            self._prikazi_sadrzaj("log")
+            threading.Thread(target=self.skini_instagram_slike, args=(linkovi,), daemon=True).start()
+            return
+
         treba_ffmpeg = (nacin != "samo_video") or (self.od_sek is not None or self.do_sek is not None)
         if treba_ffmpeg and not ffmpeg_dostupan():
             if messagebox.askyesno(
@@ -4912,6 +5054,98 @@ class App:
                 self.root.after(0, lambda em=zadnja_greska: self.ispisi(self.t("msg_error_generic").format(em)))
 
         self._zavrsi_preuzimanje(uspjesni, neuspjesni)
+
+    def skini_instagram_slike(self, linkovi):
+        """Zaseban put za 'Slika (Instagram)' nacin - koristi gallery-dl (NE
+        yt-dlp, koji slike uopce ne podrzava - vidi komentar uz GALLERY_DL_*
+        na vrhu fajla) preko kolacica posudjenih iz vec ulogiranog browsera.
+        Namjerno odvojeno od skini_sve() - drugaciji alat, drugaciji format
+        izlaza za parsiranje, nema ffmpeg/isjecke/kvalitetu u igri."""
+        napravi_folder(self.trenutni_folder)
+
+        if not gallery_dl_dostupan():
+            try:
+                preuzmi_gallery_dl_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): messagebox.showerror(
+                    self.t("err_naslov"), self.t("err_cant_download_tool").format(GALLERY_DL_EXE_NAZIV, em)))
+                self._zavrsi_preuzimanje(0, len(linkovi))
+                return
+
+        browser = self.var_cookies_browser.get().lower()
+        uspjesni = 0
+        neuspjesni = 0
+        self.root.after(0, self._prikazi_status_linkova, linkovi)
+
+        for i, url in enumerate(linkovi, start=1):
+            if self.otkazano:
+                break
+            self.root.after(0, self.ispisi, f"\n[{i}/{len(linkovi)}] {url}")
+            self.root.after(0, self._azuriraj_status_link, i - 1, "skida")
+
+            if not je_instagram_link(url):
+                neuspjesni += 1
+                self.root.after(0, self._azuriraj_status_link, i - 1, "neuspjeh")
+                self.root.after(0, lambda u=url: self.ispisi(self.t("msg_not_instagram_link").format(u)))
+                continue
+
+            argumenti = ["--cookies-from-browser", browser, "--directory", self.trenutni_folder, url]
+            uspjelo, poruka = self._skini_ig_slike_jedan(argumenti)
+            if uspjelo:
+                uspjesni += 1
+                self.root.after(0, self._azuriraj_status_link, i - 1, "uspjeh")
+            elif not self.otkazano:
+                neuspjesni += 1
+                self.root.after(0, self._azuriraj_status_link, i - 1, "neuspjeh")
+                self.root.after(0, lambda em=poruka: self.ispisi(self.t("msg_error_generic").format(em)))
+
+        self._zavrsi_preuzimanje(uspjesni, neuspjesni)
+
+    def _skini_ig_slike_jedan(self, argumenti):
+        try:
+            proc = pokreni_gallery_dl_popen(argumenti)
+        except Exception as err:
+            return False, self.t("err_cant_start_tool").format(GALLERY_DL_EXE_NAZIV, err)
+
+        self.aktivni_proces = proc
+        if not self.pause_event.is_set():
+            self._primijeni_pauzu(True)
+
+        broj_slika = 0
+        izlaz_redovi = []
+        # gallery-dl (za razliku od yt-dlp) nema strukturirane postotke - samo
+        # ispise punu putanju svakog skinutog fajla, jedan po redu, cim
+        # zavrsi. Brojimo te redove kao "uspjesno skinuto N slika" umjesto
+        # prave postotne trake.
+        for redak in proc.stdout:
+            redak = redak.rstrip("\n")
+            if not redak:
+                continue
+            izlaz_redovi.append(redak)
+            donji = redak.lower()
+            if donji.startswith(("[", "warning", "error")):
+                continue
+            broj_slika += 1
+            self.root.after(0, self.ispisi, f"  ✓ {os.path.basename(redak)}")
+            self.root.after(0, self.azuriraj_progress, min(broj_slika * 20, 100))
+
+        proc.wait()
+        self.aktivni_proces = None
+        puni_izlaz = "\n".join(izlaz_redovi)
+        donji_izlaz = puni_izlaz.lower()
+
+        if self.otkazano:
+            return False, "prekinuto"
+
+        if proc.returncode == 0:
+            if broj_slika == 0:
+                return False, self.t("msg_ig_no_images_found")
+            self.root.after(0, self.azuriraj_progress, 100)
+            return True, None
+
+        if proc.returncode == 6 or "login" in donji_izlaz or "authenticat" in donji_izlaz or "401" in donji_izlaz:
+            return False, self.t("msg_ig_login_required")
+        return False, puni_izlaz.strip() or f"gallery-dl — kod {proc.returncode}"
 
     def _skini_jedan(self, argumenti_url, nacin, platforma, vrijeme_prije):
         MAX_POKUSAJA = 3
