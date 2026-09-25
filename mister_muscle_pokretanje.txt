@@ -579,3 +579,33 @@
 23:43:55.991  _cekaj_pa_ugradi_webview() našao hwnd=2033400 - ugrađujem
 23:43:55.992  App(root) gotovo
 23:43:55.992  root.mainloop() kreće
+01:19:32.917  === novo pokretanje ===
+01:19:32.918  multiprocessing.freeze_support() gotovo
+01:19:32.918  PYWEBVIEW_DOSTUPAN i EMBED_PLAYERA_DOSTUPAN - pravim guard prozor
+01:19:32.918  guard prozor registriran - pozivam webview.start(func=_pokreni_tkinter)
+01:19:33.509  _pokreni_tkinter() ušao (nova nit)
+01:19:33.581  tk.Tk() gotovo
+01:19:33.581  App.__init__ ušao
+01:19:33.590  config učitan
+01:19:34.450  pozivam _pripremi_ugradjeni_webview()
+01:19:34.480  _cekaj_pa_ugradi_webview() ušao (nova nit) - tražim webview prozor po imenu
+01:19:34.480  _pripremi_ugradjeni_webview() gotovo (samo registracija, ugradnja je async)
+01:19:34.481  App.__init__ završio
+01:19:34.481  _cekaj_pa_ugradi_webview() našao hwnd=268280 - ugrađujem
+01:19:34.481  App(root) gotovo
+01:19:34.482  root.mainloop() kreće
+01:23:35.089  === novo pokretanje ===
+01:23:35.089  multiprocessing.freeze_support() gotovo
+01:23:35.089  PYWEBVIEW_DOSTUPAN i EMBED_PLAYERA_DOSTUPAN - pravim guard prozor
+01:23:35.090  guard prozor registriran - pozivam webview.start(func=_pokreni_tkinter)
+01:23:35.416  _pokreni_tkinter() ušao (nova nit)
+01:23:35.456  tk.Tk() gotovo
+01:23:35.456  App.__init__ ušao
+01:23:35.461  config učitan
+01:23:35.907  pozivam _pripremi_ugradjeni_webview()
+01:23:35.924  _pripremi_ugradjeni_webview() gotovo (samo registracija, ugradnja je async)
+01:23:35.924  _cekaj_pa_ugradi_webview() ušao (nova nit) - tražim webview prozor po imenu
+01:23:35.924  App.__init__ završio
+01:23:35.925  App(root) gotovo
+01:23:35.925  root.mainloop() kreće
+01:23:35.925  _cekaj_pa_ugradi_webview() našao hwnd=595888 - ugrađujem

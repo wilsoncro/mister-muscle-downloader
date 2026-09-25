@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "2.9"
+APP_VERZIJA = "3.0"
 
 
 def _bazni_folder():
@@ -365,11 +365,18 @@ def preuzmi_yt_dlp_exe(callback_status=None, callback_postotak=None):
 
 # ============================================================================
 #  gallery-dl (SAMO za Instagram SLIKE - yt-dlp video-alat ne podrzava slike
-#  uopce, sluzbeno zatvoreno kao "nece se raditi" na yt-dlp GitHubu). Isti
-#  obrazac auto-preuzimanja kao za yt-dlp/ffmpeg iznad.
+#  uopce, sluzbeno zatvoreno kao "nece se raditi" na yt-dlp GitHubu).
+#
+#  v2.9: gallery-dl je od verzije 1.32.0 preselio AKTIVAN RAZVOJ s GitHuba na
+#  Codeberg (https://codeberg.org/mikf/gallery-dl) - GitHub stranice izdanja
+#  I DALJE postoje (s changelogom), ali BEZ prikacenog .exe fajla, pa je nas
+#  stari direktan link na GitHub uvijek vracao "404 Not Found". Codeberg
+#  (Gitea/Forgejo pokretan) ima SVOJ API na drugoj putanji (codeberg.org/api/v1/,
+#  ne api.github.com) - trazimo najnoviji .exe isto kao za samu app (JSON, pa
+#  nadjemo .exe asset), umjesto da nagadjamo tocan URL obrazac.
 # ============================================================================
 GALLERY_DL_EXE_NAZIV = "gallery-dl.exe" if JE_WINDOWS else "gallery-dl"
-GALLERY_DL_EXE_URL = "https://github.com/mikf/gallery-dl/releases/latest/download/" + GALLERY_DL_EXE_NAZIV
+GALLERY_DL_CODEBERG_API = "https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases/latest"
 
 
 def gallery_dl_exe_putanja():
@@ -380,11 +387,39 @@ def gallery_dl_dostupan():
     return os.path.isfile(gallery_dl_exe_putanja())
 
 
+def _najnovija_gallery_dl_exe_url():
+    """Vraca (verzija, url) najnovijeg gallery-dl.exe s Codeberga, ili
+    (None, None) ako provjera ne uspije."""
+    try:
+        zahtjev = urllib.request.Request(
+            GALLERY_DL_CODEBERG_API,
+            headers={"User-Agent": "MisterMuscle/" + APP_VERZIJA, "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(zahtjev, timeout=15) as odgovor:
+            podaci = json.loads(odgovor.read().decode("utf-8"))
+        tag = (podaci.get("tag_name") or "").strip()
+        for asset in podaci.get("assets", []):
+            naziv = (asset.get("name") or "").lower()
+            if naziv == GALLERY_DL_EXE_NAZIV.lower():
+                return tag, asset.get("browser_download_url")
+        return None, None
+    except Exception:
+        return None, None
+
+
 def preuzmi_gallery_dl_exe(callback_status=None, callback_postotak=None):
     putanja = gallery_dl_exe_putanja()
     if callback_status:
-        callback_status(f"⏳ Preuzimam {GALLERY_DL_EXE_NAZIV} s GitHub Releases...")
-    preuzmi_datoteku(GALLERY_DL_EXE_URL, putanja, callback_postotak, min_velicina=1_000_000)
+        callback_status(f"⏳ Tražim najnoviji {GALLERY_DL_EXE_NAZIV} (Codeberg)...")
+    _verzija, url = _najnovija_gallery_dl_exe_url()
+    if not url:
+        raise RuntimeError(
+            f"Nisam pronašao {GALLERY_DL_EXE_NAZIV} privitak na Codeberg izdanjima "
+            "(mikf/gallery-dl) - možda su promijenili gdje objavljuju .exe."
+        )
+    if callback_status:
+        callback_status(f"⏳ Preuzimam {GALLERY_DL_EXE_NAZIV}...")
+    preuzmi_datoteku(url, putanja, callback_postotak, min_velicina=1_000_000)
     if callback_status:
         callback_status(f"✅ {GALLERY_DL_EXE_NAZIV} spreman: {putanja}")
     return putanja
@@ -731,7 +766,9 @@ PRIJEVODI = {
         "ig_slika_objasnjenje": "Instagram od 2023. traži prijavu za skoro sav sadržaj. "
                                  "Budi ulogiran na Instagram u browseru ispod, pa ćemo "
                                  "posuditi te podatke za prijavu (kolačiće) — ne tražimo "
-                                 "tvoju lozinku niti je vidimo.",
+                                 "tvoju lozinku niti je vidimo. Savjet: potpuno ZATVORI taj "
+                                 "browser prije skidanja — dok je otvoren, često zaključa "
+                                 "svoje kolačiće pa ih ne možemo pročitati.",
         "gumb_pauziraj": "⏸ Pauziraj",
         "gumb_nastavi": "▶ Nastavi",
         "gumb_prekini": "✕ Prekini",
@@ -845,6 +882,7 @@ PRIJEVODI = {
         "msg_error_generic": "❌ Greška: {0}",
         "msg_not_instagram_link": "⚠ Ovo nije Instagram link, preskačem: {0}",
         "msg_ig_no_images_found": "Nije pronađena nijedna slika na tom linku (možda je post izbrisan, privatan, ili je zapravo video).",
+        "msg_ig_slika_no_preview": "ℹ Pregled/označavanje isječka ne postoji za 'Slika (Instagram)' — samo klikni 'SKINI SLIKE' kad si spreman.",
         "msg_ig_login_required": "Instagram traži prijavu za ovaj sadržaj — provjeri jesi li ulogiran na Instagram u odabranom browseru, pa probaj ponovno.",
         "err_cant_start_tool": "Ne mogu pokrenuti {0}: {1}",
         "msg_no_separate_video_stream": "ℹ Ovaj izvor nema odvojeni video zapis — skidam cijeli pa uklanjam zvuk...",
@@ -943,7 +981,9 @@ PRIJEVODI = {
         "ig_slika_objasnjenje": "Since 2023, Instagram requires login for almost all "
                                  "content. Make sure you're logged into Instagram in the "
                                  "browser below — we'll borrow that login (cookies) from "
-                                 "it. We never ask for or see your password.",
+                                 "it. We never ask for or see your password. Tip: fully "
+                                 "CLOSE that browser before downloading — while it's open "
+                                 "it often locks its own cookies, so we can't read them.",
         "gumb_pauziraj": "⏸ Pause",
         "gumb_nastavi": "▶ Resume",
         "gumb_prekini": "✕ Cancel",
@@ -1057,6 +1097,7 @@ PRIJEVODI = {
         "msg_error_generic": "❌ Error: {0}",
         "msg_not_instagram_link": "⚠ Not an Instagram link, skipping: {0}",
         "msg_ig_no_images_found": "No images found at that link (the post may be deleted, private, or actually a video).",
+        "msg_ig_slika_no_preview": "ℹ There's no preview/clip-marking for 'Photo (Instagram)' — just click 'DOWNLOAD PHOTOS' when ready.",
         "msg_ig_login_required": "Instagram requires login for this content — make sure you're logged into Instagram in the selected browser, then try again.",
         "err_cant_start_tool": "Can't start {0}: {1}",
         "msg_no_separate_video_stream": "ℹ️ This source has no separate video stream — downloading the full file and removing the audio...",
@@ -3970,6 +4011,13 @@ class App:
         nacin = self.var_nacin.get()
         je_slika = (nacin == "slika_instagram")
 
+        if je_slika and getattr(self, "_desni_mod", None) == "player":
+            # Player (video pregled/oznacavanje isjecka) nema smisla za slike
+            # - ako je vec otvoren kad korisnik prebaci na ovaj nacin, sklonimo
+            # ga umjesto da ostane prikazivati stari video pregled bez smisla.
+            self._prikazi_sadrzaj("log")
+            self.ispisi(self.t("msg_ig_slika_no_preview"))
+
         self.cb_audio.config(state="readonly" if nacin == "samo_zvuk" else "disabled")
         self.cb_video_format.config(state="disabled" if nacin in ("samo_zvuk", "slika_instagram") else "readonly")
         self.cb_kvaliteta.config(state="disabled" if nacin in ("samo_zvuk", "slika_instagram") else "readonly")
@@ -4170,6 +4218,8 @@ class App:
             return
         if self.aktivno_preuzimanje:
             return  # ne diraj player dok skidanje vec traje
+        if self.var_nacin.get() == "slika_instagram":
+            return  # slike nemaju video pregled - vidi otvori_player()
         url = self._prvi_link()
         if not url or not re.match(r"^https?://", url, re.IGNORECASE):
             return
@@ -4591,6 +4641,15 @@ class App:
     def otvori_player(self):
         if not PYWEBVIEW_DOSTUPAN:
             messagebox.showerror(self.t("err_naslov"), self.t("err_pywebview_missing_text"))
+            return
+        if self.var_nacin.get() == "slika_instagram":
+            # Nema smisla pokusati VIDEO pregled za slike - yt-dlp na takvom
+            # linku samo pukne ("This content is only available for
+            # registered users...", jer to uopce nije video). Player za
+            # oznacavanje isjecaka (timeline, OD/DO) ionako nema smisla za
+            # slike - jednostavno preskacemo cijeli taj korak za ovaj nacin.
+            self._prikazi_sadrzaj("log")
+            self.ispisi(self.t("msg_ig_slika_no_preview"))
             return
         url = self._prvi_link()
         if not url:
@@ -5144,7 +5203,15 @@ class App:
             return True, None
 
         if proc.returncode == 6 or "login" in donji_izlaz or "authenticat" in donji_izlaz or "401" in donji_izlaz:
+            # BITNO: prije se ovdje stvarni izlaz gallery-dl-a ODBACIO - ako je
+            # nasa pretpostavka kriva (npr. je stvarni uzrok da Chromium
+            # zakljuca bazu kolacica DOK JE BROWSER OTVOREN, ne da korisnik
+            # nije prijavljen), korisnik NIKAD ne bi vidio pravi razlog. Sad
+            # se puni izlaz UVIJEK ispise u log, cak i kad damo svoju "ljepsu"
+            # pretpostavku iznad njega.
+            self.root.after(0, lambda pi=puni_izlaz: self.ispisi(self.t("msg_full_error_details").format(pi)))
             return False, self.t("msg_ig_login_required")
+        self.root.after(0, lambda pi=puni_izlaz: self.ispisi(self.t("msg_full_error_details").format(pi)))
         return False, puni_izlaz.strip() or f"gallery-dl — kod {proc.returncode}"
 
     def _skini_jedan(self, argumenti_url, nacin, platforma, vrijeme_prije):
