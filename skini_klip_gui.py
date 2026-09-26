@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.1"
+APP_VERZIJA = "3.2"
 
 
 def _bazni_folder():
@@ -425,6 +425,14 @@ def preuzmi_gallery_dl_exe(callback_status=None, callback_postotak=None):
     return putanja
 
 
+def pokreni_gallery_dl(argumenti, **kwargs):
+    return subprocess.run(
+        [gallery_dl_exe_putanja(), *argumenti],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        **_SUBPROCESS_FLAGS, **kwargs
+    )
+
+
 def pokreni_gallery_dl_popen(argumenti, **kwargs):
     okolina = os.environ.copy()
     okolina["PYTHONUNBUFFERED"] = "1"
@@ -720,9 +728,10 @@ PRIJEVODI = {
         "naslov_app": "💪 Mister Muscle Downloader",
         "podnaslov_app": "YouTube · TikTok · Instagram — video, isječci i zvuk u najboljoj kvaliteti",
         "meni_alati": "Alati",
-        "meni_provjeri_azuriranja": "🔄 Provjeri ažuriranja (sve)",
+        "meni_provjeri_azuriranja": "🔄 Provjeri ažuriranja",
         "meni_azuriraj_ytdlp": "Ažuriraj samo yt-dlp",
         "meni_reinstaliraj_ffmpeg": "Ponovno instaliraj ffmpeg",
+        "meni_azuriraj_gallerydl": "Ažuriraj gallery-dl (Instagram slike)",
         "meni_webview2": "Provjeri/instaliraj WebView2 Runtime",
         "meni_folder_alati": "📂 Otvori folder s alatima",
         "meni_config": "⚙ Otvori config",
@@ -784,11 +793,17 @@ PRIJEVODI = {
         "ig_ili_rucno": "— ili ručno —",
         "ig_prijava_naslov": "Prijava na Instagram",
         "ig_prijava_info": "Otvorit će se prozor sa STVARNOM Instagram prijavom (unutar "
-                            "ove app, ne u tvom browseru). Prijavi se normalno, pa ZATVORI "
-                            "taj prozor — kolačići će se automatski spremiti i odabrati.",
-        "ig_prijava_u_tijeku": "⏳ Čekam da zatvoriš prozor za prijavu...",
+                            "ove app, ne u tvom browseru). Prijavi se normalno — prozor će "
+                            "se SAM zatvoriti čim prepozna uspješnu prijavu, i kolačići će "
+                            "se automatski spremiti i odabrati. Ne moraš ga ručno zatvarati.",
+        "ig_prijava_u_tijeku": "⏳ Čekam da se prijaviš (prozor se sam zatvara nakon prijave)...",
         "ig_prijava_uspjeh": "✅ Prijava spremljena i odabrana kao izvor kolačića.",
         "ig_prijava_neuspjeh": "⚠ Nije uspjelo (prozor je možda zatvoren prije prijave). Probaj ponovno ili koristi jednu od opcija ispod.",
+        "link_ig_odjava": "🚪 Odjavi se",
+        "ig_odjava_naslov": "Odjava s Instagrama",
+        "ig_odjava_potvrda": "Obrisati spremljenu Instagram prijavu s ovog računala? Sljedeći put ćeš se morati ponovno prijaviti.",
+        "ig_odjava_gotovo": "🚪 Odjavljen/a — spremljena prijava obrisana.",
+        "ig_odjava_nema_sto": "Nema spremljene prijave za brisanje.",
         "gumb_pauziraj": "⏸ Pauziraj",
         "gumb_nastavi": "▶ Nastavi",
         "gumb_prekini": "✕ Prekini",
@@ -866,6 +881,16 @@ PRIJEVODI = {
         "msg_ytdlp_check_done": "✅ yt-dlp: provjera završena",
         "msg_ytdlp_update_timeout": "❌ yt-dlp: ažuriranje je isteklo (spora veza) — pokušaj ponovno",
         "msg_ytdlp_update_error": "❌ yt-dlp: {0}",
+        "msg_gallerydl_output": "🔄 gallery-dl: {0}",
+        "msg_gallerydl_running_update": "🔄 Pokrećem gallery-dl -U ...",
+        "msg_gallerydl_downloaded_first": "✅ gallery-dl: preuzet (prvi put)",
+        "msg_gallerydl_download_failed_short": "❌ gallery-dl: preuzimanje nije uspjelo ({0})",
+        "msg_gallerydl_update_failed": "❌ gallery-dl: ažuriranje nije uspjelo (detalji u STATUS logu)",
+        "msg_gallerydl_already_latest": "✅ gallery-dl: već najnoviji",
+        "msg_gallerydl_updated": "🆕 gallery-dl: nadograđen na najnoviju verziju",
+        "msg_gallerydl_check_done": "✅ gallery-dl: provjera završena",
+        "msg_gallerydl_update_timeout": "❌ gallery-dl: ažuriranje je isteklo (spora veza) — pokušaj ponovno",
+        "msg_gallerydl_update_error": "❌ gallery-dl: {0}",
         "msg_ffmpeg_present": "✅ ffmpeg: prisutan",
         "msg_ffmpeg_installed": "🆕 ffmpeg: instaliran",
         "msg_ffmpeg_error": "❌ ffmpeg: {0}",
@@ -954,9 +979,10 @@ PRIJEVODI = {
         "naslov_app": "💪 Mister Muscle Downloader",
         "podnaslov_app": "YouTube · TikTok · Instagram — video, clips and audio in the best quality",
         "meni_alati": "Tools",
-        "meni_provjeri_azuriranja": "🔄 Check for updates (all)",
+        "meni_provjeri_azuriranja": "🔄 Check for updates",
         "meni_azuriraj_ytdlp": "Update yt-dlp only",
         "meni_reinstaliraj_ffmpeg": "Reinstall ffmpeg",
+        "meni_azuriraj_gallerydl": "Update gallery-dl (Instagram photos)",
         "meni_webview2": "Check/install WebView2 Runtime",
         "meni_folder_alati": "📂 Open tools folder",
         "meni_config": "⚙ Open config",
@@ -1018,11 +1044,18 @@ PRIJEVODI = {
         "ig_ili_rucno": "— or manually —",
         "ig_prijava_naslov": "Instagram login",
         "ig_prijava_info": "A window with the REAL Instagram login will open (inside this "
-                            "app, not your browser). Log in normally, then CLOSE that "
-                            "window — the cookies will be saved and selected automatically.",
-        "ig_prijava_u_tijeku": "⏳ Waiting for you to close the login window...",
+                            "app, not your browser). Log in normally — the window will "
+                            "CLOSE ITSELF once it detects a successful login, and the "
+                            "cookies will be saved and selected automatically. No need to "
+                            "close it yourself.",
+        "ig_prijava_u_tijeku": "⏳ Waiting for you to log in (window closes itself after)...",
         "ig_prijava_uspjeh": "✅ Login saved and selected as the cookie source.",
         "ig_prijava_neuspjeh": "⚠ Didn't work (the window may have been closed before logging in). Try again or use one of the options below.",
+        "link_ig_odjava": "🚪 Log out",
+        "ig_odjava_naslov": "Log out of Instagram",
+        "ig_odjava_potvrda": "Delete the saved Instagram login from this computer? You'll need to log in again next time.",
+        "ig_odjava_gotovo": "🚪 Logged out — saved login deleted.",
+        "ig_odjava_nema_sto": "No saved login to delete.",
         "gumb_pauziraj": "⏸ Pause",
         "gumb_nastavi": "▶ Resume",
         "gumb_prekini": "✕ Cancel",
@@ -1100,6 +1133,16 @@ PRIJEVODI = {
         "msg_ytdlp_check_done": "✅ yt-dlp: check complete",
         "msg_ytdlp_update_timeout": "❌ yt-dlp: update timed out (slow connection) — try again",
         "msg_ytdlp_update_error": "❌ yt-dlp: {0}",
+        "msg_gallerydl_output": "🔄 gallery-dl: {0}",
+        "msg_gallerydl_running_update": "🔄 Running gallery-dl -U ...",
+        "msg_gallerydl_downloaded_first": "✅ gallery-dl: downloaded (first time)",
+        "msg_gallerydl_download_failed_short": "❌ gallery-dl: download failed ({0})",
+        "msg_gallerydl_update_failed": "❌ gallery-dl: update failed (see STATUS log for details)",
+        "msg_gallerydl_already_latest": "✅ gallery-dl: already up to date",
+        "msg_gallerydl_updated": "🆕 gallery-dl: updated to the latest version",
+        "msg_gallerydl_check_done": "✅ gallery-dl: check complete",
+        "msg_gallerydl_update_timeout": "❌ gallery-dl: update timed out (slow connection) — try again",
+        "msg_gallerydl_update_error": "❌ gallery-dl: {0}",
         "msg_ffmpeg_present": "✅ ffmpeg: present",
         "msg_ffmpeg_installed": "🆕 ffmpeg: installed",
         "msg_ffmpeg_error": "❌ ffmpeg: {0}",
@@ -1584,6 +1627,54 @@ PROMJENE = {
             "suit you for some reason.",
             "Fixed: the cookie browser setting wasn't being saved between "
             "app launches.",
+        ],
+    },
+    "3.2": {
+        "hr": [
+            "Popravljeno: rijedak pad aplikacije nakon uspješne Instagram "
+            "prijave unutar app-a — sad se kolačići spremaju na sigurniji "
+            "način dok je prozor za prijavu još potpuno stabilan.",
+            "Popravljeno: 'Login with Facebook' je znao zatvoriti prozor za "
+            "prijavu prerano, prije nego se prijava stvarno završi — sad se "
+            "čeka stvaran znak uspješne prijave, ne samo promjenu adrese.",
+            "Prijava se sad sprema odmah čim uspije, ne tek kad pokreneš "
+            "skidanje ili normalno zatvoriš app.",
+            "Novo: '🚪 Odjavi se' poveznica pored statusa prijave — briše "
+            "spremljenu Instagram prijavu s ovog računala.",
+            "Popravljeno: kad je lijevi stupac (opcije, uključujući Instagram "
+            "panel) prevelik za prozor, gumb 'POKRENI' je postajao "
+            "nedohvatljiv bez maksimiziranja — lijevi stupac sad ima "
+            "vlastiti skrol.",
+            "Pojednostavljeno: 'Alati' izbornik sad ima jednu stavku "
+            "'Provjeri ažuriranja' umjesto četiri odvojene — provjerava i "
+            "ažurira yt-dlp, ffmpeg, gallery-dl i samu aplikaciju odjednom.",
+            "gallery-dl (za Instagram slike) se sad automatski skine pri "
+            "prvom pokretanju app-a, isto kao yt-dlp/ffmpeg — ne čeka se "
+            "prvo korištenje te opcije. Kod svakog sljedećeg pokretanja se "
+            "i tiho, u pozadini, ažurira ako postoji nova verzija.",
+        ],
+        "en": [
+            "Fixed: a rare crash right after a successful in-app Instagram "
+            "login — cookies are now saved more safely while the login "
+            "window is still fully stable.",
+            "Fixed: 'Login with Facebook' could close the login window too "
+            "early, before the login actually finished — now it waits for "
+            "a real sign of successful login, not just an address change.",
+            "The login is now saved as soon as it succeeds, not only when "
+            "you start a download or close the app normally.",
+            "New: a '🚪 Log out' link next to the login status — deletes "
+            "the saved Instagram login from this computer.",
+            "Fixed: when the left column (options, including the Instagram "
+            "panel) got too tall for the window, the 'START' button became "
+            "unreachable without maximizing — the left column now scrolls "
+            "on its own.",
+            "Simplified: the 'Tools' menu now has one 'Check for updates' "
+            "item instead of four separate ones — checks and updates "
+            "yt-dlp, ffmpeg, gallery-dl, and the app itself all at once.",
+            "gallery-dl (for Instagram photos) now downloads automatically "
+            "on first app launch, same as yt-dlp/ffmpeg — no more waiting "
+            "for the first use of that option. On every later launch it "
+            "also quietly updates itself in the background if needed.",
         ],
     },
 }
@@ -2944,34 +3035,63 @@ def pokreni_instagram_login_proces(cookies_izlazna_putanja, jezik):
     """Pokrece se u ZASEBNOM procesu (isti obrazac kao pokreni_webview_proces
     za fallback player) - otvara PRAVU Instagram stranicu za prijavu u
     ugradjenom pywebview prozoru. Korisnik se prijavi normalno (ovo NIJE
-    lazna/phishing stranica, doslovno je instagram.com), pa zatvori prozor -
-    na zatvaranje (events.closing, PRIJE nego se prozor stvarno unisti dok su
-    kolacici jos citljivi), izvucemo SVE kolacice preko window.get_cookies()
-    (ukljucujuci HttpOnly - login/sesijski kolacici gotovo uvijek jesu, i
-    JS document.cookie ih NE bi vidio, ali ovo je nativni API pa vidi) i
-    zapisemo ih kao cookies.txt (Netscape format) - isti format koji
-    '--cookies <fajl>' u gallery-dl/yt-dlp ocekuje."""
-    def na_zatvaranje():
-        try:
-            istice = str(int(time.time()) + 180 * 24 * 3600)  # 180 dana unaprijed
-            redovi = ["# Netscape HTTP Cookie File", "# Generated by Mister Muscle Downloader", ""]
-            for cookie_dict in window.get_cookies():
-                for naziv, morsel in cookie_dict.items():
-                    domena = morsel["domain"] if morsel["domain"] else ".instagram.com"
-                    putanja = morsel["path"] if morsel["path"] else "/"
-                    secure = "TRUE" if morsel["secure"] else "FALSE"
-                    redovi.append(_cookie_u_netscape_redak(domena, putanja, secure, istice, naziv, morsel.value))
-            with open(cookies_izlazna_putanja, "w", encoding="utf-8") as f:
-                f.write("\n".join(redovi) + "\n")
-        except Exception:
-            pass  # glavni proces prepoznaje neuspjeh po tome sto fajl ostaje prazan/ne postoji
+    lazna/phishing stranica, doslovno je instagram.com).
 
-    naslov = ("Prijavi se na Instagram, pa ZATVORI ovaj prozor" if jezik == "hr"
-              else "Log into Instagram, then CLOSE this window")
+    v3.2: PRIJE se izvlacenje kolacica (window.get_cookies()) pokusavalo u
+    'closing' event handleru, TOCNO u trenutku kad korisnik zatvori prozor -
+    to je rusilo cijelu app (vjerojatno COM/WebView2 threading problem kod
+    pozivanja te funkcije usred rusenja prozora). Sad se umjesto toga koristi
+    SLUZBENI, dokumentirani pywebview obrazac za pozadinski rad DOK JE prozor
+    OTVOREN i stabilan: 'webview.start(funkcija, window)' pokrene funkciju u
+    pozadinskoj niti dok GUI radi normalno. Ta funkcija periodicki (svake 2s)
+    PROVJERI je li se URL pomaknuo dalje od login stranice (znak da je
+    prijava uspjela) i ako jest, ODMAH spremi kolacice (dok je sve jos
+    stabilno) pa se sama ugasi - korisnik NE mora ni zatvarati prozor rucno,
+    zatvori se sam nakon uspjesne prijave."""
+    def dohvati_i_spremi_ako_prijavljen(window):
+        """Vraca True SAMO ako je pronadjen VALJAN Instagram sesijski kolacic
+        ('sessionid') - i tek TADA zapise kolacice u fajl. Provjera KOLACICA
+        (ne URL-a!) je pouzdan nacin da se prepozna STVARAN uspjeh, neovisno
+        o tome kroz koliko medjukoraka/preusmjeravanja je prijava prosla
+        (obican email+lozinka, ili "Login with Facebook" koji ide kroz
+        Facebookove OAuth ekrane prije povratka na Instagram) - URL se zna
+        privremeno "odmaknuti" od login stranice UZ PUT kroz takav tok a da
+        prijava jos NIJE stvarno zavrsena (upravo ono sto se dogadjalo s
+        "Login with Facebook" - stari kod je URL provjeru krivo protumacio
+        kao gotovu prijavu i zatvorio prozor prerano)."""
+        istice = str(int(time.time()) + 180 * 24 * 3600)  # 180 dana unaprijed
+        redovi = ["# Netscape HTTP Cookie File", "# Generated by Mister Muscle Downloader", ""]
+        ima_sesiju = False
+        for cookie_dict in window.get_cookies():
+            for naziv, morsel in cookie_dict.items():
+                if naziv == "sessionid" and morsel.value:
+                    ima_sesiju = True
+                domena = morsel["domain"] if morsel["domain"] else ".instagram.com"
+                putanja = morsel["path"] if morsel["path"] else "/"
+                secure = "TRUE" if morsel["secure"] else "FALSE"
+                redovi.append(_cookie_u_netscape_redak(domena, putanja, secure, istice, naziv, morsel.value))
+        if not ima_sesiju:
+            return False
+        with open(cookies_izlazna_putanja, "w", encoding="utf-8") as f:
+            f.write("\n".join(redovi) + "\n")
+        return True
+
+    def prati_prijavu(window):
+        # do 10 minuta cekanja (300 x 2s) - dovoljno za spor 2FA/OAuth tijek i sl.
+        for _ in range(300):
+            time.sleep(2)
+            try:
+                if dohvati_i_spremi_ako_prijavljen(window):
+                    window.destroy()
+                    return
+            except Exception:
+                return  # prozor je vjerojatno zatvoren rucno (prije uspjesne prijave) - gotovo
+
+    naslov = ("Prijavi se na Instagram (prozor će se sam zatvoriti)" if jezik == "hr"
+              else "Log into Instagram (window closes itself)")
     window = webview.create_window(naslov, url="https://www.instagram.com/accounts/login/",
                                    width=480, height=760)
-    window.events.closing += na_zatvaranje
-    webview.start()
+    webview.start(prati_prijavu, window)
 
 
 
@@ -3390,9 +3510,6 @@ class App:
 
         stavke_alati = [
             ("cmd", self.t("meni_provjeri_azuriranja"), self.provjeri_azuriranja),
-            ("sep",),
-            ("cmd", self.t("meni_azuriraj_ytdlp"), lambda: self.provjeri_azuriranja(samo="yt-dlp")),
-            ("cmd", self.t("meni_reinstaliraj_ffmpeg"), lambda: self.provjeri_azuriranja(samo="ffmpeg")),
         ]
         if JE_WINDOWS:
             stavke_alati.append(("cmd", self.t("meni_webview2"), self._provjeri_webview2_pri_pokretanju))
@@ -3523,16 +3640,53 @@ class App:
         self.lijevo = tk.Frame(self.glavni, bg=BG)
         self.desno = tk.Frame(self.glavni, bg=BG)
 
-        naslov_red = tk.Frame(self.lijevo, bg=BG)
+        # v3.3: lijevi stupac zna narasti VISE nego sto stane u prozor (npr.
+        # "Slika (Instagram)" panel je poprilican) - bez skrolanja, "4.
+        # POKRENI" gumb i donji dio kartica postanu FIZICKI nedohvatljivi dok
+        # se prozor ne maksimizira. Standardni Tkinter "scrollable frame"
+        # trik: Canvas+Scrollbar unutar self.lijevo (koji i dalje ucestvuje u
+        # grid rasporedu kao prije - vidi _primijeni_raspored), sa STVARNIM
+        # sadrzajem (naslov + sve tri kartice) u self.lijevo_unutra frameu
+        # UNUTAR tog canvasa umjesto direktno u self.lijevo.
+        self.lijevo_canvas = tk.Canvas(self.lijevo, bg=BG, highlightthickness=0)
+        self.lijevo_scrollbar = ttk.Scrollbar(self.lijevo, orient="vertical",
+                                              command=self.lijevo_canvas.yview)
+        self.lijevo_canvas.configure(yscrollcommand=self.lijevo_scrollbar.set)
+        self.lijevo_canvas.pack(side="left", fill="both", expand=True)
+        self.lijevo_scrollbar.pack(side="right", fill="y")
+
+        self.lijevo_unutra = tk.Frame(self.lijevo_canvas, bg=BG)
+        self._lijevo_canvas_prozor = self.lijevo_canvas.create_window(
+            (0, 0), window=self.lijevo_unutra, anchor="nw")
+
+        def _lijevo_sadrzaj_promijenjen(event=None):
+            self.lijevo_canvas.configure(scrollregion=self.lijevo_canvas.bbox("all"))
+
+        def _lijevo_canvas_promijenjen(event):
+            # sirina unutrasnjeg frame-a prati sirinu canvasa - inace bi karte
+            # (koje koriste fill="x" ocekujuci roditeljevu sirinu) ostale na
+            # svojoj "prirodnoj" minimalnoj sirini umjesto pune sirine stupca.
+            self.lijevo_canvas.itemconfig(self._lijevo_canvas_prozor, width=event.width)
+
+        self.lijevo_unutra.bind("<Configure>", _lijevo_sadrzaj_promijenjen)
+        self.lijevo_canvas.bind("<Configure>", _lijevo_canvas_promijenjen)
+
+        def _lijevo_kotacic(event):
+            self.lijevo_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        self.lijevo_canvas.bind("<Enter>", lambda e: self.lijevo_canvas.bind_all("<MouseWheel>", _lijevo_kotacic))
+        self.lijevo_canvas.bind("<Leave>", lambda e: self.lijevo_canvas.unbind_all("<MouseWheel>"))
+
+        naslov_red = tk.Frame(self.lijevo_unutra, bg=BG)
         naslov_red.pack(fill="x", pady=(6, 12))
         tk.Label(naslov_red, text=self.t("naslov_app"), font=(FONT_NASLOV, 20),
                  bg=BG, fg=TEXT).pack(anchor="w")
         tk.Label(naslov_red, text=self.t("podnaslov_app"),
                  font=("Segoe UI", 9), bg=BG, fg=SUBTEXT).pack(anchor="w", pady=(2, 0))
 
-        self._kartica_linkovi(self.lijevo)
-        self._kartica_opcije(self.lijevo)
-        self._kartica_folder(self.lijevo)
+        self._kartica_linkovi(self.lijevo_unutra)
+        self._kartica_opcije(self.lijevo_unutra)
+        self._kartica_folder(self.lijevo_unutra)
         self._panel_desno(self.desno)
 
         self._raspored_je_uzak = None  # None = jos nepoznato, postavlja se u nastavku
@@ -3576,9 +3730,14 @@ class App:
         if uzak:
             self.glavni.columnconfigure(0, minsize=0, weight=1)
             self.glavni.columnconfigure(1, weight=0)
-            self.glavni.rowconfigure(0, weight=0)
+            # v3.3: lijevi stupac sad SKROLA (vidi _izgradi_glavni_dio), pa mu
+            # treba STVARAN, ogranicen prostor (weight=1 + minsize) da se
+            # canvas unutra ima u cemu skrolati - "weight=0" (prirodna,
+            # neogranicena visina) bi ga ucinilo proizvoljno visokim ovisno o
+            # sadrzaju, sto je tocno ono sto smo zeljeli izbjeci.
+            self.glavni.rowconfigure(0, weight=1, minsize=260)
             self.glavni.rowconfigure(1, weight=1, minsize=220)
-            self.lijevo.grid(row=0, column=0, sticky="new")
+            self.lijevo.grid(row=0, column=0, sticky="nsew")
             self.desno.grid(row=1, column=0, sticky="nsew", pady=(16, 0))
         else:
             self.glavni.columnconfigure(0, minsize=self.SIRINA_LIJEVOG_STUPCA, weight=0)
@@ -3730,10 +3889,21 @@ class App:
             unutra_ig, self.t("gumb_ig_prijava"), self._pokreni_instagram_prijavu,
             bg=ACCENT, hover=ACCENT_HOVER, font_size=9, height=1)
         self.btn_ig_prijava.pack(fill="x", pady=(0, 4))
-        self.lbl_ig_prijava_status = tk.Label(unutra_ig, text="", font=("Segoe UI", 8),
-                                              bg=posvijetli(CARD, 0.06), fg=SUCCESS, wraplength=380,
+
+        red_ig_status = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        red_ig_status.pack(fill="x", pady=(0, 8))
+        self.lbl_ig_prijava_status = tk.Label(red_ig_status, text="", font=("Segoe UI", 8),
+                                              bg=posvijetli(CARD, 0.06), fg=SUCCESS, wraplength=300,
                                               justify="left")
-        self.lbl_ig_prijava_status.pack(anchor="w", pady=(0, 8))
+        self.lbl_ig_prijava_status.pack(side="left", anchor="w")
+        # Suzdrzana, mala poveznica (ne konkurira glavnom gumbu) - za one koji
+        # zele obrisati spremljenu prijavu iz privatnosnih/sigurnosnih razloga.
+        self.lbl_ig_odjava = tk.Label(red_ig_status, text=self.t("link_ig_odjava"), font=("Segoe UI", 8, "underline"),
+                                      bg=posvijetli(CARD, 0.06), fg=SUBTEXT, cursor="hand2")
+        self.lbl_ig_odjava.pack(side="right", anchor="e")
+        self.lbl_ig_odjava.bind("<Button-1>", self._odjavi_instagram)
+        self.lbl_ig_odjava.bind("<Enter>", lambda e: self.lbl_ig_odjava.config(fg=DANGER))
+        self.lbl_ig_odjava.bind("<Leave>", lambda e: self.lbl_ig_odjava.config(fg=SUBTEXT))
 
         tk.Label(unutra_ig, text=self.t("ig_ili_rucno"), font=("Segoe UI", 8),
                  bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 6))
@@ -3840,8 +4010,38 @@ class App:
             self.var_cookies_izvor.set("fajl")
             self._osvjezi_izvor_cookies()
             self.lbl_ig_prijava_status.config(text=self.t("ig_prijava_uspjeh"), fg=SUCCESS)
+            # BITNO: spremi ODMAH, ne cekaj da korisnik pokrene skidanje ili
+            # zatvori app normalno (_spremi_postavke() se inace zove samo u
+            # tim trenucima) - ako app padne/bude prisilno ugasena PRIJE
+            # toga, ova prijava bi se inace izgubila i sljedeci put bi opet
+            # trazila prijavu iznova.
+            self._spremi_postavke()
         else:
             self.lbl_ig_prijava_status.config(text=self.t("ig_prijava_neuspjeh"), fg=DANGER)
+
+    def _odjavi_instagram(self, event=None):
+        """Za paranoicne: obrise spremljenu Instagram prijavu (kolacice) s ovog
+        racunala. SAMO brise nas VLASTITI auto-generirani cookies.txt (onaj
+        napravljen preko '🔑 Prijavi se...' gumba) - ako je korisnik RUCNO
+        odabrao svoj vlastiti cookies.txt fajl (izvezen preko ekstenzije),
+        taj fajl ostaje netaknut, samo mu se maknu reference iz app-e."""
+        auto_generirani = os.path.join(_alati_folder(), "instagram_cookies.txt")
+        trenutni_fajl = self.var_cookies_fajl.get().strip()
+        if not trenutni_fajl and self.var_cookies_izvor.get() != "fajl":
+            self.lbl_ig_prijava_status.config(text=self.t("ig_odjava_nema_sto"), fg=SUBTEXT)
+            return
+        if not messagebox.askyesno(self.t("ig_odjava_naslov"), self.t("ig_odjava_potvrda")):
+            return
+        if trenutni_fajl and os.path.abspath(trenutni_fajl) == os.path.abspath(auto_generirani):
+            try:
+                os.remove(trenutni_fajl)
+            except Exception:
+                pass
+        self.var_cookies_fajl.set("")
+        self.var_cookies_izvor.set("browser")
+        self._osvjezi_izvor_cookies()
+        self.lbl_ig_prijava_status.config(text=self.t("ig_odjava_gotovo"), fg=SUBTEXT)
+        self._spremi_postavke()
 
     def _kartica_folder(self, roditelj):
         self._naslov_kartice(roditelj, "3", self.t("kartica_3"))
@@ -4715,8 +4915,11 @@ class App:
 
     # ------------------------------------------------------ alati / update ---
     def _provjera_alata_pri_pokretanju(self):
-        """Pri svakom pokretanju provjeri jesu li yt-dlp i ffmpeg tu; ako nisu,
-        skini ih automatski. Time korisnik NE MORA nista rucno instalirati."""
+        """Pri svakom pokretanju provjeri jesu li yt-dlp, ffmpeg i gallery-dl
+        tu; ako nisu, skini ih automatski. Time korisnik NE MORA nista rucno
+        instalirati - vrijedi i za gallery-dl (mal je, ne zauzima puno mjesta,
+        pa nema razloga cekati da korisnik prvi put proba 'Slika (Instagram)'
+        da bi ga tek onda skinuli)."""
         if not yt_dlp_dostupan():
             self.root.after(0, self.ispisi, self.t("msg_tool_missing_downloading").format(YT_DLP_EXE_NAZIV))
             try:
@@ -4732,6 +4935,14 @@ class App:
                 self.root.after(0, self.azuriraj_progress, 0)
             except Exception as err:
                 self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_ffmpeg_download_failed").format(em)))
+
+        if not gallery_dl_dostupan():
+            self.root.after(0, self.ispisi, self.t("msg_tool_missing_downloading").format(GALLERY_DL_EXE_NAZIV))
+            try:
+                preuzmi_gallery_dl_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): self.ispisi(
+                    self.t("msg_gallerydl_download_failed_short").format(em)))
 
         self.root.after(0, self._osvjezi_statusnu_traku)
         self.root.after(0, self._tiha_provjera_azuriranja_pri_pokretanju)
@@ -4761,6 +4972,18 @@ class App:
         app_verzija, app_url = _najnovija_verzija_app()
         if app_verzija and app_url and _usporedi_verzije(app_verzija, APP_VERZIJA) > 0:
             self.root.after(0, lambda: self._ponudi_azuriranje_app(app_verzija, app_url))
+
+        # gallery-dl (Instagram slike) - v3.4: SAMO ako je vec preuzet (ne
+        # prisiljavamo preuzimanje ovdje za korisnike koji tu opciju nikad ne
+        # koriste). Za razliku od yt-dlp/app gore, ovo se ažurira TIHO u
+        # pozadini bez pitanja - samostalan "-U" self-update je bezopasan
+        # (nema restart, nema rizika), a korisnik je trazio jednostavnost bez
+        # dodatnih dijaloga koji bi samo zbunjivali.
+        if gallery_dl_dostupan():
+            try:
+                pokreni_gallery_dl(["-U"], timeout=60)
+            except Exception:
+                pass  # tiha provjera - ako ne uspije, jednostavno probaj drugi put
 
     def _ponudi_azuriranje_app(self, nova_verzija, url_setup):
         if self.aktivno_preuzimanje:
@@ -4823,7 +5046,10 @@ class App:
         if self.aktivno_preuzimanje:
             messagebox.showwarning(self.t("update_in_progress_naslov"), self.t("update_in_progress_text"))
             return
-        self.ispisi(self.t("msg_updating_ytdlp") if samo != "ffmpeg" else "🔄 " + self.t("meni_reinstaliraj_ffmpeg"))
+        if samo == "gallery-dl":
+            self.ispisi("🔄 " + self.t("meni_azuriraj_gallerydl"))
+        else:
+            self.ispisi(self.t("msg_updating_ytdlp") if samo != "ffmpeg" else "🔄 " + self.t("meni_reinstaliraj_ffmpeg"))
         threading.Thread(target=self._tijek_azuriranja, args=(samo,), daemon=True).start()
 
     def _tijek_azuriranja(self, samo=None):
@@ -4837,7 +5063,16 @@ class App:
         if samo in (None, "ffmpeg"):
             sazetak.append(self._osiguraj_ffmpeg(prisilno=(samo == "ffmpeg")))
 
-        # --- 3) sama aplikacija (preko GitHub Releases) - PRIJE (v2.6) se ovo
+        # --- 3) gallery-dl (Instagram slike) - v3.3: PRIJE se ovaj alat
+        # provjeravao/preuzimao SAMO kad korisnik prvi put pokusa skinuti
+        # Instagram sliku (lijeno, skriveno) - sad je i on dio redovne
+        # "Provjeri ažuriranja" provjere, isto kao yt-dlp/ffmpeg, tako da
+        # se moze unaprijed pripremiti/osvjeziti bez da se ceka prva stvarna
+        # upotreba te opcije.
+        if samo in (None, "gallery-dl"):
+            sazetak.append(self._azuriraj_gallery_dl())
+
+        # --- 4) sama aplikacija (preko GitHub Releases) - PRIJE (v2.6) se ovo
         # provjeravalo SAMO JEDNOM, tiho, pri prvom pokretanju app-a - ako je
         # korisnik ostavio app otvorenu satima/danima, klik na "Provjeri
         # ažuriranja" nikad nije ponovno pitao GitHub, samo bi javio da je
@@ -4883,6 +5118,37 @@ class App:
             return self.t("msg_ytdlp_update_timeout")
         except Exception as err:
             return self.t("msg_ytdlp_update_error").format(err)
+
+    def _azuriraj_gallery_dl(self):
+        """Isti obrazac kao _azuriraj_yt_dlp - gallery-dl.exe ima isti ugradjeni
+        '-U' self-update flag (sam sebe prepise najnovijom verzijom, bez pipa/
+        Pythona). Ako gallery-dl JOS NIJE preuzet (korisnik nikad nije koristio
+        'Slika (Instagram)'), preuzima ga SAD, ovdje - da 'Provjeri ažuriranja'
+        i za njega ostane pouzdano mjesto za dobivanje/osvjezavanje alata,
+        umjesto da to ostane skriveno dok korisnik prvi put ne proba tu opciju."""
+        if not gallery_dl_dostupan():
+            try:
+                preuzmi_gallery_dl_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+                return self.t("msg_gallerydl_downloaded_first")
+            except Exception as err:
+                return self.t("msg_gallerydl_download_failed_short").format(err)
+        try:
+            self.root.after(0, self.ispisi, self.t("msg_gallerydl_running_update"))
+            rezultat = pokreni_gallery_dl(["-U"], timeout=300)
+            izlaz = (rezultat.stdout + "\n" + rezultat.stderr).strip()
+            self.root.after(0, lambda iz=izlaz: self.ispisi(self.t("msg_gallerydl_output").format(iz)))
+            nizak = izlaz.lower()
+            if "error" in nizak or rezultat.returncode != 0:
+                return self.t("msg_gallerydl_update_failed")
+            if "up to date" in nizak or "already" in nizak or "latest" in nizak:
+                return self.t("msg_gallerydl_already_latest")
+            if "updated" in nizak or "updating" in nizak:
+                return self.t("msg_gallerydl_updated")
+            return self.t("msg_gallerydl_check_done")
+        except subprocess.TimeoutExpired:
+            return self.t("msg_gallerydl_update_timeout")
+        except Exception as err:
+            return self.t("msg_gallerydl_update_error").format(err)
 
     def _osiguraj_ffmpeg(self, prisilno=False):
         if ffmpeg_dostupan() and not prisilno:
