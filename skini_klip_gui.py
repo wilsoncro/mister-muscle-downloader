@@ -60,7 +60,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.0"
+APP_VERZIJA = "3.1"
 
 
 def _bazni_folder():
@@ -697,6 +697,8 @@ ZADANI_CONFIG = {
     "audio_format": "mp3",
     "omjer_slike": "Original",      # Original | 16:9 | 9:16 (TikTok/Reels/Shorts) | 1:1 (Square) | 4:5 (Instagram)
     "cookies_browser": "Chrome",    # odakle gallery-dl vuce Instagram login kolacice
+    "cookies_izvor": "browser",     # browser | fajl
+    "cookies_fajl": "",             # putanja do cookies.txt (ako je izvor "fajl")
     "h264": False,
     "metapodaci": False,
     "prozor": "1240x820",
@@ -764,11 +766,29 @@ PRIJEVODI = {
         "skini_slike": "⬇   SKINI SLIKE",
         "ig_slika_naslov": "Slike s Instagrama trebaju prijavu",
         "ig_slika_objasnjenje": "Instagram od 2023. traži prijavu za skoro sav sadržaj. "
-                                 "Budi ulogiran na Instagram u browseru ispod, pa ćemo "
-                                 "posuditi te podatke za prijavu (kolačiće) — ne tražimo "
-                                 "tvoju lozinku niti je vidimo. Savjet: potpuno ZATVORI taj "
-                                 "browser prije skidanja — dok je otvoren, često zaključa "
-                                 "svoje kolačiće pa ih ne možemo pročitati.",
+                                 "Posudimo tvoje podatke za prijavu (kolačiće) — ne tražimo "
+                                 "tvoju lozinku niti je vidimo. Biraš odakle:",
+        "cookies_izvor_browser": "🌐 Iz browsera (mora biti zatvoren)",
+        "cookies_izvor_fajl": "📄 Iz cookies.txt fajla (bez zatvaranja)",
+        "cookies_browser_napomena": "Savjet: potpuno ZATVORI taj browser prije skidanja — "
+                                     "dok je otvoren, Chromium (Chrome/Edge/Brave...) često "
+                                     "zaključa svoje kolačiće pa ih ne možemo pročitati.",
+        "oznaka_cookies_fajl": "cookies.txt fajl",
+        "cookies_fajl_napomena": "Izvezi Instagram kolačiće preko besplatne ekstenzije poput "
+                                  "'Get cookies.txt LOCALLY' (dok si normalno prijavljen na "
+                                  "instagram.com), pa ovdje odaberi taj fajl — browser ne "
+                                  "treba zatvarati.",
+        "dijalog_odaberi_cookies_naslov": "Odaberi cookies.txt fajl",
+        "dijalog_svi_fajlovi": "Svi fajlovi",
+        "gumb_ig_prijava": "🔑 Prijavi se na Instagram unutar app-a (preporučeno)",
+        "ig_ili_rucno": "— ili ručno —",
+        "ig_prijava_naslov": "Prijava na Instagram",
+        "ig_prijava_info": "Otvorit će se prozor sa STVARNOM Instagram prijavom (unutar "
+                            "ove app, ne u tvom browseru). Prijavi se normalno, pa ZATVORI "
+                            "taj prozor — kolačići će se automatski spremiti i odabrati.",
+        "ig_prijava_u_tijeku": "⏳ Čekam da zatvoriš prozor za prijavu...",
+        "ig_prijava_uspjeh": "✅ Prijava spremljena i odabrana kao izvor kolačića.",
+        "ig_prijava_neuspjeh": "⚠ Nije uspjelo (prozor je možda zatvoren prije prijave). Probaj ponovno ili koristi jednu od opcija ispod.",
         "gumb_pauziraj": "⏸ Pauziraj",
         "gumb_nastavi": "▶ Nastavi",
         "gumb_prekini": "✕ Prekini",
@@ -851,6 +871,7 @@ PRIJEVODI = {
         "msg_ffmpeg_error": "❌ ffmpeg: {0}",
         "err_pywebview_missing_text": "Biblioteka 'pywebview' nije instalirana.\n\nInstaliraj u terminalu:\n    pip install pywebview",
         "warn_naslov": "Upozorenje",
+        "warn_cookies_fajl_missing": "Odaberi valjan cookies.txt fajl prije skidanja (Odaberi izvor kolačića → Iz cookies.txt fajla).",
         "warn_paste_link_first": "Prvo zalijepi link.",
         "err_cant_recognize_youtube": "Ne prepoznajem YouTube video ID iz tog linka.",
         "msg_opening_player": "⏳ Otvaram player...",
@@ -979,11 +1000,29 @@ PRIJEVODI = {
         "skini_slike": "⬇   DOWNLOAD PHOTOS",
         "ig_slika_naslov": "Instagram photos need you to be logged in",
         "ig_slika_objasnjenje": "Since 2023, Instagram requires login for almost all "
-                                 "content. Make sure you're logged into Instagram in the "
-                                 "browser below — we'll borrow that login (cookies) from "
-                                 "it. We never ask for or see your password. Tip: fully "
-                                 "CLOSE that browser before downloading — while it's open "
-                                 "it often locks its own cookies, so we can't read them.",
+                                 "content. We'll borrow your login (cookies) — we never ask "
+                                 "for or see your password. Choose where from:",
+        "cookies_izvor_browser": "🌐 From browser (must be closed)",
+        "cookies_izvor_fajl": "📄 From a cookies.txt file (no closing needed)",
+        "cookies_browser_napomena": "Tip: fully CLOSE that browser before downloading — "
+                                     "while it's open, Chromium (Chrome/Edge/Brave...) often "
+                                     "locks its own cookies, so we can't read them.",
+        "oznaka_cookies_fajl": "cookies.txt file",
+        "cookies_fajl_napomena": "Export your Instagram cookies with a free extension like "
+                                  "'Get cookies.txt LOCALLY' (while normally logged into "
+                                  "instagram.com), then pick that file here — no need to "
+                                  "close the browser.",
+        "dijalog_odaberi_cookies_naslov": "Choose a cookies.txt file",
+        "dijalog_svi_fajlovi": "All files",
+        "gumb_ig_prijava": "🔑 Log into Instagram inside the app (recommended)",
+        "ig_ili_rucno": "— or manually —",
+        "ig_prijava_naslov": "Instagram login",
+        "ig_prijava_info": "A window with the REAL Instagram login will open (inside this "
+                            "app, not your browser). Log in normally, then CLOSE that "
+                            "window — the cookies will be saved and selected automatically.",
+        "ig_prijava_u_tijeku": "⏳ Waiting for you to close the login window...",
+        "ig_prijava_uspjeh": "✅ Login saved and selected as the cookie source.",
+        "ig_prijava_neuspjeh": "⚠ Didn't work (the window may have been closed before logging in). Try again or use one of the options below.",
         "gumb_pauziraj": "⏸ Pause",
         "gumb_nastavi": "▶ Resume",
         "gumb_prekini": "✕ Cancel",
@@ -1066,6 +1105,7 @@ PRIJEVODI = {
         "msg_ffmpeg_error": "❌ ffmpeg: {0}",
         "err_pywebview_missing_text": "The 'pywebview' library isn't installed.\n\nInstall it in a terminal:\n    pip install pywebview",
         "warn_naslov": "Warning",
+        "warn_cookies_fajl_missing": "Choose a valid cookies.txt file before downloading (cookie source → From a cookies.txt file).",
         "warn_paste_link_first": "Paste a link first.",
         "err_cant_recognize_youtube": "I can't recognize a YouTube video ID in that link.",
         "msg_opening_player": "⏳ Opening player...",
@@ -1491,6 +1531,59 @@ PROMJENE = {
             "'Download all clips' button unreachable (no way to scroll to "
             "it) — the clip list now scrolls on its own, with the button "
             "always visible below it.",
+        ],
+    },
+    "3.0": {
+        "hr": [
+            "Novo: podrška za skidanje SLIKA s Instagrama! Novi mod "
+            "'📷 Slika (Instagram)' — bira se browser iz kojeg se posude "
+            "kolačići za prijavu (Instagram zahtijeva login za skoro sav "
+            "sadržaj), ne tražimo niti vidimo tvoju lozinku.",
+            "Za ovaj mod se sklanjaju sve opcije koje mu ne trebaju "
+            "(kvaliteta, formati, omjer slike) i preskače se pregled/"
+            "označavanje isječka (nema smisla za slike).",
+            "Popravljeno nekoliko grešaka otkrivenih tijekom testiranja ove "
+            "nove funkcije: pogrešan izvor za preuzimanje alata (gallery-dl "
+            "je preselio na Codeberg), i greške koje su se tiho gutale "
+            "umjesto da se prikažu.",
+        ],
+        "en": [
+            "New: support for downloading Instagram PHOTOS! New "
+            "'📷 Photo (Instagram)' mode — pick the browser to borrow login "
+            "cookies from (Instagram requires login for almost all "
+            "content); we never ask for or see your password.",
+            "For this mode, all irrelevant options (quality, formats, "
+            "aspect ratio) are hidden, and clip preview/marking is skipped "
+            "(doesn't apply to photos).",
+            "Fixed several bugs found while testing this new feature: a "
+            "wrong download source for the tool (gallery-dl moved to "
+            "Codeberg), and errors that were silently swallowed instead of "
+            "shown.",
+        ],
+    },
+    "3.1": {
+        "hr": [
+            "Novo: '🔑 Prijavi se na Instagram unutar app-a' — najjednostavniji "
+            "način za slike s Instagrama. Prijaviš se u ugrađenom prozoru "
+            "(prava Instagram stranica), zatvoriš ga, i kolačići se sami "
+            "spreme i odaberu — bez ekstenzije, bez zatvaranja browsera.",
+            "Dodana i druga opcija: ručno odabran 'cookies.txt' fajl (izvezen "
+            "preko ekstenzije) — za slučaj da automatska prijava iz nekog "
+            "razloga ne odgovara.",
+            "Popravljeno: postavka browsera za kolačiće se nije spremala "
+            "između pokretanja app-a.",
+        ],
+        "en": [
+            "New: '🔑 Log into Instagram inside the app' — the easiest way "
+            "to get Instagram photos. Log in inside the built-in window "
+            "(the real Instagram page), close it, and the cookies save and "
+            "get selected automatically — no extension, no closing your "
+            "browser.",
+            "Added a second option too: manually pick a 'cookies.txt' file "
+            "(exported via an extension) — in case automatic login doesn't "
+            "suit you for some reason.",
+            "Fixed: the cookie browser setting wasn't being saved between "
+            "app launches.",
         ],
     },
 }
@@ -2841,6 +2934,46 @@ def pokreni_webview_proces(preview_url, queue_sanjac):
     webview.start()
 
 
+def _cookie_u_netscape_redak(domena, putanja, secure, istice, naziv, vrijednost):
+    if not domena.startswith("."):
+        domena = "." + domena.lstrip(".")
+    return f"{domena}\tTRUE\t{putanja}\t{secure}\t{istice}\t{naziv}\t{vrijednost}"
+
+
+def pokreni_instagram_login_proces(cookies_izlazna_putanja, jezik):
+    """Pokrece se u ZASEBNOM procesu (isti obrazac kao pokreni_webview_proces
+    za fallback player) - otvara PRAVU Instagram stranicu za prijavu u
+    ugradjenom pywebview prozoru. Korisnik se prijavi normalno (ovo NIJE
+    lazna/phishing stranica, doslovno je instagram.com), pa zatvori prozor -
+    na zatvaranje (events.closing, PRIJE nego se prozor stvarno unisti dok su
+    kolacici jos citljivi), izvucemo SVE kolacice preko window.get_cookies()
+    (ukljucujuci HttpOnly - login/sesijski kolacici gotovo uvijek jesu, i
+    JS document.cookie ih NE bi vidio, ali ovo je nativni API pa vidi) i
+    zapisemo ih kao cookies.txt (Netscape format) - isti format koji
+    '--cookies <fajl>' u gallery-dl/yt-dlp ocekuje."""
+    def na_zatvaranje():
+        try:
+            istice = str(int(time.time()) + 180 * 24 * 3600)  # 180 dana unaprijed
+            redovi = ["# Netscape HTTP Cookie File", "# Generated by Mister Muscle Downloader", ""]
+            for cookie_dict in window.get_cookies():
+                for naziv, morsel in cookie_dict.items():
+                    domena = morsel["domain"] if morsel["domain"] else ".instagram.com"
+                    putanja = morsel["path"] if morsel["path"] else "/"
+                    secure = "TRUE" if morsel["secure"] else "FALSE"
+                    redovi.append(_cookie_u_netscape_redak(domena, putanja, secure, istice, naziv, morsel.value))
+            with open(cookies_izlazna_putanja, "w", encoding="utf-8") as f:
+                f.write("\n".join(redovi) + "\n")
+        except Exception:
+            pass  # glavni proces prepoznaje neuspjeh po tome sto fajl ostaje prazan/ne postoji
+
+    naslov = ("Prijavi se na Instagram, pa ZATVORI ovaj prozor" if jezik == "hr"
+              else "Log into Instagram, then CLOSE this window")
+    window = webview.create_window(naslov, url="https://www.instagram.com/accounts/login/",
+                                   width=480, height=760)
+    window.events.closing += na_zatvaranje
+    webview.start()
+
+
 
 class App:
     def __init__(self, root):
@@ -2926,6 +3059,8 @@ class App:
         self.var_audio_format = tk.StringVar(value=self.cfg["audio_format"])
         self.var_omjer_slike = tk.StringVar(value=self.cfg.get("omjer_slike", "Original"))
         self.var_cookies_browser = tk.StringVar(value=self.cfg.get("cookies_browser", "Chrome"))
+        self.var_cookies_izvor = tk.StringVar(value=self.cfg.get("cookies_izvor", "browser"))
+        self.var_cookies_fajl = tk.StringVar(value=self.cfg.get("cookies_fajl", ""))
         self.var_h264 = tk.BooleanVar(value=bool(self.cfg["h264"]))
         self.var_metapodaci = tk.BooleanVar(value=bool(self.cfg["metapodaci"]))
 
@@ -3565,10 +3700,18 @@ class App:
                                      state="readonly", style="Cyber.TCombobox", width=28)
         self.cb_omjer.pack(anchor="w")
 
-        # Panel objasnjenja + odabir browsera za "Slika (Instagram)" nacin -
-        # skriven osim kad je taj nacin odabran (vidi _osvjezi_stanje_nacina).
-        # Namjerno vizualno izdvojen (obrub, druga nijansa) da odmah upada u
-        # oko da ovo NIJE isto kao obicno skidanje videa - treba prijava.
+        # Panel objasnjenja + odabir izvora kolacica za "Slika (Instagram)"
+        # nacin - skriven osim kad je taj nacin odabran (vidi
+        # _osvjezi_stanje_nacina). Namjerno vizualno izdvojen (obrub, druga
+        # nijansa) da odmah upada u oko da ovo NIJE isto kao obicno skidanje
+        # videa - treba prijava.
+        #
+        # v3.1: DVA nacina dobavljanja kolacica, ne samo jedan - direktno iz
+        # browsera zahtijeva da bude ZATVOREN (Chromium zakljuca svoju bazu
+        # kolacica dok radi), sto je korisnicima smetalo. Dodana alternativa:
+        # gotov cookies.txt fajl (izvezen preko besplatne ekstenzije dok je
+        # browser normalno otvoren) - sporiji za pripremiti PRVI put, ali
+        # NIKAD ne treba zatvarati browser.
         self.panel_ig_slika = tk.Frame(card, bg=posvijetli(CARD, 0.06),
                                        highlightbackground=ACCENT, highlightthickness=1)
         unutra_ig = tk.Frame(self.panel_ig_slika, bg=posvijetli(CARD, 0.06))
@@ -3578,15 +3721,127 @@ class App:
         tk.Label(unutra_ig, text=self.t("ig_slika_objasnjenje"), font=("Segoe UI", 8),
                  bg=posvijetli(CARD, 0.06), fg=SUBTEXT, wraplength=380, justify="left").pack(
             anchor="w", pady=(4, 8))
-        tk.Label(unutra_ig, text=self.t("oznaka_cookies_browser"), font=("Segoe UI", 8, "bold"),
+
+        # Preporucena, najjednostavnija opcija - prijava UNUTAR same app (bez
+        # ekstenzije, bez zatvaranja browsera) preko pywebview-a, koji vec
+        # koristimo za player. Vidi pokreni_instagram_login_proces() na vrhu
+        # fajla za objasnjenje mehanizma.
+        self.btn_ig_prijava = self._napravi_dugme(
+            unutra_ig, self.t("gumb_ig_prijava"), self._pokreni_instagram_prijavu,
+            bg=ACCENT, hover=ACCENT_HOVER, font_size=9, height=1)
+        self.btn_ig_prijava.pack(fill="x", pady=(0, 4))
+        self.lbl_ig_prijava_status = tk.Label(unutra_ig, text="", font=("Segoe UI", 8),
+                                              bg=posvijetli(CARD, 0.06), fg=SUCCESS, wraplength=380,
+                                              justify="left")
+        self.lbl_ig_prijava_status.pack(anchor="w", pady=(0, 8))
+
+        tk.Label(unutra_ig, text=self.t("ig_ili_rucno"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 6))
+
+        red_izvor = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        red_izvor.pack(fill="x", pady=(0, 6))
+        tk.Radiobutton(red_izvor, text=self.t("cookies_izvor_browser"), value="browser",
+                       variable=self.var_cookies_izvor, command=self._osvjezi_izvor_cookies,
+                       font=("Segoe UI", 8, "bold"), bg=posvijetli(CARD, 0.06), fg=TEXT,
+                       activebackground=posvijetli(CARD, 0.06), activeforeground=TEXT,
+                       selectcolor=INPUT_BG, highlightthickness=0, bd=0, cursor="hand2",
+                       anchor="w").pack(anchor="w")
+        tk.Radiobutton(red_izvor, text=self.t("cookies_izvor_fajl"), value="fajl",
+                       variable=self.var_cookies_izvor, command=self._osvjezi_izvor_cookies,
+                       font=("Segoe UI", 8, "bold"), bg=posvijetli(CARD, 0.06), fg=TEXT,
+                       activebackground=posvijetli(CARD, 0.06), activeforeground=TEXT,
+                       selectcolor=INPUT_BG, highlightthickness=0, bd=0, cursor="hand2",
+                       anchor="w").pack(anchor="w")
+
+        self.red_cookies_browser = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        tk.Label(self.red_cookies_browser, text=self.t("oznaka_cookies_browser"), font=("Segoe UI", 8, "bold"),
                  bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
-        self.cb_cookies_browser = ttk.Combobox(unutra_ig, values=BROWSERI_COOKIES,
+        self.cb_cookies_browser = ttk.Combobox(self.red_cookies_browser, values=BROWSERI_COOKIES,
                                                textvariable=self.var_cookies_browser,
                                                state="readonly", style="Cyber.TCombobox", width=20)
         self.cb_cookies_browser.pack(anchor="w")
+        tk.Label(self.red_cookies_browser, text=self.t("cookies_browser_napomena"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT, wraplength=380, justify="left").pack(
+            anchor="w", pady=(6, 0))
+
+        self.red_cookies_fajl = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        tk.Label(self.red_cookies_fajl, text=self.t("oznaka_cookies_fajl"), font=("Segoe UI", 8, "bold"),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
+        red_fajl_odabir = tk.Frame(self.red_cookies_fajl, bg=posvijetli(CARD, 0.06))
+        red_fajl_odabir.pack(fill="x")
+        self.entry_cookies_fajl = tk.Entry(red_fajl_odabir, textvariable=self.var_cookies_fajl,
+                                           font=("Segoe UI", 9), bg=INPUT_BG, fg=TEXT,
+                                           insertbackground=TEXT, relief="flat", width=26)
+        self.entry_cookies_fajl.pack(side="left", ipady=4, fill="x", expand=True)
+        self._napravi_dugme(red_fajl_odabir, self.t("gumb_odaberi_folder"), self._odaberi_cookies_fajl,
+                            bg=CARD_LIGHT, hover=posvijetli(CARD_LIGHT, 0.1), font_size=9,
+                            height=1, width=9).pack(side="left", padx=(6, 0))
+        tk.Label(self.red_cookies_fajl, text=self.t("cookies_fajl_napomena"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT, wraplength=380, justify="left").pack(
+            anchor="w", pady=(6, 0))
 
         self._donji_razmak_opcije = tk.Frame(card, bg=CARD)
         self._donji_razmak_opcije.pack(pady=4)
+        self._osvjezi_izvor_cookies()
+
+    def _osvjezi_izvor_cookies(self):
+        if self.var_cookies_izvor.get() == "fajl":
+            self.red_cookies_browser.pack_forget()
+            self.red_cookies_fajl.pack(fill="x")
+        else:
+            self.red_cookies_fajl.pack_forget()
+            self.red_cookies_browser.pack(fill="x")
+
+    def _odaberi_cookies_fajl(self):
+        putanja = filedialog.askopenfilename(
+            title=self.t("dijalog_odaberi_cookies_naslov"),
+            filetypes=[("cookies.txt", "*.txt"), (self.t("dijalog_svi_fajlovi"), "*.*")],
+        )
+        if putanja:
+            self.var_cookies_fajl.set(putanja)
+
+    def _pokreni_instagram_prijavu(self):
+        """Otvara PRAVU Instagram prijavu unutar ugradjenog (zasebni proces)
+        pywebview prozora - bez ekstenzije, bez zatvaranja bilo cega. Korisnik
+        se prijavi pa zatvori taj prozor; kolacici se automatski izvuku i
+        spreme kao cookies.txt, i ODMAH odaberu kao izvor (radio prebacen na
+        'fajl', polje popunjeno)."""
+        if not PYWEBVIEW_DOSTUPAN:
+            messagebox.showerror(self.t("err_naslov"), self.t("err_pywebview_missing_text"))
+            return
+        if not messagebox.askokcancel(self.t("ig_prijava_naslov"), self.t("ig_prijava_info")):
+            return
+
+        cookies_putanja = os.path.join(_alati_folder(), "instagram_cookies.txt")
+        try:
+            if os.path.exists(cookies_putanja):
+                os.remove(cookies_putanja)  # da sigurno prepoznamo NOVI (ili nikakav) rezultat
+        except Exception:
+            pass
+
+        self.btn_ig_prijava.config(state="disabled", text=self.t("ig_prijava_u_tijeku"))
+        self.lbl_ig_prijava_status.config(text="")
+
+        proces = multiprocessing.Process(target=pokreni_instagram_login_proces,
+                                         args=(cookies_putanja, self.jezik))
+        proces.start()
+        threading.Thread(target=self._cekaj_instagram_prijavu, args=(proces, cookies_putanja),
+                         daemon=True).start()
+
+    def _cekaj_instagram_prijavu(self, proces, cookies_putanja):
+        proces.join()
+        uspjelo = os.path.isfile(cookies_putanja) and os.path.getsize(cookies_putanja) > 0
+        self.root.after(0, self._na_zavrsetak_ig_prijave, uspjelo, cookies_putanja)
+
+    def _na_zavrsetak_ig_prijave(self, uspjelo, cookies_putanja):
+        self.btn_ig_prijava.config(state="normal", text=self.t("gumb_ig_prijava"))
+        if uspjelo:
+            self.var_cookies_fajl.set(cookies_putanja)
+            self.var_cookies_izvor.set("fajl")
+            self._osvjezi_izvor_cookies()
+            self.lbl_ig_prijava_status.config(text=self.t("ig_prijava_uspjeh"), fg=SUCCESS)
+        else:
+            self.lbl_ig_prijava_status.config(text=self.t("ig_prijava_neuspjeh"), fg=DANGER)
 
     def _kartica_folder(self, roditelj):
         self._naslov_kartice(roditelj, "3", self.t("kartica_3"))
@@ -4066,6 +4321,9 @@ class App:
             "video_format": self.var_video_format.get(),
             "audio_format": self.var_audio_format.get(),
             "omjer_slike": self.var_omjer_slike.get(),
+            "cookies_browser": self.var_cookies_browser.get(),
+            "cookies_izvor": self.var_cookies_izvor.get(),
+            "cookies_fajl": self.var_cookies_fajl.get(),
             "h264": self.var_h264.get(),
             "metapodaci": self.var_metapodaci.get(),
         })
@@ -5131,7 +5389,20 @@ class App:
                 self._zavrsi_preuzimanje(0, len(linkovi))
                 return
 
-        browser = self.var_cookies_browser.get().lower()
+        # v3.1: DVA moguca izvora kolacica - direktno iz browsera (zahtijeva
+        # da bude ZATVOREN, vidi cookies_browser_napomena) ili gotov
+        # cookies.txt fajl (izvezen preko ekstenzije, browser ostaje otvoren).
+        if self.var_cookies_izvor.get() == "fajl":
+            cookies_fajl = self.var_cookies_fajl.get().strip()
+            if not cookies_fajl or not os.path.isfile(cookies_fajl):
+                self.root.after(0, lambda: messagebox.showwarning(
+                    self.t("warn_naslov"), self.t("warn_cookies_fajl_missing")))
+                self._zavrsi_preuzimanje(0, len(linkovi))
+                return
+            cookies_argumenti = ["--cookies", cookies_fajl]
+        else:
+            cookies_argumenti = ["--cookies-from-browser", self.var_cookies_browser.get().lower()]
+
         uspjesni = 0
         neuspjesni = 0
         self.root.after(0, self._prikazi_status_linkova, linkovi)
@@ -5148,7 +5419,7 @@ class App:
                 self.root.after(0, lambda u=url: self.ispisi(self.t("msg_not_instagram_link").format(u)))
                 continue
 
-            argumenti = ["--cookies-from-browser", browser, "--directory", self.trenutni_folder, url]
+            argumenti = [*cookies_argumenti, "--directory", self.trenutni_folder, url]
             uspjelo, poruka = self._skini_ig_slike_jedan(argumenti)
             if uspjelo:
                 uspjesni += 1
