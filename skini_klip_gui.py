@@ -26,6 +26,7 @@ import http.server
 import socketserver
 import tempfile
 import subprocess
+import webbrowser
 import threading
 import multiprocessing
 import urllib.request
@@ -60,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.2"
+APP_VERZIJA = "3.3"
 
 
 def _bazni_folder():
@@ -471,6 +472,7 @@ def _najnovija_verzija_yt_dlp():
 # Repo iz kojeg SAMA APLIKACIJA (ne yt-dlp) provjerava svoje nove verzije -
 # promijeni ovo ako ikad presalis repo na drugi GitHub racun/naziv.
 APP_GITHUB_REPO = "wilsoncro/mister-muscle-downloader"
+DONATE_URL = "https://paypal.me/MrMuscle1995"
 
 
 def _usporedi_verzije(v1, v2):
@@ -737,14 +739,15 @@ PRIJEVODI = {
         "meni_config": "⚙ Otvori config",
         "meni_reset_prozor": "🗔 Resetiraj veličinu prozora",
         "meni_pomoc": "Pomoć",
+        "meni_doniraj": "❤️ Doniraj",
         "meni_o_aplikaciji": "O aplikaciji",
         "meni_jezik": "Jezik",
         "meni_jezik_hr": "Hrvatski",
         "meni_jezik_en": "English",
         "gumb_azuriranja": "🔄 Provjeri ažuriranja",
         "kartica_1": "LINKOVI (jedan po retku)",
-        "kartica_2": "ŠTO SKIDAMO",
-        "kartica_3": "GDJE SE SPREMA",
+        "kartica_2": "TIP FAJLA",
+        "kartica_3": "LOKACIJA SKIDANJA",
         "kartica_4": "POKRENI",
         "placeholder_linkovi": "Zalijepi YouTube / TikTok / Instagram link ovdje...",
         "gumb_pregledaj": "🔄 Ponovno učitaj player",
@@ -753,7 +756,7 @@ PRIJEVODI = {
         "gumb_ponisti_isjecak": "✕ Poništi",
         "nacin_video_zvuk": "🎬  Video + zvuk",
         "nacin_video_zvuk_opis": "spojen mp4 — standardno",
-        "nacin_samo_video": "🎞  Samo video (bez zvuka)",
+        "nacin_samo_video": "🎞  Samo video",
         "nacin_samo_video_opis": "nijemi zapis za montažu / B-roll",
         "nacin_samo_zvuk": "🎵  Samo zvuk",
         "nacin_slika_instagram": "📷  Slika (Instagram)",
@@ -827,7 +830,7 @@ PRIJEVODI = {
         "nije_pronadjen": "nije pronađen",
         "provjeravam_alate": "Provjeravam alate...",
         "provjeravam": "🔄 Provjeravam...",
-        "skidam": "Skidam...",
+        "skidam": "Skini klip",
         # --- dijaloski okviri i STATUS log poruke (dodano naknadno) ---
         "err_naslov": "Greška",
         "msg_need_pywebview": "ℹ Za pregled/označavanje isječka treba biblioteka 'pywebview' (pip install pywebview).",
@@ -988,14 +991,15 @@ PRIJEVODI = {
         "meni_config": "⚙ Open config",
         "meni_reset_prozor": "🗔 Reset window size",
         "meni_pomoc": "Help",
+        "meni_doniraj": "❤️ Donate",
         "meni_o_aplikaciji": "About",
         "meni_jezik": "Language",
         "meni_jezik_hr": "Hrvatski",
         "meni_jezik_en": "English",
         "gumb_azuriranja": "🔄 Check for updates",
         "kartica_1": "LINKS (one per line)",
-        "kartica_2": "WHAT TO DOWNLOAD",
-        "kartica_3": "WHERE TO SAVE",
+        "kartica_2": "FILE TYPE",
+        "kartica_3": "DOWNLOAD LOCATION",
         "kartica_4": "START",
         "placeholder_linkovi": "Paste a YouTube / TikTok / Instagram link here...",
         "gumb_pregledaj": "🔄 Reload player",
@@ -1004,7 +1008,7 @@ PRIJEVODI = {
         "gumb_ponisti_isjecak": "✕ Clear",
         "nacin_video_zvuk": "🎬  Video + audio",
         "nacin_video_zvuk_opis": "merged mp4 — standard",
-        "nacin_samo_video": "🎞  Video only (no audio)",
+        "nacin_samo_video": "🎞  Video only",
         "nacin_samo_video_opis": "silent clip for editing / B-roll",
         "nacin_samo_zvuk": "🎵  Audio only",
         "nacin_slika_instagram": "📷  Photo (Instagram)",
@@ -1079,7 +1083,7 @@ PRIJEVODI = {
         "nije_pronadjen": "not found",
         "provjeravam_alate": "Checking tools...",
         "provjeravam": "🔄 Checking...",
-        "skidam": "Downloading...",
+        "skidam": "Download clip",
         # --- dialogs and STATUS log messages (added later) ---
         "err_naslov": "Error",
         "msg_need_pywebview": "ℹ️ Previewing/marking a clip needs the 'pywebview' library (pip install pywebview).",
@@ -1677,6 +1681,44 @@ PROMJENE = {
             "also quietly updates itself in the background if needed.",
         ],
     },
+    "3.3": {
+        "hr": [
+            "Popravljeno: 'Omjer slike' (9:16, 1:1, 4:5...) se dosad uopće "
+            "nije primjenjivao — video je uvijek ostajao u izvornom 16:9 "
+            "bez obzira na odabir. Pravi uzrok pronađen i riješen.",
+            "Popravljeno: kad je aplikacija na engleskom, 'Kvaliteta' "
+            "izbornik je znao pokazivati 'Najbolja' umjesto 'Best'.",
+            "Popravljeno: ažuriranje aplikacije je znalo instalirati u novi "
+            "folder umjesto da nadogradi postojeću instalaciju.",
+            "Dugme 'Skidam...' sad piše 'Skini klip'.",
+            "'Trenutni odabir' OD/DO polja sad sama ubacuju ':' dok upisuješ "
+            "vrijeme (npr. upišeš '013433', postane '01:34:33').",
+            "'(bez zvuka)' maknuto iz 'Samo video'.",
+            "Podnaslov ispod naslova aplikacije maknut.",
+            "'ŠTO SKIDAMO' → 'TIP FAJLA', 'GDJE SE SPREMA' → 'LOKACIJA "
+            "SKIDANJA'.",
+            "Novo: '❤️ Doniraj' dugme u traci izbornika, odmah pored "
+            "'Pomoć' — vodi na PayPal.",
+        ],
+        "en": [
+            "Fixed: 'Aspect ratio' (9:16, 1:1, 4:5...) wasn't being applied "
+            "at all — the video always stayed at the original 16:9 "
+            "regardless of the selection. Found and fixed the real cause.",
+            "Fixed: when the app is in English, the 'Quality' picker could "
+            "show 'Najbolja' instead of 'Best'.",
+            "Fixed: updating the app could install into a new folder "
+            "instead of upgrading the existing installation.",
+            "The 'Downloading...' button now says 'Download clip'.",
+            "'Current selection' OD/DO fields now auto-insert ':' as you "
+            "type the time (e.g. type '013433', it becomes '01:34:33').",
+            "'(no audio)' removed from 'Video only'.",
+            "Removed the subtitle under the app title.",
+            "'WHAT TO DOWNLOAD' → 'FILE TYPE', 'WHERE TO SAVE' → "
+            "'DOWNLOAD LOCATION'.",
+            "New: a '❤️ Donate' button in the menu bar, right next to "
+            "'Help' — links to PayPal.",
+        ],
+    },
 }
 
 
@@ -1765,7 +1807,14 @@ def staklena_linija(parent, boja, visina=1):
     tk.Frame - bez custom widgeta koji bi mogli remetiti geometriju."""
     return tk.Frame(parent, bg=boja, height=visina)
 
-KVALITETE = ["Najbolja", "2160p (4K)", "1440p", "1080p", "720p", "480p", "360p"]
+# "Najbolja"/"Best" je jedina rijec u ovoj listi koja treba prijevod (ostalo
+# su brojevi/rezolucije, iste u oba jezika) - vidi kvalitete_za_jezik().
+KVALITETE_HR = ["Najbolja", "2160p (4K)", "1440p", "1080p", "720p", "480p", "360p"]
+KVALITETE_EN = ["Best", "2160p (4K)", "1440p", "1080p", "720p", "480p", "360p"]
+
+
+def kvalitete_za_jezik(jezik):
+    return KVALITETE_EN if jezik == "en" else KVALITETE_HR
 VIDEO_FORMATI = ["mp4", "mkv", "webm", "mov", "original (bez pretvorbe)"]
 AUDIO_FORMATI = ["mp3", "m4a", "wav", "flac", "opus", "original (bez pretvorbe)"]
 OMJERI_SLIKE = [
@@ -2492,6 +2541,22 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       var muted = false;
       var fallbackPokrenut = false;
 
+      // Auto-formatiranje "Trenutni odabir" OD/DO polja dok korisnik rucno
+      // upisuje vrijeme - sam ubacuje ":" na ispravna mjesta (HH:MM:SS) dok
+      // tipka, umjesto da korisnik mora sam paziti na dvotocke.
+      function autoFormatirajVrijeme(e) {{
+        var el = e.target;
+        var cifre = el.value.replace(/\\D/g, '').slice(0, 6);  // samo znamenke, max 6 (HHMMSS)
+        var formatirano = '';
+        for (var i = 0; i < cifre.length; i++) {{
+          if (i === 2 || i === 4) formatirano += ':';
+          formatirano += cifre[i];
+        }}
+        el.value = formatirano;
+      }}
+      document.getElementById('input-od').addEventListener('input', autoFormatirajVrijeme);
+      document.getElementById('input-do').addEventListener('input', autoFormatirajVrijeme);
+
       function formatiraj(t) {{
         // HH:MM:SS - uvijek prikazuje sat/minutu/sekundu (npr. "00:03:45"),
         // ne samo minute:sekunde, da bude jasno i za dulje videe.
@@ -3174,7 +3239,18 @@ class App:
         self._prozor_ima_fokus = True          # pretpostavka pri pokretanju (prozor se tek otvorio)
 
         self.var_nacin = tk.StringVar(value=self.cfg["nacin"])
-        self.var_kvaliteta = tk.StringVar(value=self.cfg["kvaliteta"])
+        # Normaliziraj spremljenu vrijednost na TRENUTNI jezik - ako je
+        # korisnik zadnji put birao na hrvatskom ("Najbolja") pa presao na
+        # engleski (zahtijeva restart, vidi _postavi_jezik), bez ovoga bi
+        # combobox i dalje pokazivao "Najbolja" usred inace engleskog UI-ja
+        # (Tkinter combobox prikaze BILO KOJI string u varijabli, cak i ako
+        # nije medju ponudjenim "values").
+        _pocetna_kvaliteta = self.cfg["kvaliteta"]
+        if self.jezik == "en" and _pocetna_kvaliteta == "Najbolja":
+            _pocetna_kvaliteta = "Best"
+        elif self.jezik != "en" and _pocetna_kvaliteta == "Best":
+            _pocetna_kvaliteta = "Najbolja"
+        self.var_kvaliteta = tk.StringVar(value=_pocetna_kvaliteta)
         self.var_video_format = tk.StringVar(value=self.cfg.get("video_format", "mp4"))
         self.var_audio_format = tk.StringVar(value=self.cfg["audio_format"])
         self.var_omjer_slike = tk.StringVar(value=self.cfg.get("omjer_slike", "Original"))
@@ -3532,6 +3608,10 @@ class App:
         stavke_pomoc = [("cmd", self.t("meni_o_aplikaciji"), self.o_aplikaciji)]
         self._dugme_menija(traka, self.t("meni_pomoc"), stavke_pomoc)
 
+        # "Doniraj" - JEDNIM klikom (nema padajuci izbornik, samo jedna akcija
+        # pa dropdown nema smisla) otvara PayPal link u zadanom browseru.
+        self._dugme_doniraj(traka)
+
     def _dugme_menija(self, traka, naslov, stavke):
         """Jedan klikabilan naslov u traci izbornika (npr. 'Alati') - klik
         otvara/zatvara padajući izbornik ispod njega."""
@@ -3543,6 +3623,24 @@ class App:
         lbl.bind("<Leave>", lambda e: lbl.config(
             bg=CARD if not (self._otvoreni_dropdown and self._otvoreni_dropdown[0] is lbl) else PAUSE_BG))
         return lbl
+
+    def _dugme_doniraj(self, traka):
+        """Isti vizualni stil kao ostali naslovi u traci (_dugme_menija), ali
+        BEZ padajuceg izbornika - jedna akcija, jedan klik, odmah otvori
+        PayPal link u zadanom browseru."""
+        lbl = tk.Label(traka, text=self.t("meni_doniraj"), font=("Segoe UI", 9), bg=CARD, fg=TEXT,
+                       padx=12, pady=7, cursor="hand2")
+        lbl.pack(side="left")
+        lbl.bind("<Button-1>", lambda e: self._otvori_donate())
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=PAUSE_BG, fg="#ff6b81"))
+        lbl.bind("<Leave>", lambda e: lbl.config(bg=CARD, fg=TEXT))
+        return lbl
+
+    def _otvori_donate(self):
+        try:
+            webbrowser.open(DONATE_URL)
+        except Exception as err:
+            messagebox.showerror(self.t("err_naslov"), self.t("msg_cannot_open").format(err, DONATE_URL))
 
     def _toggle_dropdown(self, dugme, stavke):
         if self._otvoreni_dropdown and self._otvoreni_dropdown[0] is dugme:
@@ -3681,8 +3779,6 @@ class App:
         naslov_red.pack(fill="x", pady=(6, 12))
         tk.Label(naslov_red, text=self.t("naslov_app"), font=(FONT_NASLOV, 20),
                  bg=BG, fg=TEXT).pack(anchor="w")
-        tk.Label(naslov_red, text=self.t("podnaslov_app"),
-                 font=("Segoe UI", 9), bg=BG, fg=SUBTEXT).pack(anchor="w", pady=(2, 0))
 
         self._kartica_linkovi(self.lijevo_unutra)
         self._kartica_opcije(self.lijevo_unutra)
@@ -3833,7 +3929,7 @@ class App:
         self.lbl_kvaliteta = tk.Label(red_kv, text=self.t("oznaka_kvaliteta"), font=("Segoe UI", 8, "bold"),
                                       bg=CARD, fg=SUBTEXT)
         self.lbl_kvaliteta.grid(row=0, column=0, sticky="w", pady=(0, 3))
-        self.cb_kvaliteta = ttk.Combobox(red_kv, values=KVALITETE, textvariable=self.var_kvaliteta,
+        self.cb_kvaliteta = ttk.Combobox(red_kv, values=kvalitete_za_jezik(self.jezik), textvariable=self.var_kvaliteta,
                                          state="readonly", style="Cyber.TCombobox", width=16)
         self.cb_kvaliteta.grid(row=1, column=0, sticky="w")
 
@@ -5009,7 +5105,14 @@ class App:
                              min_velicina=1_000_000)
             self.root.after(0, self.azuriraj_progress, 0)
             self.root.after(0, self.ispisi, self.t("msg_launching_installer"))
-            subprocess.Popen([cilj], close_fds=True)
+            # v3.4: EKSPLICITNO prosljedjujemo trenutni install folder preko
+            # /DIR= - bez ovoga se Inno Setup instalater oslanjao ISKLJUCIVO
+            # na svoje vlastito prepoznavanje "vec instalirano" (preko AppId
+            # u registryu), sto je znalo zakazati i stvoriti NOVI folder
+            # umjesto da nadogradi postojeci. Ovako je uvijek deterministicki
+            # ista, trenutna instalacijska putanja, bez nagadjanja.
+            trenutni_folder_appa = _bazni_folder()
+            subprocess.Popen([cilj, f"/DIR={trenutni_folder_appa}"], close_fds=True)
             self.root.after(800, self.zatvori)
         except Exception as err:
             self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_app_update_failed").format(em)))
@@ -6005,8 +6108,19 @@ class App:
             # "a" je ffmpegov ugradjeni izraz za trenutni omjer slike (iw/ih)
             # unutar crop filtera. Ako je izvor SIRI od ciljnog omjera, drzi
             # visinu i odsijeci sirinu; inace drzi sirinu i odsijeci visinu.
-            crop_w = f"if(gt(a,{tw}/{th}),ih*{tw}/{th},iw)"
-            crop_h = f"if(gt(a,{tw}/{th}),ih,iw*{th}/{tw})"
+            #
+            # BITNO (popravak buga - omjer slike se dosad UOPCE nije
+            # primjenjivao, uvijek je ostajao original/16:9): zarezi UNUTAR
+            # if(...) izraza MORAJU biti escape-ani ("\,") jer inace ih
+            # ffmpegov VANJSKI filter-graf parser (koji zarez koristi za
+            # ULANCAVANJE VISE filtera, npr. "crop=...,scale=...") pogresno
+            # protumaci kao kraj/pocetak NOVOG filtera, umjesto kao dio
+            # argumenta funkcije if(). Bez ovoga ffmpeg pukne s "No such
+            # filter" i cijeli korak se preskoci, a original ostaje netaknut.
+            # Potvrdjeno testom: bez escapea vraca "No such filter: '9/16)'";
+            # s escapeom, 1920x1080->9:16 daje tocnih 608x1080.
+            crop_w = f"if(gt(a\\,{tw}/{th})\\,ih*{tw}/{th}\\,iw)"
+            crop_h = f"if(gt(a\\,{tw}/{th})\\,ih\\,iw*{th}/{tw})"
             privremena = putanja + ".omjer.mp4"
             subprocess.run(
                 [ffmpeg, "-y", "-fflags", "+genpts", "-i", putanja, "-vf", f"crop={crop_w}:{crop_h}",
