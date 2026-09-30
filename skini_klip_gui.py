@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.4"
+APP_VERZIJA = "3.5"
 
 
 def _bazni_folder():
@@ -1731,6 +1731,16 @@ PROMJENE = {
             "'DOWNLOAD LOCATION'.",
             "New: a '❤️ Donate' button in the menu bar, right next to "
             "'Help' — links to PayPal.",
+        ],
+    },
+    "3.5": {
+        "hr": [
+            "Novi logo i ikona aplikacije (novi dizajn) — i u naslovnom "
+            "retku unutar app-e, i kao Windows/taskbar ikonica.",
+        ],
+        "en": [
+            "New app logo and icon (new design) — both in the in-app title "
+            "row and as the Windows/taskbar icon.",
         ],
     },
 }
