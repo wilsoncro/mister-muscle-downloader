@@ -24,6 +24,7 @@ SKRIPTA = os.path.join(OVDJE, "skini_klip_gui.py")
 ISS_SKRIPTA = os.path.join(OVDJE, "MisterMuscle_Setup.iss")
 NAZIV = "MisterMuscle"
 IKONA = os.path.join(OVDJE, "ikona.ico")  # neobavezno
+LOGO_PNG = os.path.join(OVDJE, "logo.png")  # neobavezno - logo UNUTAR app-e (naslovni red)
 
 
 def pokreni(naredba, opis):
@@ -157,6 +158,12 @@ def main():
         # ikonu .exe fajla u Exploreru/prečicama.
         razdjelnik = ";" if os.name == "nt" else ":"
         argumenti += ["--add-data", f"{IKONA}{razdjelnik}."]
+    if os.path.isfile(LOGO_PNG):
+        # Isti razlog kao ikona.ico iznad - ugradi logo.png kao resurs da ga
+        # skini_klip_gui.py moze naci preko sys._MEIPASS pri pokretanju
+        # (prikazuje se u naslovnom redu unutar same app).
+        razdjelnik = ";" if os.name == "nt" else ":"
+        argumenti += ["--add-data", f"{LOGO_PNG}{razdjelnik}."]
     if os.name == "nt":
         # win32timezone je cest "skriveni" ovisnik pywin32 paketa - bez njega
         # zna raditi na razvojnom racunalu, a puknuti tek na tudem (gdje

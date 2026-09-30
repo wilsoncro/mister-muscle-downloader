@@ -84,6 +84,7 @@
   ('libtommath.dll',
    'C:\\Users\\mario\\AppData\\Local\\Python\\pythoncore-3.14-64\\DLLs\\libtommath.dll',
    'BINARY'),
+  ('logo.png', 'C:\\Users\\mario\\Desktop\\TEMP\\app final\\logo.png', 'DATA'),
   ('psutil\\_psutil_windows.pyd',
    'C:\\Users\\mario\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\psutil\\_psutil_windows.pyd',
    'EXTENSION'),

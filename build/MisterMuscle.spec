@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('C:/Users/mario/Desktop/TEMP/app final/ikona.ico', '.')]
+datas = [('C:/Users/mario/Desktop/TEMP/app final/ikona.ico', '.'), ('C:/Users/mario/Desktop/TEMP/app final/logo.png', '.')]
 binaries = []
 hiddenimports = ['psutil', 'win32gui', 'win32con', 'win32timezone']
 tmp_ret = collect_all('webview')

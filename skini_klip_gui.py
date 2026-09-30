@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.3"
+APP_VERZIJA = "3.4"
 
 
 def _bazni_folder():
@@ -103,6 +103,20 @@ def _ikona_putanja():
             if os.path.isfile(put):
                 return put
     put = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ikona.ico")
+    return put if os.path.isfile(put) else None
+
+
+def _logo_putanja():
+    """Isti obrazac kao _ikona_putanja(), samo za 'logo.png' - manja PNG
+    verzija iste slike, koristi se za prikaz UNUTAR same app (naslovni red),
+    ne za Windows/taskbar ikonicu (za to sluzi ikona.ico)."""
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            put = os.path.join(meipass, "logo.png")
+            if os.path.isfile(put):
+                return put
+    put = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
     return put if os.path.isfile(put) else None
 
 
@@ -727,7 +741,7 @@ ZADANI_CONFIG = {
 PRIJEVODI = {
     "hr": {
         "naslov_prozora": "Mister Muscle Downloader",
-        "naslov_app": "💪 Mister Muscle Downloader",
+        "naslov_app": "Mister Muscle Downloader",
         "podnaslov_app": "YouTube · TikTok · Instagram — video, isječci i zvuk u najboljoj kvaliteti",
         "meni_alati": "Alati",
         "meni_provjeri_azuriranja": "🔄 Provjeri ažuriranja",
@@ -979,7 +993,7 @@ PRIJEVODI = {
     },
     "en": {
         "naslov_prozora": "Mister Muscle Downloader",
-        "naslov_app": "💪 Mister Muscle Downloader",
+        "naslov_app": "Mister Muscle Downloader",
         "podnaslov_app": "YouTube · TikTok · Instagram — video, clips and audio in the best quality",
         "meni_alati": "Tools",
         "meni_provjeri_azuriranja": "🔄 Check for updates",
@@ -3777,8 +3791,24 @@ class App:
 
         naslov_red = tk.Frame(self.lijevo_unutra, bg=BG)
         naslov_red.pack(fill="x", pady=(6, 12))
+
+        # Pravi logo (umjesto stare 💪 emoji) - ucitan preko cistog Tkintera
+        # (tk.PhotoImage nativno cita PNG, ne treba Pillow ovisnost u samoj
+        # app-i). subsample() smanji na razumnu prikaznu velicinu (logo.png
+        # je 128x128 izvorno, ovdje ciljamo ~40px).
+        _logo_put = _logo_putanja()
+        if _logo_put:
+            try:
+                self._logo_img = tk.PhotoImage(file=_logo_put)
+                faktor = max(1, self._logo_img.width() // 40)
+                if faktor > 1:
+                    self._logo_img = self._logo_img.subsample(faktor, faktor)
+                tk.Label(naslov_red, image=self._logo_img, bg=BG).pack(side="left", padx=(0, 10))
+            except Exception:
+                pass
+
         tk.Label(naslov_red, text=self.t("naslov_app"), font=(FONT_NASLOV, 20),
-                 bg=BG, fg=TEXT).pack(anchor="w")
+                 bg=BG, fg=TEXT).pack(side="left", anchor="w")
 
         self._kartica_linkovi(self.lijevo_unutra)
         self._kartica_opcije(self.lijevo_unutra)
