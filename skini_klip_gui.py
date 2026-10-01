@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.5"
+APP_VERZIJA = "3.6"
 
 
 def _bazni_folder():
@@ -1791,8 +1791,8 @@ def je_poznati_tiktok_challenge_bug(tekst_greske):
 BG = "#0a0b18"           # duboka indigo pozadina prozora
 CARD = "#1b1d38"         # "staklena" ploha kartica
 CARD_LIGHT = "#242748"   # ugnjezdeni/isticuci paneli (npr. info o isjecku)
-ACCENT = "#0a84ff"       # iOS-plava - glavni akcent
-ACCENT_HOVER = "#3aa0ff"
+ACCENT = "#9c2d4f"       # duboka bordo/"trula visnja" crvena - glavni akcent
+ACCENT_HOVER = "#b15b75"
 TEXT = "#f5f6fc"
 SUBTEXT = "#9aa0c8"
 LOG_BG = "#0c0d1e"
@@ -2307,7 +2307,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         margin:0;
         background:
           radial-gradient(circle at 15% 0%, rgba(94,92,230,0.32), transparent 55%),
-          radial-gradient(circle at 85% 100%, rgba(10,132,255,0.26), transparent 55%),
+          radial-gradient(circle at 85% 100%, rgba(156,45,79,0.26), transparent 55%),
           linear-gradient(160deg, #0e1030 0%, #0a0b18 100%);
         font-family: "Segoe UI", "Segoe UI Emoji", sans-serif;
         display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start;
@@ -2350,7 +2350,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       }}
       #timeline-container:hover {{ border-color: {ACCENT}; }}
       #timeline-selection {{
-        position: absolute; top: 0; bottom: 0; background: rgba(10, 132, 255, 0.32);
+        position: absolute; top: 0; bottom: 0; background: rgba(156, 45, 79, 0.32);
         border-left: 2px solid {ACCENT}; border-right: 2px solid {ACCENT};
         pointer-events: auto; display: none; border-radius: 14px; cursor: grab;
       }}
@@ -2390,7 +2390,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         background: linear-gradient(135deg, {ACCENT}, #5e5ce6);
         color:white; border:none; border-radius:999px;
         padding:10px 18px; font-size:12px; font-weight:600; cursor:pointer;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.35), 0 4px 14px rgba(10,132,255,0.35);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.35), 0 4px 14px rgba(156,45,79,0.35);
         transition: filter 0.15s, transform 0.1s;
       }}
       button:hover {{ filter: brightness(1.12); }}
@@ -2421,10 +2421,10 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       .btn-download-short {{ background: linear-gradient(135deg, {SUCCESS}, #28b446); color: #06210c; font-weight: bold; }}
       .btn-download-short:hover {{ filter: brightness(1.1); }}
       .btn-dodaj-odabir {{
-        background: rgba(10,132,255,0.16); color: {ACCENT}; border: 1px solid rgba(10,132,255,0.5);
+        background: rgba(156,45,79,0.16); color: {ACCENT}; border: 1px solid rgba(156,45,79,0.5);
         box-shadow: none;
       }}
-      .btn-dodaj-odabir:hover {{ background: rgba(10,132,255,0.28); filter: none; }}
+      .btn-dodaj-odabir:hover {{ background: rgba(156,45,79,0.28); filter: none; }}
 
       /* --- lista više isječaka odjednom --- */
       #multi-panel {{ width: 100%; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }}
@@ -2449,8 +2449,8 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
         transition: border-color 0.2s, background 0.2s;
       }}
       .selekcija-red.aktivna {{
-        border-color: {ACCENT}; background: rgba(10,132,255,0.10);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 0 0 1px rgba(10,132,255,0.35);
+        border-color: {ACCENT}; background: rgba(156,45,79,0.10);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 0 0 1px rgba(156,45,79,0.35);
       }}
       .selekcija-broj {{ font-weight: 700; font-size: 13px; color: {SUBTEXT}; min-width: 16px; }}
       .selekcija-polja {{ flex: 1; display: flex; gap: 18px; flex-wrap: wrap; }}
@@ -2471,7 +2471,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
       #btn-skini-vise {{ width: 100%; display: none; }}
 
       .timeline-multi-blok {{
-        position: absolute; top: 0; bottom: 0; background: rgba(10, 132, 255, 0.28);
+        position: absolute; top: 0; bottom: 0; background: rgba(156, 45, 79, 0.28);
         border-left: 2px solid {ACCENT}; border-right: 2px solid {ACCENT}; border-radius: 14px;
         cursor: grab; z-index: 2;
       }}
@@ -3886,11 +3886,13 @@ class App:
         self._primijeni_raspored_donje_trake(uzak)
 
     def _naslov_kartice(self, roditelj, broj, tekst):
+        # 'broj' se vise ne prikazuje (korisnik je odlucio da brojcane oznake
+        # 1/2/3/4 ne trebaju) - parametar je ostao u potpisu SAMO da se ne
+        # moraju mijenjati svi pozivi (self._naslov_kartice(roditelj, "1", ...)
+        # na 4 razlicita mjesta), iako se vise ne koristi unutra.
         red = tk.Frame(roditelj, bg=BG)
         red.pack(fill="x", pady=(0, 6))
-        tk.Label(red, text=f"{broj}", font=("Segoe UI", 9, "bold"), bg=ACCENT, fg="white",
-                 width=3, pady=2).pack(side="left")
-        tk.Label(red, text=f"  {tekst}", font=("Segoe UI", 9, "bold"), bg=BG, fg=SUBTEXT).pack(side="left")
+        tk.Label(red, text=tekst, font=("Segoe UI", 9, "bold"), bg=BG, fg=SUBTEXT).pack(side="left")
         return red
 
     def _kartica_linkovi(self, roditelj):
