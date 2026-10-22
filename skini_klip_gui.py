@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.6"
+APP_VERZIJA = "3.7"
 
 
 def _bazni_folder():
@@ -536,7 +536,85 @@ def _najnovija_verzija_app():
         return None, None
 
 
+# ============================================================================
+#  Deno - JavaScript runtime koji yt-dlp TREBA za YouTube (v3.7)
+#
+#  yt-dlp od kraja 2025. za YouTube koristi vanjski JS runtime (tzv. "EJS")
+#  da rijesi YouTubeove izazove (n-challenge/potpis). BEZ njega YouTube
+#  ekstrakcija radi u "ogranicenom" nacinu - dio formata nedostaje, tipicno
+#  sve iznad 1080p (4K/1440p, VP9/AV1) - tocno ono sto se dogadjalo
+#  ("ne skida u 4K", log pokazuje samo 137+251 = 1080p). Sluzbeni yt-dlp.exe
+#  vec ima ugradjene EJS skripte; fali samo runtime. Deno je preporucen i
+#  ukljucen po defaultu; yt-dlp ga nalazi u PATH-u ili u istom folderu kao
+#  yt-dlp.exe (a mi mu uz to PATH dopunimo, vidi _okolina_s_alatima).
+# ============================================================================
+DENO_EXE_NAZIV = "deno.exe" if JE_WINDOWS else "deno"
+DENO_ZIP_URL = ("https://github.com/denoland/deno/releases/latest/download/"
+                "deno-x86_64-pc-windows-msvc.zip")
+
+
+def deno_exe_putanja():
+    return os.path.join(_alati_folder(), DENO_EXE_NAZIV)
+
+
+def deno_dostupan():
+    """True ako je Deno vec tu - bilo nas preuzeti u folderu alata, bilo vec
+    instaliran na korisnikovom PATH-u (onda ga yt-dlp svejedno nalazi)."""
+    return os.path.isfile(deno_exe_putanja()) or shutil.which("deno") is not None
+
+
+def preuzmi_deno(callback_status=None, callback_postotak=None):
+    if not JE_WINDOWS:
+        raise RuntimeError("Automatsko preuzimanje Deno-a podrzano je samo na Windowsima.")
+    cilj = deno_exe_putanja()
+    zip_putanja = os.path.join(tempfile.gettempdir(), "mister_muscle_deno.zip")
+    if callback_status:
+        callback_status(f"⏳ Preuzimam {DENO_EXE_NAZIV} (JavaScript runtime za YouTube)...")
+    try:
+        preuzmi_datoteku(DENO_ZIP_URL, zip_putanja, callback_postotak, min_velicina=10_000_000)
+        privremeni = cilj + ".novi"
+        with zipfile.ZipFile(zip_putanja) as zf:
+            clan = next((n for n in zf.namelist()
+                         if os.path.basename(n).lower() == DENO_EXE_NAZIV.lower()), None)
+            if not clan:
+                raise RuntimeError(f"{DENO_EXE_NAZIV} nije pronadjen u preuzetom zip-u.")
+            with zf.open(clan) as izvor, open(privremeni, "wb") as odrediste:
+                shutil.copyfileobj(izvor, odrediste)
+        os.replace(privremeni, cilj)
+    finally:
+        try:
+            os.remove(zip_putanja)
+        except Exception:
+            pass
+    if callback_status:
+        callback_status(f"✅ {DENO_EXE_NAZIV} spreman: {cilj}")
+    return cilj
+
+
+def azuriraj_deno(timeout=120):
+    """Pokrece 'deno upgrade' (Denoov ugradjeni self-update) - SAMO za nas
+    vlastiti preuzeti deno.exe. Ako korisnik ima svoj Deno na PATH-u, njega
+    ne diramo. Vraca CompletedProcess, ili None ako nemamo svoju kopiju."""
+    putanja = deno_exe_putanja()
+    if not os.path.isfile(putanja):
+        return None
+    return subprocess.run(
+        [putanja, "upgrade"], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=timeout, **_SUBPROCESS_FLAGS
+    )
+
+
+def _okolina_s_alatima():
+    """Okolina za yt-dlp podprocese: PATH dopunjen folderom naseg alata, da
+    yt-dlp SIGURNO nade Deno (i ostale alate) koji smo sami preuzeli, bez
+    oslanjanja na to da je korisnik sto instalirao u sustav."""
+    okolina = os.environ.copy()
+    okolina["PATH"] = _alati_folder() + os.pathsep + okolina.get("PATH", "")
+    return okolina
+
+
 def pokreni_yt_dlp(argumenti, **kwargs):
+    kwargs.setdefault("env", _okolina_s_alatima())
     return subprocess.run(
         [yt_dlp_exe_putanja(), *argumenti],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -552,7 +630,7 @@ def pokreni_yt_dlp_popen(argumenti, **kwargs):
     # "zaledeno" jer se hrpa redaka isprazni odjednom (cesto tek na kraju)
     # umjesto postupno. Ova varijabla okoline prisiljava yt-dlp da ispisuje
     # red-po-red ODMAH, pa se postotak/brzina azuriraju uzivo, ne skokovito.
-    okolina = os.environ.copy()
+    okolina = _okolina_s_alatima()
     okolina["PYTHONUNBUFFERED"] = "1"
     return subprocess.Popen(
         [yt_dlp_exe_putanja(), *argumenti],
@@ -908,6 +986,14 @@ PRIJEVODI = {
         "msg_gallerydl_check_done": "✅ gallery-dl: provjera završena",
         "msg_gallerydl_update_timeout": "❌ gallery-dl: ažuriranje je isteklo (spora veza) — pokušaj ponovno",
         "msg_gallerydl_update_error": "❌ gallery-dl: {0}",
+        "msg_deno_needed_downloading": "⏳ Preuzimam Deno (JavaScript runtime koji YouTube treba za 4K i sve formate) — jednokratno, ~40 MB...",
+        "msg_deno_download_failed": "⚠ Deno nije preuzet: {0} — YouTube videi možda neće ići u 4K/1440p. Pokušat ćemo ponovno pri sljedećem pokretanju.",
+        "msg_deno_present": "✅ Deno (YouTube 4K podrška): prisutan",
+        "msg_deno_installed": "🆕 Deno (YouTube 4K podrška): preuzet i instaliran",
+        "msg_deno_failed_short": "❌ Deno: preuzimanje nije uspjelo ({0})",
+        "msg_deno_updated": "🆕 Deno (YouTube 4K podrška): nadograđen na najnoviju verziju",
+        "msg_deno_update_failed": "❌ Deno: ažuriranje nije uspjelo (detalji u STATUS logu)",
+        "msg_deno_not_needed": "ℹ Deno: nije potreban na ovom sustavu",
         "msg_ffmpeg_present": "✅ ffmpeg: prisutan",
         "msg_ffmpeg_installed": "🆕 ffmpeg: instaliran",
         "msg_ffmpeg_error": "❌ ffmpeg: {0}",
@@ -1161,6 +1247,14 @@ PRIJEVODI = {
         "msg_gallerydl_check_done": "✅ gallery-dl: check complete",
         "msg_gallerydl_update_timeout": "❌ gallery-dl: update timed out (slow connection) — try again",
         "msg_gallerydl_update_error": "❌ gallery-dl: {0}",
+        "msg_deno_needed_downloading": "⏳ Downloading Deno (the JavaScript runtime YouTube needs for 4K and all formats) — one-time, ~40 MB...",
+        "msg_deno_download_failed": "⚠ Deno wasn't downloaded: {0} — YouTube videos may not go up to 4K/1440p. We'll try again next launch.",
+        "msg_deno_present": "✅ Deno (YouTube 4K support): present",
+        "msg_deno_installed": "🆕 Deno (YouTube 4K support): downloaded and installed",
+        "msg_deno_failed_short": "❌ Deno: download failed ({0})",
+        "msg_deno_updated": "🆕 Deno (YouTube 4K support): updated to the latest version",
+        "msg_deno_update_failed": "❌ Deno: update failed (see STATUS log for details)",
+        "msg_deno_not_needed": "ℹ Deno: not needed on this system",
         "msg_ffmpeg_present": "✅ ffmpeg: present",
         "msg_ffmpeg_installed": "🆕 ffmpeg: installed",
         "msg_ffmpeg_error": "❌ ffmpeg: {0}",
@@ -1741,6 +1835,42 @@ PROMJENE = {
         "en": [
             "New app logo and icon (new design) — both in the in-app title "
             "row and as the Windows/taskbar icon.",
+        ],
+    },
+    "3.6": {
+        "hr": [
+            "Promijenjena glavna boja aplikacije s plave na tamniju bordo/"
+            "trula-višnja crvenu — brojevi kartica, glavno dugme za "
+            "skidanje i player akcenti.",
+            "Maknute brojčane oznake (1, 2, 3, 4) ispred naslova kartica — "
+            "ostaju samo nazivi.",
+        ],
+        "en": [
+            "Changed the app's main accent color from blue to a deeper "
+            "burgundy/wine red — card badges, the main download button, "
+            "and player accents.",
+            "Removed the numbered badges (1, 2, 3, 4) in front of card "
+            "titles — just the names remain.",
+        ],
+    },
+    "3.7": {
+        "hr": [
+            "Popravljeno: YouTube videi se nisu skidali u 4K (ni 1440p) — "
+            "YouTube sad traži JavaScript runtime da otkrije sve formate. "
+            "App sad sama preuzme Deno (jednokratno, ~40 MB) pri prvom "
+            "pokretanju i koristi ga za yt-dlp. Utječe i na odabir "
+            "'Najbolja' kvaliteta.",
+            "'Provjeri ažuriranja' sad osigurava i Deno, a pri svakom pokretanju "
+            "se Deno tiho samo-ažurira (kao i gallery-dl).",
+        ],
+        "en": [
+            "Fixed: YouTube videos weren't downloading in 4K (or 1440p) — "
+            "YouTube now needs a JavaScript runtime to reveal all formats. "
+            "The app now downloads Deno itself (one-time, ~40 MB) on first "
+            "launch and uses it with yt-dlp. Also affects the 'Best' "
+            "quality choice.",
+            "'Check for updates' now also makes sure Deno is present, and on "
+            "every launch Deno quietly updates itself (like gallery-dl).",
         ],
     },
 }
@@ -5082,6 +5212,17 @@ class App:
                 self.root.after(0, lambda em=str(err): self.ispisi(
                     self.t("msg_gallerydl_download_failed_short").format(em)))
 
+        # Deno (JS runtime) - BEZ njega yt-dlp ne vidi sve YouTube formate
+        # (4K/1440p...), vidi komentar uz DENO_EXE_NAZIV na vrhu fajla.
+        if JE_WINDOWS and not deno_dostupan():
+            self.root.after(0, self.ispisi, self.t("msg_deno_needed_downloading"))
+            try:
+                preuzmi_deno(callback_status=lambda p: self.root.after(0, self.ispisi, p),
+                             callback_postotak=lambda p: self.root.after(0, self.azuriraj_progress, p))
+                self.root.after(0, self.azuriraj_progress, 0)
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_deno_download_failed").format(em)))
+
         self.root.after(0, self._osvjezi_statusnu_traku)
         self.root.after(0, self._tiha_provjera_azuriranja_pri_pokretanju)
 
@@ -5122,6 +5263,13 @@ class App:
                 pokreni_gallery_dl(["-U"], timeout=60)
             except Exception:
                 pass  # tiha provjera - ako ne uspije, jednostavno probaj drugi put
+
+        # Deno (JS runtime za YouTube) - isto TIHO samo-ažuriranje, samo nasa
+        # preuzeta kopija (vidi azuriraj_deno).
+        try:
+            azuriraj_deno(timeout=120)
+        except Exception:
+            pass
 
     def _ponudi_azuriranje_app(self, nova_verzija, url_setup):
         if self.aktivno_preuzimanje:
@@ -5217,6 +5365,10 @@ class App:
         if samo in (None, "gallery-dl"):
             sazetak.append(self._azuriraj_gallery_dl())
 
+        # --- 3b) Deno (JS runtime za YouTube, v3.7) - bez njega nema 4K ---
+        if samo is None:
+            sazetak.append(self._osiguraj_deno())
+
         # --- 4) sama aplikacija (preko GitHub Releases) - PRIJE (v2.6) se ovo
         # provjeravalo SAMO JEDNOM, tiho, pri prvom pokretanju app-a - ako je
         # korisnik ostavio app otvorenu satima/danima, klik na "Provjeri
@@ -5294,6 +5446,34 @@ class App:
             return self.t("msg_gallerydl_update_timeout")
         except Exception as err:
             return self.t("msg_gallerydl_update_error").format(err)
+
+    def _osiguraj_deno(self):
+        """Za 'Provjeri ažuriranja': osigurava da JS runtime (Deno) za YouTube
+        postoji - ako fali, skine ga. Vraca kratki sazetak za dijalog."""
+        if not JE_WINDOWS:
+            return self.t("msg_deno_not_needed")
+        if os.path.isfile(deno_exe_putanja()):
+            try:
+                rez = azuriraj_deno(timeout=180)
+                izlaz = ((rez.stdout or "") + "\n" + (rez.stderr or "")).strip()
+                self.root.after(0, lambda iz=izlaz: self.ispisi(f"🔄 Deno: {iz}"))
+                nizak = izlaz.lower()
+                if rez.returncode != 0:
+                    return self.t("msg_deno_update_failed")
+                if "most recent" in nizak or "latest" in nizak or "already" in nizak:
+                    return self.t("msg_deno_present")
+                if "upgraded" in nizak:
+                    return self.t("msg_deno_updated")
+                return self.t("msg_deno_present")
+            except Exception as err:
+                return self.t("msg_deno_failed_short").format(err)
+        if deno_dostupan():
+            return self.t("msg_deno_present")
+        try:
+            preuzmi_deno(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            return self.t("msg_deno_installed")
+        except Exception as err:
+            return self.t("msg_deno_failed_short").format(err)
 
     def _osiguraj_ffmpeg(self, prisilno=False):
         if ffmpeg_dostupan() and not prisilno:
