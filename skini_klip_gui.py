@@ -604,6 +604,22 @@ def azuriraj_deno(timeout=120):
     )
 
 
+def deno_verzija():
+    """Prvi redak 'deno --version' (npr. 'deno 2.5.0 (...)') ili None ako Deno
+    ne postoji / ne moze se pokrenuti - za dijagnostiku u STATUS logu."""
+    exe = deno_exe_putanja() if os.path.isfile(deno_exe_putanja()) else shutil.which("deno")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=15, **_SUBPROCESS_FLAGS)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().splitlines()[0]
+    except Exception:
+        pass
+    return None
+
+
 def _okolina_s_alatima():
     """Okolina za yt-dlp podprocese: PATH dopunjen folderom naseg alata, da
     yt-dlp SIGURNO nade Deno (i ostale alate) koji smo sami preuzeli, bez
@@ -993,6 +1009,12 @@ PRIJEVODI = {
         "msg_deno_failed_short": "❌ Deno: preuzimanje nije uspjelo ({0})",
         "msg_deno_updated": "🆕 Deno (YouTube 4K podrška): nadograđen na najnoviju verziju",
         "msg_deno_update_failed": "❌ Deno: ažuriranje nije uspjelo (detalji u STATUS logu)",
+        "msg_js_runtime_ok": "🧩 JavaScript runtime za YouTube: {0}",
+        "msg_js_runtime_missing": "⚠ JavaScript runtime (Deno) NIJE dostupan — YouTube će dati samo ograničene formate (~1080p), 4K neće raditi. Pokušaj Alati → Provjeri ažuriranja da se Deno preuzme.",
+        "msg_format_chosen": "🎞 yt-dlp je odabrao format: {0}",
+        "msg_resolution_downloaded": "📐 Skinuta rezolucija: {0}×{1}",
+        "msg_resolution_hint": "ℹ Tražena kvaliteta je {0}p, a dobiveno je {1}p. Ako je gore Deno ispisan kao dostupan, razlog je YouTubeovo ograničenje: 4K/1440p formate daje alatima za skidanje samo uz tzv. PO token (ne radi se o grešci u app-i). Moguće je i da sam video nema taj format.",
+        "msg_aspect_already": "ℹ Video je već u omjeru {0} — rezanje preskočeno.",
         "msg_deno_not_needed": "ℹ Deno: nije potreban na ovom sustavu",
         "msg_ffmpeg_present": "✅ ffmpeg: prisutan",
         "msg_ffmpeg_installed": "🆕 ffmpeg: instaliran",
@@ -1254,6 +1276,12 @@ PRIJEVODI = {
         "msg_deno_failed_short": "❌ Deno: download failed ({0})",
         "msg_deno_updated": "🆕 Deno (YouTube 4K support): updated to the latest version",
         "msg_deno_update_failed": "❌ Deno: update failed (see STATUS log for details)",
+        "msg_js_runtime_ok": "🧩 JavaScript runtime for YouTube: {0}",
+        "msg_js_runtime_missing": "⚠ JavaScript runtime (Deno) is NOT available — YouTube will only give limited formats (~1080p), 4K won't work. Try Tools → Check for updates to download Deno.",
+        "msg_format_chosen": "🎞 yt-dlp chose format: {0}",
+        "msg_resolution_downloaded": "📐 Downloaded resolution: {0}×{1}",
+        "msg_resolution_hint": "ℹ Requested quality was {0}p but got {1}p. If Deno is shown as available above, the cause is a YouTube restriction: it only offers 4K/1440p formats to download tools together with a so-called PO token (not a bug in the app). The video itself may also lack that format.",
+        "msg_aspect_already": "ℹ The video is already in {0} aspect ratio — cropping skipped.",
         "msg_deno_not_needed": "ℹ Deno: not needed on this system",
         "msg_ffmpeg_present": "✅ ffmpeg: present",
         "msg_ffmpeg_installed": "🆕 ffmpeg: installed",
@@ -1855,22 +1883,26 @@ PROMJENE = {
     },
     "3.7": {
         "hr": [
-            "Popravljeno: YouTube videi se nisu skidali u 4K (ni 1440p) — "
-            "YouTube sad traži JavaScript runtime da otkrije sve formate. "
-            "App sad sama preuzme Deno (jednokratno, ~40 MB) pri prvom "
-            "pokretanju i koristi ga za yt-dlp. Utječe i na odabir "
-            "'Najbolja' kvaliteta.",
-            "'Provjeri ažuriranja' sad osigurava i Deno, a pri svakom pokretanju "
-            "se Deno tiho samo-ažurira (kao i gallery-dl).",
+            "App sad sama preuzme i drži ažurnim Deno (JavaScript runtime "
+            "koji yt-dlp treba za YouTube) — jednokratno ~40 MB pri prvom "
+            "pokretanju; 'Provjeri ažuriranja' ga također osigurava.",
+            "STATUS log sad pokazuje Deno status, koji je format yt-dlp "
+            "odabrao i stvarnu skinutu rezoluciju. Ako je dobiveno manje od "
+            "traženog (npr. 4K), objašnjava zašto: YouTube 4K formate daje "
+            "alatima za skidanje samo uz PO token.",
+            "Omjer slike: ako je video već u traženom omjeru, rezanje se "
+            "preskače (prije je tada bespotrebno pokušavalo i javljalo grešku).",
         ],
         "en": [
-            "Fixed: YouTube videos weren't downloading in 4K (or 1440p) — "
-            "YouTube now needs a JavaScript runtime to reveal all formats. "
-            "The app now downloads Deno itself (one-time, ~40 MB) on first "
-            "launch and uses it with yt-dlp. Also affects the 'Best' "
-            "quality choice.",
-            "'Check for updates' now also makes sure Deno is present, and on "
-            "every launch Deno quietly updates itself (like gallery-dl).",
+            "The app now downloads and keeps Deno (the JavaScript runtime "
+            "yt-dlp needs for YouTube) up to date — one-time ~40 MB on first "
+            "launch; 'Check for updates' also makes sure it's there.",
+            "The STATUS log now shows the Deno status, which format yt-dlp "
+            "chose, and the real downloaded resolution. If you got less than "
+            "requested (e.g. 4K) it explains why: YouTube only offers 4K "
+            "formats to download tools together with a PO token.",
+            "Aspect ratio: if the video is already in the requested ratio, "
+            "cropping is skipped (it used to pointlessly try and report an error).",
         ],
     },
 }
@@ -6080,11 +6112,21 @@ class App:
         MAX_POKUSAJA = 3
         zadnja_greska_tekst = None
 
+        # Dijagnostika za 4K/1440p: YouTube bez JS runtimea (Deno) daje samo
+        # ogranicene formate (~1080p). Ispisi radi li Deno - najvazniji uvjet.
+        if platforma == "youtube" and nacin != "samo_zvuk":
+            if time.time() - getattr(self, "_zadnji_js_log", 0) > 120:
+                self._zadnji_js_log = time.time()
+                dv = deno_verzija()
+                self.root.after(0, self.ispisi,
+                                self.t("msg_js_runtime_ok").format(dv) if dv else self.t("msg_js_runtime_missing"))
+
         for pokusaj in range(1, MAX_POKUSAJA + 1):
             if self.otkazano:
                 return False, "prekinuto"
             self.root.after(0, self.azuriraj_progress, 0)
             izlaz_redovi = []
+            upozorenja_prikazano = 0
             try:
                 proc = pokreni_yt_dlp_popen(argumenti_url)
             except Exception as err_pokretanje:
@@ -6118,6 +6160,17 @@ class App:
                     self.root.after(0, self.ispisi, self.t("msg_merging"))
                 elif "[ExtractAudio]" in redak:
                     self.root.after(0, self.ispisi, self.t("msg_extracting_audio"))
+                elif re.search(r"Downloading \d+ format\(s\):", redak):
+                    # npr. "[info] abc123: Downloading 1 format(s): 313+251" -
+                    # 313 = 4K VP9, 137 = 1080p H.264. Bez ovoga se nikad ne vidi
+                    # sto je yt-dlp STVARNO odabrao.
+                    self.root.after(0, self.ispisi,
+                                    self.t("msg_format_chosen").format(redak.split("format(s):", 1)[1].strip()))
+                elif (redak.startswith("WARNING:") and upozorenja_prikazano < 6 and any(
+                        k in redak.lower() for k in ("javascript", "js runtime", "deno", "po token",
+                                                     "format", "challenge", "signature", "sabr", "client"))):
+                    upozorenja_prikazano += 1
+                    self.root.after(0, self.ispisi, f"⚠ {redak}")
 
             proc.wait()
             self.aktivni_proces = None
@@ -6128,6 +6181,8 @@ class App:
                 return False, "prekinuto"
 
             if proc.returncode == 0:
+                if nacin != "samo_zvuk":
+                    self._ispisi_skinutu_rezoluciju(vrijeme_prije, platforma)
                 if nacin == "samo_video":
                     self.root.after(0, self.ispisi, self.t("msg_silent_video_done"))
                 if nacin != "samo_zvuk" and platforma != "youtube" and self.var_h264.get():
@@ -6259,6 +6314,30 @@ class App:
             # "best effort" popravak - ako ne uspije, fajl ostaje kakav je bio
             # (sadrzaj je i dalje tocno odrezan, samo zaglavlje moze biti krivo)
 
+    def _ispisi_skinutu_rezoluciju(self, vrijeme_prije, platforma):
+        """Ispise stvarnu rezoluciju skinutog fajla (ffprobe) i - ako je
+        korisnik trazio vise nego je dobio - jasan savjet. Dijagnostika za
+        'odaberem 4K a dobijem 1080p'."""
+        try:
+            ffprobe = ffprobe_putanja()
+            putanja = self._zadnji_fajl(vrijeme_prije)
+            if not ffprobe or not putanja:
+                return
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=width,height", "-of", "csv=p=0", putanja],
+                capture_output=True, text=True, timeout=30, **_SUBPROCESS_FLAGS)
+            dijelovi = r.stdout.strip().split(",")
+            if len(dijelovi) < 2:
+                return
+            sirina, visina = int(dijelovi[0]), int(dijelovi[1])
+            self.root.after(0, self.ispisi, self.t("msg_resolution_downloaded").format(sirina, visina))
+            trazena = visina_iz_kvalitete(self.var_kvaliteta.get())
+            if platforma == "youtube" and trazena and trazena >= 1440 and visina < trazena * 0.9:
+                self.root.after(0, self.ispisi, self.t("msg_resolution_hint").format(trazena, visina))
+        except Exception:
+            pass
+
     def _zadnji_fajl(self, vrijeme_prije):
         try:
             kandidati = [
@@ -6326,6 +6405,22 @@ class App:
             if not putanja:
                 return
             tw, th = omjer
+            # Ako je izvor VEC u trazenom omjeru (npr. 16:9 video, odabran 16:9),
+            # nema sto rezati - preskoci umjesto bespotrebnog re-enkodiranja
+            # (koje je u tom slucaju znalo i pasti s greskom).
+            try:
+                ffprobe = ffprobe_putanja()
+                if ffprobe:
+                    rp = subprocess.run(
+                        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                         "stream=width,height", "-of", "csv=p=0", putanja],
+                        capture_output=True, text=True, timeout=30, **_SUBPROCESS_FLAGS)
+                    sir, vis = [int(x) for x in rp.stdout.strip().split(",")[:2]]
+                    if vis > 0 and abs(sir / vis - tw / th) < 0.02:
+                        self.root.after(0, self.ispisi, self.t("msg_aspect_already").format(f"{tw}:{th}"))
+                        return
+            except Exception:
+                pass  # ako provjera ne uspije, nastavi s rezanjem kao i prije
             self.root.after(0, self.ispisi, self.t("msg_cropping_aspect").format(f"{tw}:{th}"))
             # "a" je ffmpegov ugradjeni izraz za trenutni omjer slike (iw/ih)
             # unutar crop filtera. Ako je izvor SIRI od ciljnog omjera, drzi
