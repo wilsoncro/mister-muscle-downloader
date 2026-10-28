@@ -74,27 +74,42 @@ Korak "Gradim .exe i instalater"
 # zna da treba pritisnuti (build_exe.py se inace pokrece samostalno, gdje ta
 # pauza ima smisla - drzi cmd prozor otvoren da se ispis stigne procitati).
 $env:MM_BEZ_PAUZE = "1"
-python build_exe.py
+try {
+    python build_exe.py
+} finally {
+    Remove-Item Env:MM_BEZ_PAUZE -ErrorAction SilentlyContinue
+}
 if ($LASTEXITCODE -ne 0) {
     Write-Host "GRESKA: build_exe.py nije uspio." -ForegroundColor Red
     exit 1
 }
 
 $setupExe = Join-Path $Ovdje "Output\MisterMuscle_Setup.exe"
-if (-not (Test-Path $setupExe)) {
+if (-not (Test-Path $setupExe) -or (Get-Item $setupExe).Length -lt 1000000) {
     Write-Host "GRESKA: $setupExe nije pronadjen nakon builda - je li Inno Setup instaliran?" -ForegroundColor Red
     exit 1
 }
 
 # ---- 3) git commit + push ----
 Korak "Saljem izmjene na GitHub"
-git add .
-git commit -m "v$Verzija - $Opis"
+git add -- skini_klip_gui.py MisterMuscle_Setup.iss build_exe.py release.ps1 objavi.bat
+if ($LASTEXITCODE -ne 0) { throw "git add nije uspio" }
+git diff --cached --quiet
+if ($LASTEXITCODE -eq 1) {
+    git commit -m "v$Verzija - $Opis"
+    if ($LASTEXITCODE -ne 0) { throw "git commit nije uspio" }
+} elseif ($LASTEXITCODE -ne 0) { throw "git diff nije uspio" }
 git push
+if ($LASTEXITCODE -ne 0) { throw "git push nije uspio" }
 
 # ---- 4) GitHub Release s Setup.exe ----
 Korak "Pravim GitHub Release v$Verzija"
+gh release view "v$Verzija" *> $null
+if ($LASTEXITCODE -eq 0) {
+    throw "Release v$Verzija vec postoji. Koristi novi broj verzije ili rucno upravljaj postojecim releaseom."
+}
 gh release create "v$Verzija" $setupExe --title "v$Verzija" --notes "$Opis"
+if ($LASTEXITCODE -ne 0) { throw "GitHub Release nije napravljen" }
 
 Write-Host ""
 Write-Host "GOTOVO! v$Verzija je objavljena." -ForegroundColor Green

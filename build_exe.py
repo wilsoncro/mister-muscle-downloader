@@ -179,7 +179,7 @@ def main():
     if not os.path.isfile(gotov):
         print("Build je zavrsio, ali .exe nije na ocekivanom mjestu — pogledaj ispis iznad.")
         print("=" * 60)
-        return
+        sys.exit(1)
 
     mb = sum(os.path.getsize(os.path.join(korijen, f))
              for korijen, _, fajlovi in os.walk(os.path.dirname(gotov)) for f in fajlovi) / 1024 / 1024
@@ -190,11 +190,11 @@ def main():
     if not os.path.isfile(ISS_SKRIPTA):
         print(f"\n(Napomena: {os.path.basename(ISS_SKRIPTA)} nije nadjena pored ove skripte - "
               "preskačem izradu setupa, gotov je samo goli .exe.)")
-        return
+        sys.exit(1)
     if os.name != "nt":
         print("\n(Napomena: izrada .exe instalatera moguca je samo na Windowsu - "
               "preskačem taj korak.)")
-        return
+        sys.exit(1)
 
     iscc = pronadji_iscc()
     if not iscc:
@@ -206,7 +206,7 @@ def main():
         print("     ići u jednom potezu, bez ičega ručno;")
         print(f"  b) ili sad ručno otvori {os.path.basename(ISS_SKRIPTA)} u Inno Setupu i pritisni F9.")
         print("-" * 60)
-        return
+        sys.exit(1)
 
     pokreni([iscc, ISS_SKRIPTA], "Gradim instalacijski program (Inno Setup)")
 
@@ -218,6 +218,7 @@ def main():
         print("To je JEDINA datoteka koju sad šalješ/dijeliš korisnicima.")
     else:
         print("Inno Setup je završio, ali Output\\MisterMuscle_Setup.exe nije na očekivanom mjestu.")
+        sys.exit(1)
     print("=" * 60)
 
 
@@ -234,9 +235,11 @@ if __name__ == "__main__":
     # MM_BEZ_PAUZE=1 prije poziva - u tom slucaju se pauza preskace.
     try:
         main()
-    except SystemExit:
-        pass
+    except SystemExit as err:
+        if err.code not in (None, 0):
+            sys.exit(err.code)
     except Exception as err:
         print(f"\n!!! Neočekivana greška: {err}")
+        sys.exit(1)
     if not os.environ.get("MM_BEZ_PAUZE"):
         input("\nPritisni Enter za izlaz...")
