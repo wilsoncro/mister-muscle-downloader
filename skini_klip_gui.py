@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.9"
+APP_VERZIJA = "4.0"
 
 
 def _bazni_folder():
@@ -678,11 +678,11 @@ def _po_token_yt_dlp_args():
         # Usmjeri bgutil script provider na njegov server folder.
         "--extractor-args",
         "youtubepot-bgutilscript:server_home=" + _po_token_server_folder(),
-        # Zaobilazno rješenje za YouTube grešku "The page needs to be reloaded".
-        # TV klijent trenutno može vraćati UNPLAYABLE/SABR odgovor.
-        # Isprobavamo zadani klijent i web_embedded; dostupnost 4K ovisi o videu.
+        # Za 4K test prvo probaj mweb, uz tv i web_safari kao fallback klijente.
+        # YouTube mijenja dostupnost formata po klijentu; PO Token provider
+        # treba generirati token kada ga odabrani klijent zatraži.
         "--extractor-args",
-        "youtube:player-client=default,web_embedded",
+        "youtube:player-client=mweb,tv,web_safari",
     ]
 
 
@@ -2250,7 +2250,9 @@ def izgradi_format_string(platforma, nacin, visina, h264):
         return "bestaudio/best"
 
     if nacin == "samo_video":
-        if h264:
+        # Za 1440p/4K rezolucija ima prednost nad H.264: YouTube cesto
+        # nudi AVC samo do 1080p, a 4K u VP9/AV1.
+        if h264 and (visina is None or visina < 1440):
             return _bez_duplikata(f"bestvideo[vcodec^=avc1]{hf}/bestvideo{hf}/bestvideo")
         return _bez_duplikata(f"bestvideo{hf}/bestvideo")
 
@@ -6060,8 +6062,22 @@ class App:
             # bez gubitka kvalitete); ako izvorni kodek nije kompatibilan s
             # odabranim kontejnerom, yt-dlp ce prijaviti gresku pri tom koraku.
             video_format = self.var_video_format.get()
-            if not video_format.startswith("original"):
+            # 4K YouTube video-only streams are commonly VP9/AV1 in WebM.
+            # Forcing these streams into MP4 via remux can fail on some FFmpeg
+            # builds even though the download itself is valid. Keep the original
+            # container for 1440p/4K (and "Najbolja", which may be 4K) when MP4
+            # was selected, so the high-resolution video-only download succeeds.
+            # This is a stream-copy only; no quality is lost.
+            visina_trazena = visina_iz_kvalitete(self.var_kvaliteta.get())
+            sacuvaj_originalni_kontejner = (
+                (visina_trazena is None or visina_trazena >= 1440)
+                and platforma == "youtube"
+            )
+            if not video_format.startswith("original") and not sacuvaj_originalni_kontejner:
                 argumenti += ["--remux-video", video_format]
+            elif sacuvaj_originalni_kontejner:
+                # Ne forsirati MP4: yt-dlp ostavlja izvorni WebM/MP4 kontejner.
+                pass
             predlozak = f"%(title)s{sufiks} [bez zvuka].%(ext)s"
         else:
             video_format = self.var_video_format.get()
