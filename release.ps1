@@ -104,8 +104,11 @@ if ($LASTEXITCODE -ne 0) { throw "git push nije uspio" }
 
 # ---- 4) GitHub Release s Setup.exe ----
 Korak "Pravim GitHub Release v$Verzija"
-gh release view "v$Verzija" *> $null
-if ($LASTEXITCODE -eq 0) {
+# Native stderr u Windows PowerShell 5.1 moze izazvati terminating error
+# kada gh prijavi da Release jos ne postoji. Uhvati izlaz kroz cmd.exe.
+$releaseCheck = cmd /d /c "gh release view v$Verzija 2>nul"
+$releaseExit = $LASTEXITCODE
+if ($releaseExit -eq 0) {
     throw "Release v$Verzija vec postoji. Koristi novi broj verzije ili rucno upravljaj postojecim releaseom."
 }
 gh release create "v$Verzija" $setupExe --title "v$Verzija" --notes "$Opis"
