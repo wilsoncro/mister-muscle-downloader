@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "4.1"
+APP_VERZIJA = "4.2"
 
 
 def _bazni_folder():
@@ -678,11 +678,9 @@ def _po_token_yt_dlp_args():
         # Usmjeri bgutil script provider na njegov server folder.
         "--extractor-args",
         "youtubepot-bgutilscript:server_home=" + _po_token_server_folder(),
-        # Za 4K test prvo probaj mweb, uz tv i web_safari kao fallback klijente.
-        # YouTube mijenja dostupnost formata po klijentu; PO Token provider
-        # treba generirati token kada ga odabrani klijent zatraži.
-        "--extractor-args",
-        "youtube:player-client=mweb,tv,web_safari",
+        # Ne forsiramo mweb: bez funkcionalnog GVS PO tokena yt-dlp
+        # preskace njegove HTTPS formate. Prepustamo yt-dlp-u izbor
+        # podrazumijevanih klijenata, uz opcionalni provider.
     ]
 
 
@@ -762,8 +760,10 @@ def _osiguraj_po_token_provider(callback_status=None):
                 raise RuntimeError(detalji[-1800:] or f"Deno install kod {rezultat.returncode}")
             if not os.path.isdir(os.path.join(server_folder, "node_modules")):
                 raise RuntimeError("Deno nije napravio node_modules za PO Token provider.")
+            # Instalacija zavisnosti nije dokaz da provider uspjesno generira
+            # tokene za konkretan YouTube video.
             _PO_TOKEN_READY = True
-            status("✅ YouTube PO Token provider je spreman.")
+            status("ℹ PO Token provider je instaliran (rad s YouTubeom nije potvrđen).")
             return True
         except Exception as err:
             status("⚠ PO Token provider nije postavljen; pokušavam nastaviti bez njega.")
@@ -6375,6 +6375,17 @@ class App:
             # na "requested format is not available". Rjesenje: skini normalno pa
             # ffmpegom izbaci audio zapis.
             if nacin == "samo_video" and "requested format" in donji:
+                if platforma == "youtube":
+                    # YouTube ima odvojene video streamove; ako nisu dostupni,
+                    # cesto je problem u ekstrakciji/PO tokenu. NE skidaj
+                    # automatski progressive 360p/480p kao navodni 4K.
+                    poruka = ("YouTube nije ponudio odvojeni video stream za odabranu "
+                              "kvalitetu. Preuzimanje nize rezolucije je zaustavljeno. "
+                              "Provjeri yt-dlp/JS/PO Token upozorenja u STATUS logu.")
+                    self.root.after(0, self.ispisi, "⚠ " + poruka)
+                    self.root.after(0, lambda pt=puni_izlaz: self.ispisi(
+                        self.t("msg_full_error_details").format(pt)))
+                    return False, poruka
                 self.root.after(0, self.ispisi, self.t("msg_no_separate_video_stream"))
                 return self._skini_pa_ukloni_zvuk(argumenti_url, vrijeme_prije)
 
