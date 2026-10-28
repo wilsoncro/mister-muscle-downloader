@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.8"
+APP_VERZIJA = "3.9"
 
 
 def _bazni_folder():
@@ -675,12 +675,14 @@ def _po_token_yt_dlp_args():
         return []
     return [
         "--plugin-dirs", _po_token_plugin_folder(),
-        # Odvojeni --extractor-args kao u uspješnom ručnom testu.
-        # Ne spajati dvije extractor konfiguracije u jedan argument.
+        # Usmjeri bgutil script provider na njegov server folder.
         "--extractor-args",
         "youtubepot-bgutilscript:server_home=" + _po_token_server_folder(),
+        # Zaobilazno rješenje za YouTube grešku "The page needs to be reloaded".
+        # TV klijent trenutno može vraćati UNPLAYABLE/SABR odgovor.
+        # Isprobavamo zadani klijent i web_embedded; dostupnost 4K ovisi o videu.
         "--extractor-args",
-        "youtube:player-client=mweb,tv,web_safari",
+        "youtube:player-client=default,web_embedded",
     ]
 
 
@@ -5144,7 +5146,13 @@ class App:
         sirovi = self.text_links.get("1.0", "end").strip()
         if not sirovi or sirovi == self._placeholder:
             return None
-        return sirovi.splitlines()[0].strip()
+        prvi_redak = sirovi.splitlines()[0].strip()
+        # Ako se isti YouTube URL slučajno zalijepi dvaput bez razmaka,
+        # uzmi prvi URL umjesto prosljeđivanja spojenog niza yt-dlp-u.
+        drugi_url = re.search(r"https?://", prvi_redak[8:], re.IGNORECASE)
+        if drugi_url:
+            prvi_redak = prvi_redak[:8 + drugi_url.start()].strip()
+        return prvi_redak
 
     # ------------------------------------------------- auto-zalijepi iz clipboarda ---
     def _pokreni_pracenje_clipboarda(self):
