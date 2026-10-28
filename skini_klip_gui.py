@@ -61,7 +61,7 @@ except ImportError:
 # ============================================================================
 #  VERZIJA
 # ============================================================================
-APP_VERZIJA = "3.7"
+APP_VERZIJA = "3.8"
 
 
 def _bazni_folder():
@@ -632,24 +632,155 @@ def _okolina_s_alatima():
 def pokreni_yt_dlp(argumenti, **kwargs):
     kwargs.setdefault("env", _okolina_s_alatima())
     return subprocess.run(
-        [yt_dlp_exe_putanja(), *argumenti],
+        [yt_dlp_exe_putanja(), *_po_token_yt_dlp_args(), *argumenti],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         **_SUBPROCESS_FLAGS, **kwargs
     )
+
+
+# ============================================================================
+#  YouTube PO Token provider (bgutil-ytdlp-pot-provider)
+#
+#  yt-dlp moze trebati PO token za pojedine YouTube klijente/formate. Ovdje
+#  automatski postavljamo provider kao dodatni plugin, koristeci Deno koji app
+#  vec preuzima. Koristimo verziju 2.0.2 (ukljucuje sigurnosne popravke).
+#  Provider je opcionalan: ako instalacija ne uspije, preuzimanje nastavlja
+#  raditi bez njega, kao i prije.
+# ============================================================================
+PO_TOKEN_PROVIDER_VERZIJA = "2.0.2"
+PO_TOKEN_PLUGIN_URL = (
+    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/"
+    + PO_TOKEN_PROVIDER_VERZIJA + "/bgutil-ytdlp-pot-provider.zip"
+)
+PO_TOKEN_SOURCE_URL = (
+    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/"
+    + PO_TOKEN_PROVIDER_VERZIJA + ".zip"
+)
+_PO_TOKEN_READY = False
+_PO_TOKEN_ATTEMPTED = False
+_PO_TOKEN_LOCK = threading.Lock()
+
+
+def _po_token_plugin_folder():
+    return os.path.join(_alati_folder(), "yt-dlp-plugins")
+
+
+def _po_token_server_folder():
+    return os.path.join(_alati_folder(), "bgutil-ytdlp-pot-provider", "server")
+
+
+def _po_token_yt_dlp_args():
+    """Argumenti se dodaju samo nakon uspjesne instalacije providera."""
+    if not _PO_TOKEN_READY:
+        return []
+    return [
+        "--plugin-dirs", _po_token_plugin_folder(),
+        # Odvojeni --extractor-args kao u uspješnom ručnom testu.
+        # Ne spajati dvije extractor konfiguracije u jedan argument.
+        "--extractor-args",
+        "youtubepot-bgutilscript:server_home=" + _po_token_server_folder(),
+        "--extractor-args",
+        "youtube:player-client=mweb,tv,web_safari",
+    ]
+
+
+def _osiguraj_po_token_provider(callback_status=None):
+    """Jednokratno instalira PO-token plugin i njegov Deno provider.
+    Ne blokira trajno aplikaciju ako GitHub/Deno instalacija nije dostupna."""
+    global _PO_TOKEN_READY, _PO_TOKEN_ATTEMPTED
+    if not JE_WINDOWS:
+        return False
+    with _PO_TOKEN_LOCK:
+        if _PO_TOKEN_READY:
+            return True
+        if _PO_TOKEN_ATTEMPTED:
+            return False
+        _PO_TOKEN_ATTEMPTED = True
+
+        def status(tekst):
+            if callback_status:
+                callback_status(tekst)
+
+        try:
+            plugin_folder = _po_token_plugin_folder()
+            os.makedirs(plugin_folder, exist_ok=True)
+            plugin_zip = os.path.join(plugin_folder, "bgutil-ytdlp-pot-provider.zip")
+            if not os.path.isfile(plugin_zip) or os.path.getsize(plugin_zip) < 1000:
+                status("⏳ Preuzimam YouTube PO Token provider...")
+                preuzmi_datoteku(PO_TOKEN_PLUGIN_URL, plugin_zip, min_velicina=1000)
+
+            server_folder = _po_token_server_folder()
+            if not (os.path.isfile(os.path.join(server_folder, "package.json"))
+                    and os.path.isfile(os.path.join(server_folder, "src", "main.ts"))):
+                status("⏳ Preuzimam komponente PO Token providera...")
+                source_zip = os.path.join(tempfile.gettempdir(), "bgutil-ytdlp-pot-provider.zip")
+                try:
+                    preuzmi_datoteku(PO_TOKEN_SOURCE_URL, source_zip, min_velicina=100_000)
+                    os.makedirs(server_folder, exist_ok=True)
+                    with zipfile.ZipFile(source_zip) as arhiva:
+                        imena = arhiva.namelist()
+                        marker = next((n for n in imena
+                                       if n.endswith("/server/package.json")), None)
+                        if not marker:
+                            raise RuntimeError("U arhivi providera nedostaje server/package.json.")
+                        server_prefix = marker[:-len("package.json")]
+                        # Izdvajamo samo server/; odbijamo putanje izvan ciljnog foldera.
+                        for clan in imena:
+                            if not clan.startswith(server_prefix):
+                                continue
+                            relativna = clan[len(server_prefix):]
+                            if not relativna or clan.endswith("/"):
+                                continue
+                            relativna_path = os.path.normpath(relativna)
+                            if os.path.isabs(relativna_path) or relativna_path == ".." or relativna_path.startswith(".." + os.sep):
+                                continue
+                            odrediste = os.path.join(server_folder, relativna_path)
+                            os.makedirs(os.path.dirname(odrediste), exist_ok=True)
+                            with arhiva.open(clan) as ulaz, open(odrediste, "wb") as izlaz:
+                                shutil.copyfileobj(ulaz, izlaz)
+                finally:
+                    try:
+                        os.remove(source_zip)
+                    except OSError:
+                        pass
+
+            deno = deno_exe_putanja() if os.path.isfile(deno_exe_putanja()) else shutil.which("deno")
+            if not deno:
+                status("⏳ Deno nedostaje — preuzimam ga za PO Token provider...")
+                deno = preuzmi_deno(callback_status=callback_status)
+            status("⏳ Pripremam PO Token provider (ovo može potrajati prvi put)...")
+            rezultat = subprocess.run(
+                [deno, "install", "--allow-scripts=npm:canvas", "--frozen"],
+                cwd=server_folder, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=600,
+                env=_okolina_s_alatima(), **_SUBPROCESS_FLAGS
+            )
+            if rezultat.returncode != 0:
+                detalji = (rezultat.stderr or rezultat.stdout or "").strip()
+                raise RuntimeError(detalji[-1800:] or f"Deno install kod {rezultat.returncode}")
+            if not os.path.isdir(os.path.join(server_folder, "node_modules")):
+                raise RuntimeError("Deno nije napravio node_modules za PO Token provider.")
+            _PO_TOKEN_READY = True
+            status("✅ YouTube PO Token provider je spreman.")
+            return True
+        except Exception as err:
+            status("⚠ PO Token provider nije postavljen; pokušavam nastaviti bez njega.")
+            status(f"Detalji PO Token providera: {err}")
+            return False
 
 
 def pokreni_yt_dlp_popen(argumenti, **kwargs):
     # PYTHONUNBUFFERED=1: yt-dlp.exe je i sam (upakiran) Python program - kad
     # mu se stdout preusmjeri u cijev (kao ovdje, da mi citamo progress), C
     # runtime po defaultu prelazi s "red-po-red" na "blok" bafiranje (poznato
-    # ponasanje kad izlaz nije pravi terminal) - izgleda kao da je skidanje
+    # ponasanje kad izlaz nije pravi terminal) - izgleda kao da se skidanje
     # "zaledeno" jer se hrpa redaka isprazni odjednom (cesto tek na kraju)
     # umjesto postupno. Ova varijabla okoline prisiljava yt-dlp da ispisuje
     # red-po-red ODMAH, pa se postotak/brzina azuriraju uzivo, ne skokovito.
     okolina = _okolina_s_alatima()
     okolina["PYTHONUNBUFFERED"] = "1"
     return subprocess.Popen(
-        [yt_dlp_exe_putanja(), *argumenti],
+        [yt_dlp_exe_putanja(), *_po_token_yt_dlp_args(), *argumenti],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
         env=okolina,
@@ -2122,6 +2253,11 @@ def izgradi_format_string(platforma, nacin, visina, h264):
         return _bez_duplikata(f"bestvideo{hf}/bestvideo")
 
     if platforma == "youtube":
+        # Kad je trazena 1440p/2160p, rezolucija ima prednost pred H.264:
+        # YouTube cesto nudi 4K samo u VP9/AV1, dok je avc1 dostupan samo u 1080p.
+        # Stari redoslijed prvo je nalazio 1080p avc1 i nikad nije dosao do 4K fallbacka.
+        if h264 and visina and visina >= 1440:
+            return _bez_duplikata(f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
         if h264:
             return _bez_duplikata(f"bestvideo[vcodec^=avc1]{hf}+bestaudio[ext=m4a]/"
                               f"bestvideo[vcodec^=avc1]{hf}+bestaudio/"
@@ -6111,6 +6247,14 @@ class App:
     def _skini_jedan(self, argumenti_url, nacin, platforma, vrijeme_prije):
         MAX_POKUSAJA = 3
         zadnja_greska_tekst = None
+
+        # PO Token provider: prvi YouTube download ga postavlja automatski.
+        # Ako instalacija ne uspije, nastavljamo bez providera umjesto da
+        # blokiramo korisnika ili ostale platforme.
+        if platforma == "youtube":
+            _osiguraj_po_token_provider(
+                callback_status=lambda poruka: self.root.after(0, self.ispisi, poruka)
+            )
 
         # Dijagnostika za 4K/1440p: YouTube bez JS runtimea (Deno) daje samo
         # ogranicene formate (~1080p). Ispisi radi li Deno - najvazniji uvjet.
