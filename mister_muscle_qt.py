@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.9'
+APP_VERSION = '5.2.11'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -2258,6 +2258,13 @@ class Main(QMainWindow):
             self._premiere_stream_copy=(video.get('codec_name')=='h264' and
                 pix_fmt=='yuv420p' and
                 (self.current_mode==1 or all(x.get('codec_name')=='aac' for x in audio_streams)))
+            # Match legacy instant-completion behavior: do not launch FFmpeg at all
+            # when the downloaded MP4 already has Premiere-compatible streams.
+            if self._premiere_stream_copy and source.suffix.lower()=='.mp4':
+                self.log('INFO','PREMIERE','Already Premiere-compatible H.264/AAC MP4; no processing needed (original 4K preserved)')
+                self.download_detail='Premiere ready — no conversion needed'
+                self.status.setText('Premiere compatible — ready instantly')
+                return False
             self.log('INFO','PREMIERE', 'Compatible H.264/AAC detected; fast remux without re-encoding' if self._premiere_stream_copy else 'Transcoding required; GPU/CPU encoder detection enabled')
             target=source.with_name(source.stem+' - Premiere H264.mp4')
             n=2
