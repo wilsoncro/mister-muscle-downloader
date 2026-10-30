@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.4'
+APP_VERSION = '5.1.5'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -942,6 +942,13 @@ class Main(QMainWindow):
             class PlayerHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 def __init__(self, *args, **kwargs):
                     super().__init__(*args, directory=str(root), **kwargs)
+                def translate_path(self, path):
+                    requested = urllib.parse.urlsplit(path).path
+                    if requested == '/local-video':
+                        local = getattr(self.server, 'local_video_path', None)
+                        if local and Path(local).is_file():
+                            return str(Path(local).resolve())
+                    return super().translate_path(path)
                 def log_message(self, fmt, *args):
                     try:
                         app_logger('DEBUG', 'PLAYER HTTP', fmt % args)
@@ -949,7 +956,8 @@ class Main(QMainWindow):
                         pass
                 def log_error(self, fmt, *args):
                     try:
-                        app_logger('ERROR', 'PLAYER HTTP', fmt % args)
+                        severity = 'DEBUG' if self.path.startswith('/favicon.ico') else 'ERROR'
+                        app_logger(severity, 'PLAYER HTTP', f'{self.path} | root={root} | ' + (fmt % args))
                     except Exception:
                         pass
             class PlayerHTTPServer(http.server.ThreadingHTTPServer):
@@ -962,10 +970,12 @@ class Main(QMainWindow):
                     except Exception:
                         pass
             self._original_server=PlayerHTTPServer(('127.0.0.1',0),PlayerHTTPHandler)
+            self._original_server.local_video_path = None
             self._original_server_thread=threading.Thread(
                 target=self._original_server.serve_forever,daemon=True)
             self._original_server_thread.start()
             self._original_server_root=str(root)
+        self._original_server.local_video_path = getattr(self, '_studio_local', None)
         # The player page is served over HTTP. Chromium blocks qrc:/// URLs
         # from HTTP origins, so expose Qt's bundled WebChannel JavaScript
         # through the SAME localhost server as the player HTML.
@@ -984,6 +994,7 @@ class Main(QMainWindow):
                     self.log('INFO','PLAYER',f'WebChannel bridge script served locally ({len(js)} bytes)')
             finally:
                 resource.close()
+        root.mkdir(parents=True, exist_ok=True)
         html_path=root/'player.html'
         html=html.replace('</head>', '''
         <script src="/qwebchannel.js"></script>
