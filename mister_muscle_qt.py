@@ -3,7 +3,8 @@
 Requires: pip install PySide6 yt-dlp
 Optional: ffmpeg on PATH for merging and cutting.
 """
-import os, sys, re, json, subprocess, shutil, tempfile, threading, functools, http.server, traceback, logging, urllib.request, urllib.parse, importlib.metadata, zipfile, hashlib
+import os, sys, re, json, subprocess, shutil, tempfile, threading, functools, http.server, traceback, logging, urllib.request, urllib.parse, importlib.metadata
+import shiboken6
 from pathlib import Path
 from datetime import datetime
 from PySide6.QtCore import Qt, QProcess, QUrl, QSize, QTimer, QObject, Slot, QElapsedTimer, QFile, QIODevice, QThread, Signal
@@ -22,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.0'
+APP_VERSION = '5.1'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -42,89 +43,12 @@ SESSION=DATA/'session.json'
 LOG_FILE=DATA/'status.log'
 WHATS_NEW_MARKER=DATA/'last_whats_new_version.txt'
 LANGUAGE_FILE=DATA/'language.json'
-# Writable, per-user tool updates. Never overwrite Program Files or loaded Qt DLLs.
-USER_TOOLS=DATA/'tools'
-USER_TOOLS.mkdir(parents=True,exist_ok=True)
-def active_ffmpeg():
-    for location in (USER_TOOLS/'ffmpeg.exe', TOOLS_DIR/'ffmpeg.exe'):
-        if location.is_file(): return str(location)
-    return active_ffmpeg()
-def active_ffprobe():
-    for location in (USER_TOOLS/'ffprobe.exe', TOOLS_DIR/'ffprobe.exe'):
-        if location.is_file(): return str(location)
-    return shutil.which('ffprobe') or 'ffprobe'
-if getattr(sys,'frozen',False) and (USER_TOOLS/'yt-dlp.exe').is_file():
-    YTDLP_EXE=str(USER_TOOLS/'yt-dlp.exe')
-# Put verified per-user tools first, so yt-dlp subprocesses also find the new FFmpeg.
-os.environ['PATH']=str(USER_TOOLS)+os.pathsep+os.environ.get('PATH','')
-
-def official_json(url):
-    req=urllib.request.Request(url,headers={'User-Agent':'MisterMuscleDownloader/5.0','Accept':'application/json'})
-    with urllib.request.urlopen(req,timeout=20) as response: return json.load(response)
-
-def official_text(url):
-    req=urllib.request.Request(url,headers={'User-Agent':'MisterMuscleDownloader/5.0'})
-    with urllib.request.urlopen(req,timeout=20) as response: return response.read(4096).decode('utf-8','replace').strip()
-
-def version_newer(remote,local):
-    def parts(s): return tuple(int(n) for n in re.findall(r'\d+',str(s))[:4])
-    a,b=parts(remote),parts(local)
-    return bool(a and (not b or a>b))
-
-def download_verified(url,dest,max_size,expected_sha256=None):
-    if not url.startswith('https://'): raise ValueError('HTTPS required')
-    dest.parent.mkdir(parents=True,exist_ok=True)
-    tmp=dest.with_suffix(dest.suffix+'.part')
-    try:
-        req=urllib.request.Request(url,headers={'User-Agent':'MisterMuscleDownloader/5.0'})
-        h=hashlib.sha256();total=0
-        with urllib.request.urlopen(req,timeout=60) as response, tmp.open('wb') as out:
-            if not response.geturl().startswith('https://'): raise ValueError('Unsafe redirect')
-            while True:
-                chunk=response.read(1024*1024)
-                if not chunk: break
-                total+=len(chunk)
-                if total>max_size: raise ValueError('Download too large')
-                h.update(chunk);out.write(chunk)
-        if total<1024: raise ValueError('Incomplete download')
-        if expected_sha256 and h.hexdigest().lower()!=expected_sha256.lower(): raise ValueError('SHA256 mismatch')
-        return tmp
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
-
-def replace_tool_pair(files):
-    # Keep backups and roll back if the second replacement fails.
-    backups=[]; installed=[]
-    try:
-        for name,source in files.items():
-            destination=USER_TOOLS/name
-            backup=USER_TOOLS/(name+'.bak')
-            backup.unlink(missing_ok=True)
-            if destination.exists(): os.replace(destination,backup);backups.append((destination,backup))
-            os.replace(source,destination);installed.append(destination)
-    except Exception:
-        for path in installed: path.unlink(missing_ok=True)
-        for dest,bak in reversed(backups): os.replace(bak,dest)
-        raise
-
-def ffmpeg_release_version():
-    # Gyan.dev publishes release-version alongside ffmpeg-release-full.zip.
-    value=official_text('https://www.gyan.dev/ffmpeg/builds/release-version')
-    m=re.search(r'\d+(?:\.\d+){1,3}',value)
-    if not m: raise ValueError('Invalid Gyan release version')
-    return m.group(0)
-
 try:
     APP_LANGUAGE=json.loads(LANGUAGE_FILE.read_text(encoding='utf-8')).get('language','en')
 except (OSError,ValueError,AttributeError):
     APP_LANGUAGE='en'
 if APP_LANGUAGE not in ('en','hr'): APP_LANGUAGE='en'
 UI_HR={'New Download': 'Novo preuzimanje', 'Download Center': 'Centar preuzimanja', 'Queue': 'Red čekanja', 'History': 'Povijest', 'Settings': 'Postavke', 'Status Log': 'Dnevnik događaja', 'Player & Cutting': 'Player i rezanje', 'File type': 'Vrsta datoteke', 'Resolution': 'Rezolucija', 'Video container': 'Videoformat', 'Clip aspect ratio': 'Omjer slike isječka', 'Save to': 'Spremi u', 'Change folder': 'Promijeni mapu', 'Video links': 'Poveznice na videozapise', 'Paste': 'Zalijepi', 'Clear': 'Očisti', 'Inspect': 'Provjeri', 'Cancel': 'Odustani', 'Open folder': 'Otvori mapu', 'Open log folder': 'Otvori mapu dnevnika', 'Copy log': 'Kopiraj dnevnik', 'Save log as…': 'Spremi dnevnik kao…', 'Clear log': 'Očisti dnevnik', 'All events': 'Svi događaji', 'Errors only': 'Samo pogreške', 'Warnings + errors': 'Upozorenja i pogreške', 'Ready for a new download': 'Spremno za novo preuzimanje', 'Everything ready? Start your download.': 'Sve je spremno? Pokrenite preuzimanje.', 'Start / Resume': 'Pokreni / Nastavi', 'Remove selected': 'Ukloni odabrano', 'Move up': 'Pomakni gore', 'Move down': 'Pomakni dolje', 'Clear pending': 'Očisti čekanje', 'Play selected': 'Reproduciraj odabrano', 'Open selected folder': 'Otvori odabranu mapu', 'Download folder': 'Mapa za preuzimanja', 'Change download folder': 'Promijeni mapu preuzimanja', 'Check for updates now': 'Provjeri ažuriranja', 'Update check will start shortly…': 'Provjera ažuriranja uskoro će započeti…', 'Ready to cut': 'Spremno za rezanje', 'From': 'Od', 'To': 'Do', 'Open local video': 'Otvori lokalni video', 'Open video': 'Otvori video', 'Open last download': 'Otvori posljednje preuzimanje', 'Open original advanced player / tools': 'Otvori izvorni napredni player / alate', 'Completed': 'Dovršeno', 'Downloading': 'Preuzimanje', 'Pending': 'Na čekanju', 'Failed': 'Neuspješno', 'All': 'Sve', 'Retry': 'Pokušaj ponovno', 'Remove': 'Ukloni', 'Play': 'Reproduciraj', 'Copy link': 'Kopiraj poveznicu', 'Pause': 'Pauziraj', 'Resume': 'Nastavi', 'Start queue': 'Pokreni red čekanja', 'Clear failed': 'Očisti neuspjele', 'Search downloads...': 'Pretraži preuzimanja...', 'Video + audio': 'Video + zvuk', 'Video only': 'Samo video', 'Audio only': 'Samo zvuk', 'Best available': 'Najbolja dostupna', 'Original': 'Izvorno', 'Clip export active': 'Izvoz isječka u tijeku', 'Preview active': 'Pregled je aktivan', 'Remote cut active': 'Udaljeno rezanje u tijeku', 'Missing links': 'Nedostaju poveznice', 'Paste at least one link first.': 'Najprije zalijepite barem jednu poveznicu.', 'Invalid range': 'Neispravan raspon', 'FFmpeg missing': 'Nedostaje FFmpeg', 'No local video': 'Nema lokalnog videa', 'Open a local video in Media Studio first.': 'Najprije otvorite lokalni video u Media Studiju.', 'Invalid time': 'Neispravno vrijeme', 'Save clip': 'Spremi isječak', 'Export local clip': 'Izvezi lokalni isječak', 'Exporting local clip…': 'Izvoz lokalnog isječka…', 'No video': 'Nema videa', 'Open a local video first.': 'Najprije otvorite lokalni video.', 'Video required': 'Potreban je video', 'Select Video + audio or Video only.': 'Odaberite Video + zvuk ili Samo video.', 'Save failed': 'Spremanje nije uspjelo', 'Unexpected error': 'Neočekivana pogreška', 'Download failed': 'Preuzimanje nije uspjelo', 'Session recovery': 'Oporavak sesije', 'Queue completed.': 'Red čekanja je dovršen.', 'Ready to capture diagnostics': 'Spremno za bilježenje dijagnostike', 'Subtle error sound': 'Tihi zvuk pogreške', 'Paste a link to inspect its title and duration.': 'Zalijepite poveznicu za provjeru naslova i trajanja.', 'Aspect ratio is applied to clip exports. Full-video downloads retain their original framing.': 'Omjer slike primjenjuje se pri izvozu isječaka. Cijeli videozapisi zadržavaju izvorni kadar.', 'Original timeline • precise clipping • multi-selection': 'Izvorna vremenska crta • precizno rezanje • višestruki odabir', 'Paste a link or open a local video to use the original timeline.': 'Zalijepite poveznicu ili otvorite lokalni video za korištenje vremenske crte.', 'Paste a video link above or choose Open Local Video to activate the timeline.': 'Zalijepite poveznicu iznad ili odaberite Otvori lokalni video.', 'Original timeline loaded automatically • drag to select your clip': 'Izvorna vremenska crta učitana je automatski • povucite za odabir isječka', 'Downloader tools and configuration.': 'Alati za preuzimanje i postavke.', 'All cutting controls are now in New Download → Media Studio.': 'Sve kontrole rezanja nalaze se u Novo preuzimanje → Media Studio.', 'Successfully downloaded files in this Qt version.': 'Uspješno preuzete datoteke u ovoj Qt verziji.', 'Pending links waiting to be downloaded.': 'Poveznice koje čekaju preuzimanje.', 'Preview downloaded videos and cut clips with FFmpeg.': 'Pregledajte preuzete videozapise i režite isječke uz FFmpeg.', 'A major update with a new interface, more download control, and built-in media tools.': 'Veliko ažuriranje s novim sučeljem, naprednijim preuzimanjima i ugrađenim medijskim alatima.', 'Redesigned interface': 'Redizajnirano sučelje', 'Flexible formats': 'Fleksibilni formati', 'Better download management': 'Bolje upravljanje preuzimanjima', 'Reliability & diagnostics': 'Pouzdanost i dijagnostika', 'Easier Windows installation': 'Jednostavnija instalacija na Windowsu', 'A modern Qt workspace with faster navigation and a dedicated Download Center.': 'Moderno Qt sučelje s bržom navigacijom i zasebnim centrom preuzimanja.', 'Video + Audio, Video Only, and Audio Only now have separate format choices and quality controls.': 'Video sa zvukom, samo video i samo zvuk sada imaju zasebne formate i kontrole kvalitete.', 'Preview videos, mark timeline selections, and export clips with multiple aspect ratios.': 'Pregledajte videozapise, označite dijelove vremenske crte i izvezite isječke u različitim omjerima slike.', 'Pause and resume, manage your queue, retry failed downloads, and browse history.': 'Pauzirajte i nastavite preuzimanja, upravljajte redom čekanja, ponovite neuspjele zadatke i pregledajte povijest.', 'Session recovery, detailed Status Log, and built-in update checks.': 'Oporavak sesije, detaljan dnevnik događaja i ugrađena provjera ažuriranja.', 'A single installer bundles the app and required download tools.': 'Jedan instalater uključuje aplikaciju i potrebne alate za preuzimanje.', 'Let’s go!': 'Krenimo!'}
-
-UI_HR.update({
-    'yt-dlp updates install automatically. App installers are downloaded for manual approval. PySide6 and FFmpeg are updated with a new app build, not while running.': 'Novi instalacijski programi aplikacije preuzimaju se u AppData/MisterMuscleQt/updates, ali se ne instaliraju automatski. Za Python pakete (yt-dlp i PySide6) provjeravaju se samo nove verzije; ažurirajte ih zasebno. FFmpeg se provjerava samo lokalno.',
-})
 
 def ui_translate(value):
     if APP_LANGUAGE!='hr':return value
@@ -295,13 +219,8 @@ class UpdateCheckWorker(QThread):
 
         for package in ('yt-dlp', 'PySide6'):
             try:
-                if package == 'yt-dlp' and getattr(sys, 'frozen', False):
-                    probe = subprocess.run([YTDLP_EXE, '--version'], capture_output=True, text=True,
-                                           timeout=10, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                    current = probe.stdout.strip() if probe.returncode == 0 else 'Unknown'
-                else:
-                    current = importlib.metadata.version(package)
-            except (importlib.metadata.PackageNotFoundError, OSError, subprocess.TimeoutExpired):
+                current = importlib.metadata.version(package)
+            except importlib.metadata.PackageNotFoundError:
                 results.append((package, 'Not installed', 'Not checked', False, ''))
                 continue
             try:
@@ -310,19 +229,17 @@ class UpdateCheckWorker(QThread):
             except Exception as exc:
                 results.append((package, current, 'Check unavailable: ' + str(exc), False, ''))
 
-        ffmpeg = active_ffmpeg()
-        try:
-            probe=subprocess.run([ffmpeg,'-version'],capture_output=True,text=True,timeout=8,
-                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            m=re.search(r'ffmpeg version (?:n)?(\d+(?:\.\d+){1,3})',probe.stdout)
-            current=m.group(1) if m else 'Unknown'
-        except Exception: current='Unknown'
-        try:
-            latest=ffmpeg_release_version()
-            results.append(('FFmpeg',current,latest,version_newer(latest,current),
-                'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip'))
-        except Exception as exc:
-            results.append(('FFmpeg',current,'Check unavailable: '+str(exc),False,''))
+        ffmpeg = shutil.which('ffmpeg')
+        if ffmpeg:
+            try:
+                run = subprocess.run([ffmpeg, '-version'], capture_output=True, text=True, timeout=5,
+                                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                first = (run.stdout or run.stderr).splitlines()[0]
+                results.append(('FFmpeg', first[:85], 'Installed (manual update check)', False, 'https://ffmpeg.org/download.html'))
+            except Exception as exc:
+                results.append(('FFmpeg', 'Found', 'Version check unavailable: ' + str(exc), False, ''))
+        else:
+            results.append(('FFmpeg', 'Not found', 'Install for cutting', False, 'https://ffmpeg.org/download.html'))
         self.completed.emit(results)
 
 
@@ -335,64 +252,59 @@ class UpdateDownloadWorker(QThread):
         self.updates = updates
 
     def run(self):
-        output=[]
-        target=DATA/'updates';target.mkdir(parents=True,exist_ok=True)
-        for name,version,url in self.updates:
+        output = []
+        target = DATA / 'updates'
+        target.mkdir(parents=True, exist_ok=True)
+        for name, version, url in self.updates:
             try:
-                if name=='Mister Muscle Downloader':
-                    prefix='https://github.com/'+APP_REPOSITORY+'/releases/download/'
+                if name == 'Mister Muscle Downloader':
+                    # Only trusted GitHub Release EXE assets from this repository.
+                    prefix = 'https://github.com/' + APP_REPOSITORY + '/releases/download/'
                     if not url.startswith(prefix) or not url.lower().endswith('.exe'):
-                        raise ValueError('No trusted installer asset')
-                    dest=target/('MisterMuscle_v'+re.sub(r'[^0-9.]','',version)+'_Setup.exe')
-                    self.progress.emit('Downloading application installer '+version)
-                    tmp=download_verified(url,dest,800*1024*1024)
-                    if tmp.open('rb').read(2)!=b'MZ': raise ValueError('Invalid installer')
-                    os.replace(tmp,dest)
-                    output.append((name,'READY_INSTALLER:'+str(dest)))
-                elif name=='yt-dlp':
-                    if getattr(sys,'frozen',False):
-                        release=official_json('https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest')
-                        asset=next((a for a in release.get('assets',[]) if a.get('name')=='yt-dlp.exe'),None)
-                        if not asset: raise ValueError('Official yt-dlp.exe missing')
-                        link=asset['browser_download_url']
-                        if not link.startswith('https://github.com/yt-dlp/yt-dlp/releases/download/'):
-                            raise ValueError('Unexpected yt-dlp source')
-                        self.progress.emit('Downloading official yt-dlp '+version)
-                        tmp=download_verified(link,USER_TOOLS/'yt-dlp.exe',150*1024*1024,asset.get('digest','').removeprefix('sha256:') or None)
-                        if tmp.open('rb').read(2)!=b'MZ': raise ValueError('Invalid Windows executable')
-                        replace_tool_pair({'yt-dlp.exe':tmp})
-                        output.append((name,'Installed '+version+' (active after restart)'))
+                        output.append((name, 'No compatible Windows installer in GitHub Release; skipped'))
+                        continue
+                    filename = Path(urllib.parse.urlsplit(url).path).name
+                    dest = target / filename
+                    if dest.exists() and dest.stat().st_size > 1024:
+                        output.append((name, 'Already downloaded: ' + str(dest)))
+                        continue
+                    self.progress.emit('Downloading ' + name + ' ' + version)
+                    request = urllib.request.Request(url, headers={'User-Agent':'MisterMuscleDownloader/7.14'})
+                    temp = dest.with_suffix(dest.suffix + '.part')
+                    try:
+                        with urllib.request.urlopen(request, timeout=30) as response, temp.open('wb') as out:
+                            downloaded = 0
+                            while True:
+                                block = response.read(256 * 1024)
+                                if not block: break
+                                downloaded += len(block)
+                                if downloaded > 750 * 1024 * 1024:
+                                    raise ValueError('Installer exceeds size limit')
+                                out.write(block)
+                        if downloaded < 1024:
+                            raise ValueError('Downloaded file is too small')
+                        temp.replace(dest)
+                    finally:
+                        temp.unlink(missing_ok=True)
+                    output.append((name, 'Downloaded: ' + str(dest) + ' (not installed)'))
+                elif name in ('yt-dlp', 'PySide6'):
+                    if getattr(sys, 'frozen', False):
+                        output.append((name, 'Bundled component: update via next Mister Muscle installer'))
+                        continue
+                    self.progress.emit('Downloading package ' + name + ' ' + version)
+                    package_dir = target / 'python_packages' / name
+                    package_dir.mkdir(parents=True, exist_ok=True)
+                    # Download only; do not modify the running Python environment.
+                    run = subprocess.run([sys.executable, '-m', 'pip', 'download', '--only-binary=:all:',
+                                          '--disable-pip-version-check', '--dest', str(package_dir),
+                                          name + '==' + version], capture_output=True, text=True,
+                                         timeout=180, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                    if run.returncode:
+                        output.append((name, 'Download failed: ' + (run.stderr or run.stdout)[-280:]))
                     else:
-                        self.progress.emit('Updating yt-dlp from PyPI')
-                        run=subprocess.run([sys.executable,'-m','pip','install','--upgrade','--disable-pip-version-check','yt-dlp=='+version],capture_output=True,text=True,timeout=300,
-                            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-                        if run.returncode: raise RuntimeError((run.stderr or run.stdout)[-500:])
-                        output.append((name,'Installed '+version+' (restart recommended)'))
-                elif name=='FFmpeg':
-                    link='https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip'
-                    self.progress.emit('Downloading Gyan.dev FFmpeg Full Build '+version)
-                    archive=target/'ffmpeg-release-full.zip'
-                    tmp=download_verified(link,archive,900*1024*1024)
-                    if not zipfile.is_zipfile(tmp): raise ValueError('Invalid FFmpeg ZIP')
-                    staging=target/'ffmpeg-extracted';staging.mkdir(parents=True,exist_ok=True)
-                    staged={}
-                    with zipfile.ZipFile(tmp) as z:
-                        for exe in ('ffmpeg.exe','ffprobe.exe'):
-                            entries=[n for n in z.namelist() if n.lower().endswith('/bin/'+exe)]
-                            if len(entries)!=1: raise ValueError('Missing or ambiguous '+exe)
-                            item=z.getinfo(entries[0]);
-                            if item.file_size<1024 or item.file_size>350*1024*1024: raise ValueError('Unexpected '+exe+' size')
-                            path=staging/exe
-                            with z.open(item) as src,path.open('wb') as dst: shutil.copyfileobj(src,dst)
-                            if path.open('rb').read(2)!=b'MZ': raise ValueError('Invalid '+exe)
-                            staged[exe]=path
-                    replace_tool_pair(staged)
-                    tmp.unlink(missing_ok=True)
-                    output.append((name,'Installed '+version+' (active after restart)'))
-                elif name=='PySide6':
-                    output.append((name,'Qt requires a new application installer; cannot safely replace loaded DLLs'))
+                        output.append((name, 'Downloaded to ' + str(package_dir) + ' (not installed)'))
             except Exception as exc:
-                output.append((name,'Update failed: '+str(exc)))
+                output.append((name, 'Download failed: ' + str(exc)))
         self.completed.emit(output)
 
 
@@ -915,8 +827,8 @@ class Main(QMainWindow):
         if Path(output).resolve()==Path(self._studio_local).resolve():
             QMessageBox.warning(self,'Unsafe output','Do not overwrite the source video.');return
         if Path(output).exists() and QMessageBox.question(self,'Overwrite?','Replace existing output?')!=QMessageBox.Yes:return
-        ffmpeg=active_ffmpeg()
-        if not Path(ffmpeg).is_file():
+        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
+        if not Path(ffmpeg).is_file() and not shutil.which('ffmpeg'):
             QMessageBox.warning(self,'FFmpeg missing','FFmpeg is required for exporting.');return
         self._multi_active=False
         self.remote_source=Path(self._studio_local)
@@ -1285,15 +1197,14 @@ class Main(QMainWindow):
         except OSError as exc:
             self.log('WARN','UPDATE',f'Could not save What’s New state: {exc}')
 
-    def _release_worker(self, attribute, worker):
-        # Drop the Python reference BEFORE Qt deletes its C++ QObject.
-        # Otherwise the next update check can call isRunning() on a deleted wrapper.
-        if getattr(self, attribute, None) is worker:
-            setattr(self, attribute, None)
-        worker.deleteLater()
+    def _clear_finished_worker(self, name, worker):
+        if getattr(self, name, None) is worker:
+            setattr(self, name, None)
 
     def check_updates(self):
-        if getattr(self, '_update_worker', None) is not None:
+        if (getattr(self, '_update_worker', None) is not None
+                and shiboken6.isValid(self._update_worker)
+                and self._update_worker.isRunning()):
             return
         self.update_status.setText('Checking for updates in the background…')
         self.update_button.setEnabled(False)
@@ -1301,7 +1212,8 @@ class Main(QMainWindow):
         worker = UpdateCheckWorker(self)
         self._update_worker = worker
         worker.completed.connect(self.show_update_results)
-        worker.finished.connect(lambda w=worker: self._release_worker('_update_worker', w))
+        worker.finished.connect(lambda w=worker: self._clear_finished_worker('_update_worker', w))
+        worker.finished.connect(worker.deleteLater)
         worker.start()
 
     def show_update_results(self, results):
@@ -1310,62 +1222,36 @@ class Main(QMainWindow):
         lines = []
         for name, current, latest, is_newer, url in results:
             if is_newer:
-                lines.append(f'UPDATE AVAILABLE: {name} — installed {current} → latest {latest}')
+                lines.append(f'UPDATE AVAILABLE: {name} — {current} → {latest}')
                 self.log('WARN', 'UPDATE', f'{name}: {current} -> {latest}')
-                if name == 'Mister Muscle Downloader' and url:
+                if name in ('yt-dlp', 'PySide6') or (name == 'Mister Muscle Downloader' and url):
                     updates.append((name, latest, url))
-                elif name == 'yt-dlp':
-                    updates.append((name, latest, url))
-                    lines.append('  Automatic installation starting…')
-                elif name == 'FFmpeg':
-                    updates.append((name, latest, url))
-                    lines.append('  Automatic FFmpeg + FFprobe installation starting…')
-                elif name == 'PySide6':
-                    lines.append('  PySide6 is bundled with the app; upgrade via a new app installer.')
                 elif name == 'Mister Muscle Downloader':
                     lines.append('GitHub Release has no compatible EXE installer yet.')
             else:
-                lines.append(f'{name}: installed v{current} | latest GitHub release {latest}' if name == 'Mister Muscle Downloader' else f'{name}: installed {current} | latest available {latest}')
+                lines.append(f'{name}: {current} | {latest}')
                 self.log('WARN' if latest.startswith('Check unavailable') else 'INFO', 'UPDATE', f'{name}: {latest}')
         self.update_status.setText('\n'.join(lines))
         if updates:
-            if getattr(self, '_download_worker', None) is not None:
+            if (getattr(self, '_download_worker', None) is not None
+                and shiboken6.isValid(self._download_worker)
+                and self._download_worker.isRunning()):
                 return
             worker = UpdateDownloadWorker(updates, self)
             self._download_worker = worker
             worker.progress.connect(lambda msg: self.log('INFO', 'UPDATE', msg))
             worker.completed.connect(self.show_download_results)
-            worker.finished.connect(lambda w=worker: self._release_worker('_download_worker', w))
+            worker.finished.connect(lambda w=worker: self._clear_finished_worker('_download_worker', w))
+            worker.finished.connect(worker.deleteLater)
             worker.start()
         else:
-            self.log('INFO', 'UPDATE', 'No automatically installable updates found')
+            self.log('INFO', 'UPDATE', 'No downloadable updates found')
 
     def show_download_results(self, results):
         for name, result in results:
             self.log('ERROR' if 'failed' in result.lower() else 'INFO', 'UPDATE', name + ': ' + result)
         self.update_status.setText(self.update_status.text() + '\n\n' + '\n'.join(
             f'{name}: {result}' for name, result in results))
-        installers=[result.split(':',1)[1] for name,result in results if result.startswith('READY_INSTALLER:')]
-        if installers:
-            message=('A new Mister Muscle version is ready. Close the app and launch the installer now?' if APP_LANGUAGE=='en'
-                else 'Nova verzija Mister Musclea je spremna. Zatvoriti aplikaciju i pokrenuti instalaciju?')
-            if QMessageBox.question(self,'Restart & Update',message,QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
-                try:
-                    subprocess.Popen([installers[0]],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-                    QApplication.instance().quit()
-                except Exception as exc:
-                    self.log('ERROR','UPDATE','Installer launch failed: '+str(exc))
-        elif any('Installed ' in result and 'restart' in result.lower() for _,result in results):
-            msg=('Tools updated. Restart Mister Muscle now to activate them?' if APP_LANGUAGE=='en'
-                 else 'Alati su ažurirani. Ponovno pokrenuti Mister Muscle kako bi se aktivirali?')
-            if QMessageBox.question(self,'Restart & Update',msg,QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
-                try:
-                    subprocess.Popen([sys.executable, str(Path(__file__).resolve())] if not getattr(sys,'frozen',False) else [sys.executable],
-                        cwd=str(APP_DIR),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-                    QApplication.instance().quit()
-                except Exception as exc:
-                    self.log('ERROR','UPDATE','Restart failed: '+str(exc))
-
 
     def make_settings(self):
         w,v=self.column();v.addWidget(heading('Settings','Downloader tools and configuration.'))
@@ -1391,7 +1277,7 @@ class Main(QMainWindow):
         cl.addWidget(self.update_status)
         self.update_button=button('Check for updates now',self.check_updates)
         cl.addWidget(self.update_button)
-        update_note=QLabel('yt-dlp updates install automatically. App installers are downloaded for manual approval. PySide6 and FFmpeg are updated with a new app build, not while running.')
+        update_note=QLabel('Available updates download automatically to AppData/MisterMuscleQt/updates. Installation is NOT automatic; the running app is never overwritten. FFmpeg is checked locally only.')
         update_note.setObjectName('sub');update_note.setWordWrap(True);cl.addWidget(update_note)
         cl.addWidget(QLabel('All cutting controls are now in New Download → Media Studio.'));v.addWidget(c);return w
     def paste(self):
@@ -1764,8 +1650,8 @@ class Main(QMainWindow):
             return
         if self.preview_proc and self.preview_proc.state()!=QProcess.NotRunning:
             QMessageBox.information(self,'Preview busy','A preview is already being prepared.');return
-        ffmpeg=active_ffmpeg()
-        if not (Path(ffmpeg).is_file()):
+        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
+        if not (shutil.which('ffmpeg') or Path(ffmpeg).is_file()):
             QMessageBox.warning(self,'FFmpeg missing','A working FFmpeg installation is required for preview conversion.');return
         # Keep previous preview files alive while the player might still reference them.
         if not hasattr(self,'_preview_dirs'):self._preview_dirs=[]
@@ -1855,8 +1741,8 @@ class Main(QMainWindow):
             self.remote_start,self.remote_end=self.parse_cut_times()
         except ValueError:
             QMessageBox.warning(self,'Invalid time','Enter valid start and end times, with end after start.');return
-        ffmpeg=active_ffmpeg()
-        if not (Path(ffmpeg).is_file()):
+        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
+        if not (shutil.which('ffmpeg') or Path(ffmpeg).is_file()):
             QMessageBox.warning(self,'FFmpeg missing','Install FFmpeg before cutting.');return
         if batch:
             output=str(Path(self._multi_folder)/'MisterMuscle_clip_001.mp4')
@@ -1919,7 +1805,7 @@ class Main(QMainWindow):
         if Path(self.remote_output).exists() and QMessageBox.question(
             self,'Overwrite?','Replace existing output file?')!=QMessageBox.Yes:
             self.remote_fail('Export canceled.');return
-        ffmpeg=active_ffmpeg()
+        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
         self.remote_proc=QProcess(self)
         self.remote_proc.setProgram(ffmpeg)
         self.remote_proc.setArguments(self.clip_ffmpeg_args(self.remote_source,self.remote_output,self.remote_start,self.remote_end))
@@ -1930,7 +1816,7 @@ class Main(QMainWindow):
         self.remote_proc.start()
 
     def _start_next_batch_export(self):
-        ffmpeg=active_ffmpeg()
+        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
         self.remote_proc=QProcess(self)
         self.remote_proc.setProgram(ffmpeg)
         self.remote_proc.setArguments(self.clip_ffmpeg_args(self.remote_source,self.remote_output,self.remote_start,self.remote_end))
@@ -1979,8 +1865,8 @@ class Main(QMainWindow):
         if not self.local_path or not Path(self.local_path).is_file():
             QMessageBox.information(self,'No video','Open a local video first.');return
         if self.cut_proc and self.cut_proc.state()!=QProcess.NotRunning:return
-        ffmpeg=active_ffmpeg()
-        if not (Path(ffmpeg).is_file()):
+        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
+        if not (shutil.which('ffmpeg') or Path(ffmpeg).is_file()):
             QMessageBox.warning(self,'FFmpeg missing','Install FFmpeg or place ffmpeg.exe next to this app.');return
         try:
             def secs(t):
