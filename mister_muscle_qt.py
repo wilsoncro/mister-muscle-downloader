@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.5'
+APP_VERSION = '5.2.6'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -2001,6 +2001,7 @@ class Main(QMainWindow):
     def clear_queue(self):
         self.queue.clear();self.refresh_queue()
     def run_next(self):
+        if getattr(self,'_premiere_busy',False):return
         if self.paused:return
         if self.proc and self.proc.state()!=QProcess.NotRunning:return
         if not self.queue:
@@ -2044,8 +2045,10 @@ class Main(QMainWindow):
         elif mode==1:
             height=f'[height<={fmt}]' if fmt else ''
             preferred=f'bestvideo{height}' if self._premiere_for_download else (f'bestvideo[ext={output_format}]{height}/bestvideo{height}' if output_format in ('mp4','webm') else f'bestvideo{height}')
-            args+=['-f',preferred,'--remux-video',output_format]
-        else:args+=['-f',f'bestvideo[height<={fmt}]+bestaudio/best[height<={fmt}]' if fmt else 'bestvideo+bestaudio/best','--merge-output-format',output_format,'--remux-video',output_format]
+            args+=['-f',preferred] if self._premiere_for_download else ['-f',preferred,'--remux-video',output_format]
+        else:
+            args+=['-f',f'bestvideo[height<={fmt}]+bestaudio/best[height<={fmt}]' if fmt else 'bestvideo+bestaudio/best']
+            if not self._premiere_for_download:args+=['--merge-output-format',output_format,'--remux-video',output_format]
         args.append(self.current_url)
         self.download_percent=0;self.download_detail='Preparing download...';self.progress.setValue(0);self.status.setText('Starting: '+self.current_url)
         self.proc.start(YTDLP_EXE,ytdlp_args(args));self.start_btn.setEnabled(False)
@@ -2152,6 +2155,10 @@ class Main(QMainWindow):
         if ok and getattr(self,'_premiere_for_download',False):
             self.resolve_premiere_source()
         if ok and getattr(self,'_premiere_for_download',False) and self.current_mode in (0,1):
+            self.download_percent=99
+            self.download_detail='Download finished; converting and validating Premiere MP4...'
+            self.progress.setValue(99)
+            self.refresh_center()
             if self.begin_premiere_conversion():
                 return
             # begin_premiere_conversion records an error and returns None on failure.
@@ -2218,77 +2225,125 @@ class Main(QMainWindow):
             self.log('ERROR','PREMIERE','No matching completed media file found in output folder: '+self.folder)
 
     def begin_premiere_conversion(self):
-        # yt-dlp has already selected/downloaded the best available resolution.
+        """Always rebuild a clean, CFR H.264/AAC MP4 for Premiere (no scaling)."""
         self._premiere_conversion_error=False
         source=Path(self.last_file) if self.last_file else None
         if not source or not source.is_file():
             self._premiere_conversion_error=True
-            self.log('ERROR','PREMIERE','Downloaded file path unavailable; cannot verify Premiere compatibility')
+            self.log('ERROR','PREMIERE','Downloaded video not found; original download preserved')
             return None
         ffprobe=shutil.which('ffprobe') or str(TOOLS_DIR/'ffprobe.exe')
         ffmpeg=shutil.which('ffmpeg') or str(TOOLS_DIR/'ffmpeg.exe')
         if not Path(ffprobe).is_file() or not Path(ffmpeg).is_file():
             self._premiere_conversion_error=True
-            self.log('ERROR','PREMIERE','FFmpeg/ffprobe not found; original download preserved')
+            self.log('ERROR','PREMIERE','FFmpeg or ffprobe missing; original preserved')
             return None
         try:
-            probe=subprocess.run([ffprobe,'-v','error','-show_entries','stream=codec_type,codec_name,pix_fmt','-of','json',str(source)],capture_output=True,text=True,timeout=12,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            if probe.returncode:raise RuntimeError(probe.stderr[-300:])
+            probe=subprocess.run([ffprobe,'-v','error','-show_entries',
+                'stream=codec_type,codec_name,width,height,avg_frame_rate',
+                '-of','json',str(source)],capture_output=True,text=True,timeout=25,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if probe.returncode:raise RuntimeError(probe.stderr[-500:])
             streams=json.loads(probe.stdout).get('streams',[])
-            video=next((x for x in streams if x.get('codec_type')=='video'),{})
-            audio=next((x for x in streams if x.get('codec_type')=='audio'),{})
-            compatible=(source.suffix.lower()=='.mp4' and video.get('codec_name')=='h264' and video.get('pix_fmt')=='yuv420p' and (self.current_mode==1 or not audio or audio.get('codec_name')=='aac'))
-            if compatible:
-                self.log('INFO','PREMIERE','Already H.264/AAC compatible; skipping re-encode')
-                return False
-            if not video:raise RuntimeError('No video stream found')
+            video=next((x for x in streams if x.get('codec_type')=='video'),None)
+            if not video:raise RuntimeError('Source contains no video stream')
             target=source.with_name(source.stem+' - Premiere H264.mp4')
-            counter=2
+            n=2
             while target.exists():
-                target=source.with_name(source.stem+f' - Premiere H264 ({counter}).mp4');counter+=1
+                target=source.with_name(source.stem+f' - Premiere H264 ({n}).mp4');n+=1
+            temp=target.with_name(target.stem+'.converting.mp4')
+            if temp.exists():temp.unlink()
             self._premiere_source=source
             self._premiere_target=target
+            self._premiere_temp=temp
+            self._premiere_ffmpeg=ffmpeg
+            self._premiere_ffprobe=ffprobe
+            self._premiere_busy=True
             self._premiere_proc=QProcess(self)
             self._premiere_proc.setProcessChannelMode(QProcess.MergedChannels)
             self._premiere_proc.readyReadStandardOutput.connect(self.premiere_conversion_output)
             self._premiere_proc.finished.connect(self.premiere_conversion_finished)
-            arguments=['-hide_banner','-y','-i',str(source),'-map','0:v:0']
-            if self.current_mode==0:arguments+=['-map','0:a:0?']
-            arguments+=['-c:v','libx264','-preset','medium','-crf','18','-pix_fmt','yuv420p']
-            if self.current_mode==0:arguments+=['-c:a','aac','-b:a','192k']
-            else:arguments+=['-an']
-            arguments+=['-movflags','+faststart',str(target)]
-            self.status.setText('Converting to Premiere H.264 (keeping original resolution)…')
-            self.log('INFO','PREMIERE',f'Converting {video.get("codec_name")} to H.264 without scaling; source preserved')
-            self._premiere_proc.start(ffmpeg,arguments)
+            # Generate fresh timestamps and constant-frame-rate output; keep native dimensions.
+            args=['-hide_banner','-nostdin','-y','-fflags','+genpts',
+                  '-i',str(source),'-map','0:v:0']
+            if self.current_mode==0:args+=['-map','0:a:0?']
+            args+=['-c:v','libx264','-preset','medium','-crf','18',
+                   '-pix_fmt','yuv420p','-fps_mode:v','cfr',
+                   '-profile:v','high','-tag:v','avc1']
+            if self.current_mode==0:
+                args+=['-c:a','aac','-b:a','192k','-ar','48000','-af','aresample=async=1:first_pts=0']
+            else:args+=['-an']
+            args+=['-avoid_negative_ts','make_zero','-movflags','+faststart',
+                   '-max_muxing_queue_size','4096',str(temp)]
+            self.status.setText('Rebuilding clean Premiere MP4 (original resolution)…')
+            self.log('INFO','PREMIERE',f'Full H.264/AAC rebuild, {video.get("width")}x{video.get("height")}; source preserved')
+            self._premiere_proc.start(ffmpeg,args)
             return True
         except Exception as exc:
+            self._premiere_busy=False
             self._premiere_conversion_error=True
-            self.log('ERROR','PREMIERE','Compatibility check failed; original download preserved: '+str(exc))
+            self.log('ERROR','PREMIERE','Cannot start conversion: '+str(exc))
             return None
 
     def premiere_conversion_output(self):
-        data=bytes(self._premiere_proc.readAllStandardOutput()).decode('utf-8',errors='replace')
+        proc=getattr(self,'_premiere_proc',None)
+        if proc is None:return
+        data=bytes(proc.readAllStandardOutput()).decode('utf-8',errors='replace')
         for line in data.splitlines():
             if 'time=' in line and ('frame=' in line or 'size=' in line):
                 self.status.setText('Premiere conversion: '+line.strip()[-135:])
+                self.download_detail='Converting to Premiere H.264: '+line.strip()[-100:]
+                self.download_percent=99
+                self.refresh_center()
             elif 'Error' in line or 'error' in line:
                 self.log('WARN','PREMIERE',line[-300:])
 
     def premiere_conversion_finished(self,exitcode,status):
         self.premiere_conversion_output()
-        if exitcode==0 and status==QProcess.NormalExit and self._premiere_target.is_file() and self._premiere_target.stat().st_size>0:
-            self.last_file=str(self._premiere_target)
-            self.log('INFO','PREMIERE','H.264 output ready: '+self.last_file)
-            self.status.setText('✓ Premiere-compatible 4K-capable video ready')
-            self._premiere_for_download=False
-            self.on_finished(0,QProcess.NormalExit)
-        else:
-            self.log('ERROR','PREMIERE','Conversion failed; original download preserved')
-            self._premiere_target.unlink(missing_ok=True)
-            self._premiere_for_download=False
-            self.on_finished(1,QProcess.NormalExit)
+        good=(exitcode==0 and status==QProcess.NormalExit and
+              self._premiere_temp.is_file() and self._premiere_temp.stat().st_size>0)
+        if good:
+            try:
+                probe=subprocess.run([self._premiere_ffprobe,'-v','error',
+                    '-show_entries','stream=codec_type,codec_name,pix_fmt,width,height',
+                    '-of','json',str(self._premiere_temp)],capture_output=True,text=True,
+                    timeout=25,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                if probe.returncode:raise RuntimeError(probe.stderr[-400:])
+                streams=json.loads(probe.stdout).get('streams',[])
+                v=next((x for x in streams if x.get('codec_type')=='video'),None)
+                audios=[x for x in streams if x.get('codec_type')=='audio']
+                if not v or v.get('codec_name')!='h264' or v.get('pix_fmt')!='yuv420p':
+                    raise RuntimeError('Output is not H.264/yuv420p')
+                if any(x.get('codec_name')!='aac' for x in audios):
+                    raise RuntimeError('Output contains non-AAC audio')
+                # A full demux/decode pass catches broken MP4 samples and timestamps.
+                check=subprocess.run([self._premiere_ffmpeg,'-v','error','-xerror',
+                    '-i',str(self._premiere_temp),'-map','0:v:0','-f','null','-'],
+                    capture_output=True,text=True,timeout=3600,
+                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                if check.returncode:raise RuntimeError('Video validation: '+check.stderr[-500:])
+                self._premiere_temp.replace(self._premiere_target)
+                self.last_file=str(self._premiere_target)
+                # Only remove the source AFTER the new file passed complete validation.
+                # Never remove the final file if source and target unexpectedly coincide.
+                try:
+                    if self._premiere_source.resolve()!=self._premiere_target.resolve():
+                        self._premiere_source.unlink()
+                        self.log('INFO','PREMIERE','Removed original intermediate video after verified conversion')
+                except OSError as cleanup_exc:
+                    self.log('WARN','PREMIERE','Premiere MP4 is ready, but original could not be removed: '+str(cleanup_exc))
+                self.log('INFO','PREMIERE','Validated H.264 MP4 ready: '+self.last_file)
+            except Exception as exc:
+                good=False
+                self.log('ERROR','PREMIERE','Validation failed: '+str(exc))
+        if not good:
+            self.log('ERROR','PREMIERE','Conversion unsuccessful; original download preserved')
+            try:self._premiere_temp.unlink(missing_ok=True)
+            except OSError:pass
+        self._premiere_for_download=False
+        self._premiere_busy=False
         self._premiere_proc=None
+        self.on_finished(0 if good else 1,QProcess.NormalExit)
 
     def cancel(self):
         if getattr(self,'_premiere_proc',None) and self._premiere_proc.state()!=QProcess.NotRunning:
@@ -2368,7 +2423,7 @@ class Main(QMainWindow):
 
     def refresh_center(self):
         if not hasattr(self,'center_layout'):return
-        active=bool(self.proc and self.proc.state()!=QProcess.NotRunning)
+        active=bool((self.proc and self.proc.state()!=QProcess.NotRunning) or getattr(self,'_premiere_busy',False))
         clip_active=bool(self.remote_proc and self.remote_proc.state()!=QProcess.NotRunning)
         for key,count in [('Completed',len(self.history)),('Downloading',int(active)+int(clip_active)),
                           ('Pending',len(self.queue)),('Failed',len(self.failed_items))]:
