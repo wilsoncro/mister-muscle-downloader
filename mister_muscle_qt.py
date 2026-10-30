@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.11'
+APP_VERSION = '5.2.12'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
