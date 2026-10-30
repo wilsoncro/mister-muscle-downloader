@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.3'
+APP_VERSION = '5.2.4'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -918,6 +918,10 @@ class Main(QMainWindow):
         self.aspect=QComboBox();self.aspect.addItems(['Original','16:9 (YouTube)','9:16 (TikTok / Reels / Shorts)','1:1 (Square)','4:5 (Instagram)','3:4 (Portrait)','21:9 (Ultrawide)','4:3 (Classic)'])
         ac2.addWidget(self.aspect);exportrow.addLayout(ac2,1)
         ol.addLayout(exportrow)
+        self.premiere_compatible=QCheckBox('Premiere Compatible — H.264 / AAC (keep 4K)')
+        self.premiere_compatible.setToolTip('Download the original best-resolution stream first; convert only if needed. This may take time and disk space.')
+        ol.addWidget(self.premiere_compatible)
+        self.premiere_compatible.stateChanged.connect(self.update_premiere_controls)
         aspect_note=QLabel('Aspect ratio is applied to clip exports. Full-video downloads retain their original framing.')
         aspect_note.setObjectName('sub');aspect_note.setWordWrap(True);ol.addWidget(aspect_note)
         folderrow=QHBoxLayout()
@@ -1042,6 +1046,17 @@ class Main(QMainWindow):
         self._previous_mode=mode
         self.quality.setEnabled(mode in (0,1))
         self.instagram_options.setVisible(mode==3) if hasattr(self,'instagram_options') else None
+        self.update_premiere_controls()
+
+    def update_premiere_controls(self, *_):
+        if not hasattr(self, 'premiere_compatible'):return
+        eligible=self.mode.currentIndex() in (0,1)
+        self.premiere_compatible.setEnabled(eligible)
+        if eligible and self.premiere_compatible.isChecked():
+            self.video_container.setCurrentText('MP4')
+            self.video_container.setEnabled(False)
+        else:
+            self.video_container.setEnabled(True)
 
     def selected_download_format(self):
         return self.video_container.currentText().lower()
@@ -1516,25 +1531,27 @@ class Main(QMainWindow):
         layout.addWidget(title)
         if APP_LANGUAGE=='hr':
             releases=[
-                ('v5.2.1 — Trenutna verzija', [
-                    'Vidljiv napredak automatskog preuzimanja ažuriranja na svim karticama.',
-                    'Prikaz postotka i preuzetih MB te obavijest kada je instalacija spremna.',
-                    'Gumb za instalaciju preuzetog ažuriranja.'
+                ('v5.2.3 — Trenutna verzija', [
+                    'Instagram prijava unutar aplikacije i spremljena sesija.',
+                    'Poboljšano rukovanje Instagram objavama i pregledom.',
+                    'Automatski dijagnostički log uz prijavu greške.',
+                    'Opcija Premiere Compatible: H.264/AAC uz očuvanje izvorne rezolucije, uključujući 4K.'
                 ]),
-                ('v5.2.0 — Prethodna verzija', [
-                    'Napredak rezanja isječaka u Download Centeru.',
-                    'Detaljnija FFmpeg dijagnostika, napredak kodiranja i praćenje procesa.'
+                ('v5.2.2 — Prethodna verzija', [
+                    'Nazivi izvezenih isječaka koriste naslov izvornog videa.',
+                    'Bolje imenovanje više isječaka i kompatibilnost s Windows nazivima datoteka.'
                 ])]
         else:
             releases=[
-                ('v5.2.1 — Current release', [
-                    'Visible automatic update download progress across all tabs.',
-                    'Download percentage and MB tracking, plus an install-ready notification.',
-                    'Install update button when the installer is ready.'
+                ('v5.2.3 — Current release', [
+                    'Built-in Instagram login with saved sessions.',
+                    'Improved Instagram post and preview handling.',
+                    'Automatic diagnostic logs in bug reports.',
+                    'Premiere Compatible: H.264/AAC conversion while preserving original resolution, including 4K.'
                 ]),
-                ('v5.2.0 — Previous release', [
-                    'Clipping progress shown in Download Center.',
-                    'Detailed FFmpeg diagnostics, encoding progress and process tracking.'
+                ('v5.2.2 — Previous release', [
+                    'Exported clips use original video titles.',
+                    'Improved multi-clip naming and Windows filename compatibility.'
                 ])]
         for heading_text, entries in releases:
             heading_label=QLabel(heading_text)
@@ -1980,7 +1997,7 @@ class Main(QMainWindow):
         if self.proc and self.proc.state()!=QProcess.NotRunning:return
         if not self.queue:
             self.status.setText('Queue completed.');self.refresh_center();return
-        self.current_url,mode,quality,output_format=self.queue.pop(0);self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
+        self.current_url,mode,quality,output_format=self.queue.pop(0);self._premiere_for_download=(mode in (0,1) and self.premiere_compatible.isChecked());self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
         self.proc=QProcess(self);self.proc.setProcessChannelMode(QProcess.MergedChannels)
         self.proc.readyReadStandardOutput.connect(self.on_output)
         self.watch_process(self.proc,'DOWNLOAD',stderr=False,stdout=False)
@@ -2006,10 +2023,12 @@ class Main(QMainWindow):
             return
         fmt={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[quality]
         args=['-m','yt_dlp','--newline','--continue','--no-playlist','--print','after_move:filepath','-P',self.folder,'-o','%(title).180B [%(id)s].%(ext)s']
+        if self._premiere_for_download:
+            output_format='mp4';self.current_output_format='mp4'
         if mode==2:args+=['-x','--audio-format',('vorbis' if output_format=='ogg' else output_format),'--audio-quality','0']
         elif mode==1:
             height=f'[height<={fmt}]' if fmt else ''
-            preferred=f'bestvideo[ext={output_format}]{height}/bestvideo{height}' if output_format in ('mp4','webm') else f'bestvideo{height}'
+            preferred=f'bestvideo{height}' if self._premiere_for_download else (f'bestvideo[ext={output_format}]{height}/bestvideo{height}' if output_format in ('mp4','webm') else f'bestvideo{height}')
             args+=['-f',preferred,'--remux-video',output_format]
         else:args+=['-f',f'bestvideo[height<={fmt}]+bestaudio/best[height<={fmt}]' if fmt else 'bestvideo+bestaudio/best','--merge-output-format',output_format,'--remux-video',output_format]
         args.append(self.current_url)
@@ -2115,6 +2134,11 @@ class Main(QMainWindow):
             self.persist_session()
             return
         ok=(exitcode==0 and status==QProcess.NormalExit)
+        if ok and getattr(self,'_premiere_for_download',False) and self.current_mode in (0,1):
+            if self.begin_premiere_conversion():
+                return
+            # begin_premiere_conversion records an error and returns None on failure.
+            if getattr(self,'_premiere_conversion_error',False):ok=False
         if ok:
             self.progress.setValue(100);self.finished_count+=1
             self.history.insert(0,{'url':self.current_url,'title':self.current_title,'date':datetime.now().strftime('%Y-%m-%d %H:%M'),'mode':self.current_mode,'file':self.last_file,'metadata':self.media_info.get(self.current_url,{})})
@@ -2125,7 +2149,82 @@ class Main(QMainWindow):
             if not self.canceled:self.failed_items.append({'url':self.current_url,'date':datetime.now().strftime('%Y-%m-%d %H:%M'),'mode':self.current_mode,'quality':getattr(self,'current_quality',self.quality.currentText()),'format':getattr(self,'current_output_format','mp4')})
         self.start_btn.setEnabled(True);self.proc=None
         self.refresh_center();self.refresh_history();self.persist_session();self.run_next()
+    def begin_premiere_conversion(self):
+        # yt-dlp has already selected/downloaded the best available resolution.
+        self._premiere_conversion_error=False
+        source=Path(self.last_file) if self.last_file else None
+        if not source or not source.is_file():
+            self._premiere_conversion_error=True
+            self.log('ERROR','PREMIERE','Downloaded file path unavailable; cannot verify Premiere compatibility')
+            return None
+        ffprobe=shutil.which('ffprobe') or str(TOOLS_DIR/'ffprobe.exe')
+        ffmpeg=shutil.which('ffmpeg') or str(TOOLS_DIR/'ffmpeg.exe')
+        if not Path(ffprobe).is_file() or not Path(ffmpeg).is_file():
+            self._premiere_conversion_error=True
+            self.log('ERROR','PREMIERE','FFmpeg/ffprobe not found; original download preserved')
+            return None
+        try:
+            probe=subprocess.run([ffprobe,'-v','error','-show_entries','stream=codec_type,codec_name,pix_fmt','-of','json',str(source)],capture_output=True,text=True,timeout=12,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if probe.returncode:raise RuntimeError(probe.stderr[-300:])
+            streams=json.loads(probe.stdout).get('streams',[])
+            video=next((x for x in streams if x.get('codec_type')=='video'),{})
+            audio=next((x for x in streams if x.get('codec_type')=='audio'),{})
+            compatible=(source.suffix.lower()=='.mp4' and video.get('codec_name')=='h264' and video.get('pix_fmt')=='yuv420p' and (self.current_mode==1 or not audio or audio.get('codec_name')=='aac'))
+            if compatible:
+                self.log('INFO','PREMIERE','Already H.264/AAC compatible; skipping re-encode')
+                return False
+            if not video:raise RuntimeError('No video stream found')
+            target=source.with_name(source.stem+' - Premiere H264.mp4')
+            counter=2
+            while target.exists():
+                target=source.with_name(source.stem+f' - Premiere H264 ({counter}).mp4');counter+=1
+            self._premiere_source=source
+            self._premiere_target=target
+            self._premiere_proc=QProcess(self)
+            self._premiere_proc.setProcessChannelMode(QProcess.MergedChannels)
+            self._premiere_proc.readyReadStandardOutput.connect(self.premiere_conversion_output)
+            self._premiere_proc.finished.connect(self.premiere_conversion_finished)
+            arguments=['-hide_banner','-y','-i',str(source),'-map','0:v:0']
+            if self.current_mode==0:arguments+=['-map','0:a:0?']
+            arguments+=['-c:v','libx264','-preset','medium','-crf','18','-pix_fmt','yuv420p']
+            if self.current_mode==0:arguments+=['-c:a','aac','-b:a','192k']
+            else:arguments+=['-an']
+            arguments+=['-movflags','+faststart',str(target)]
+            self.status.setText('Converting to Premiere H.264 (keeping original resolution)…')
+            self.log('INFO','PREMIERE',f'Converting {video.get("codec_name")} to H.264 without scaling; source preserved')
+            self._premiere_proc.start(ffmpeg,arguments)
+            return True
+        except Exception as exc:
+            self._premiere_conversion_error=True
+            self.log('ERROR','PREMIERE','Compatibility check failed; original download preserved: '+str(exc))
+            return None
+
+    def premiere_conversion_output(self):
+        data=bytes(self._premiere_proc.readAllStandardOutput()).decode('utf-8',errors='replace')
+        for line in data.splitlines():
+            if 'time=' in line and ('frame=' in line or 'size=' in line):
+                self.status.setText('Premiere conversion: '+line.strip()[-135:])
+            elif 'Error' in line or 'error' in line:
+                self.log('WARN','PREMIERE',line[-300:])
+
+    def premiere_conversion_finished(self,exitcode,status):
+        self.premiere_conversion_output()
+        if exitcode==0 and status==QProcess.NormalExit and self._premiere_target.is_file() and self._premiere_target.stat().st_size>0:
+            self.last_file=str(self._premiere_target)
+            self.log('INFO','PREMIERE','H.264 output ready: '+self.last_file)
+            self.status.setText('✓ Premiere-compatible 4K-capable video ready')
+            self._premiere_for_download=False
+            self.on_finished(0,QProcess.NormalExit)
+        else:
+            self.log('ERROR','PREMIERE','Conversion failed; original download preserved')
+            self._premiere_target.unlink(missing_ok=True)
+            self._premiere_for_download=False
+            self.on_finished(1,QProcess.NormalExit)
+        self._premiere_proc=None
+
     def cancel(self):
+        if getattr(self,'_premiere_proc',None) and self._premiere_proc.state()!=QProcess.NotRunning:
+            self.canceled=True;self._premiere_proc.kill();return
         if self.proc and self.proc.state()!=QProcess.NotRunning:
             self.canceled=True;self.paused=False;self.queue.clear();self.proc.kill();self.status.setText('Canceled')
             self.persist_session()
