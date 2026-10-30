@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1'
+APP_VERSION = '5.1.1'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -217,17 +217,43 @@ class UpdateCheckWorker(QThread):
         except Exception as exc:
             results.append(('Mister Muscle Downloader', APP_VERSION, 'Check unavailable: ' + str(exc), False, ''))
 
-        for package in ('yt-dlp', 'PySide6'):
+        # Bundled Windows releases have no pip dist-info for these components.
+        # Query the actual executable and the imported PySide6 module instead.
+        current = 'Unknown'
+        try:
+            if getattr(sys, 'frozen', False):
+                executable = str(TOOLS_DIR / 'yt-dlp.exe')
+                if not Path(executable).is_file():
+                    raise FileNotFoundError(executable)
+                process = subprocess.run([executable, '--version'], capture_output=True,
+                                         text=True, timeout=8,
+                                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                if process.returncode:
+                    raise RuntimeError((process.stderr or process.stdout).strip()[:160])
+                current = process.stdout.strip().splitlines()[0]
+            else:
+                try:
+                    current = importlib.metadata.version('yt-dlp')
+                except importlib.metadata.PackageNotFoundError:
+                    from yt_dlp.version import __version__ as current
+            latest = fetch_json('https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest')['tag_name'].lstrip('v')
+            results.append(('yt-dlp', current, latest, newer(latest, current),
+                            'https://github.com/yt-dlp/yt-dlp/releases/latest'))
+        except Exception as exc:
+            results.append(('yt-dlp', current,
+                            'Check unavailable: ' + str(exc), False, ''))
+
+        try:
+            import PySide6
+            current = PySide6.__version__
             try:
-                current = importlib.metadata.version(package)
-            except importlib.metadata.PackageNotFoundError:
-                results.append((package, 'Not installed', 'Not checked', False, ''))
-                continue
-            try:
-                latest = fetch_json('https://pypi.org/pypi/' + package + '/json')['info']['version']
-                results.append((package, current, latest, newer(latest, current), 'https://pypi.org/project/' + package + '/'))
+                latest = fetch_json('https://pypi.org/pypi/PySide6/json')['info']['version']
+                results.append(('PySide6', current, latest, newer(latest, current),
+                                'https://pypi.org/project/PySide6/'))
             except Exception as exc:
-                results.append((package, current, 'Check unavailable: ' + str(exc), False, ''))
+                results.append(('PySide6', current, 'Check unavailable: ' + str(exc), False, ''))
+        except Exception as exc:
+            results.append(('PySide6', 'Unknown', 'Check unavailable: ' + str(exc), False, ''))
 
         ffmpeg = shutil.which('ffmpeg')
         if ffmpeg:
@@ -727,7 +753,8 @@ class Main(QMainWindow):
             self.original_web=QWebEngineView()
             self.original_page=LoggedWebPage(self.original_web.page().profile(),self.original_web,self.log)
             self.original_web.setPage(self.original_page)
-            self.original_web.loadFinished.connect(lambda ok:self.log('INFO' if ok else 'ERROR','PLAYER',f'Player page loaded: {ok}'))
+            self.original_web.loadFinished.connect(self._on_player_load_finished)
+            self.original_web.page().loadingChanged.connect(self._on_player_loading_changed)
             self.original_web.setMinimumHeight(0)
             self.original_web.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
             QTimer.singleShot(0,self.adjust_original_player_height)
@@ -877,6 +904,26 @@ class Main(QMainWindow):
             self.original_player_note.setText('Preparing a local preview for this video source…')
             self.preview_link()
 
+    def _on_player_loading_changed(self, info):
+        # Qt reports the actual Chromium network error, unlike loadFinished(False).
+        try:
+            if info.status() == info.LoadingStatus.LoadFailedStatus:
+                self.log('ERROR', 'PLAYER',
+                    f'WebEngine navigation failed: {info.url().toString()} | '
+                    f'code={info.errorCode()} | {info.errorString()}')
+        except Exception as exc:
+            self.log('WARN', 'PLAYER', f'Could not inspect navigation status: {exc}')
+
+    def _on_player_load_finished(self, ok):
+        url = self.original_web.url().toString()
+        if url == 'about:blank':
+            return  # Intentional navigation when clearing the source.
+        self.log('INFO' if ok else 'ERROR', 'PLAYER',
+                 f'Player page loaded: {ok} | {url}')
+        if not ok and hasattr(self, 'original_player_note'):
+            self.original_player_note.setText(
+                'Media Studio page could not load. Open Status Log for the network error.')
+
     def serve_original_player_html(self,html,video_directory=None):
         directory=Path(video_directory) if video_directory else None
         if not hasattr(self,'_original_player_dir'):
@@ -964,6 +1011,18 @@ class Main(QMainWindow):
         html_path.write_text(html,encoding='utf-8')
         self.log('INFO','PLAYER',f'Player HTML written to {html_path}')
         url=f'http://127.0.0.1:{self._original_server.server_port}/player.html'
+        # Confirm the local HTTP endpoint works before asking Chromium to load it.
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={
+                    'User-Agent': 'MisterMuscleDownloader/5.1'}), timeout=3) as response:
+                sample=response.read(512)
+                if response.status != 200 or not sample:
+                    raise RuntimeError(f'HTTP {response.status}: empty player page')
+            self.log('INFO','PLAYER',f'Local player server OK: {url}')
+        except Exception as exc:
+            self.log('ERROR','PLAYER',f'Local player server failed: {url} | {exc}')
+            self.original_player_note.setText('Local player server unavailable. See Status Log.')
+            return
         self.show_studio_player()
         self.original_web.setUrl(QUrl(url))
 
@@ -1213,21 +1272,27 @@ class Main(QMainWindow):
         self._update_worker = worker
         worker.completed.connect(self.show_update_results)
         worker.finished.connect(lambda w=worker: self._clear_finished_worker('_update_worker', w))
+        worker.finished.connect(lambda: self.update_button.setEnabled(True))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
     def show_update_results(self, results):
-        self.update_button.setEnabled(True)
         updates = []
         lines = []
         for name, current, latest, is_newer, url in results:
             if is_newer:
                 lines.append(f'UPDATE AVAILABLE: {name} — {current} → {latest}')
                 self.log('WARN', 'UPDATE', f'{name}: {current} -> {latest}')
-                if name in ('yt-dlp', 'PySide6') or (name == 'Mister Muscle Downloader' and url):
+                if name == 'Mister Muscle Downloader' and url:
+                    updates.append((name, latest, url))
+                elif name in ('yt-dlp', 'PySide6') and getattr(sys, 'frozen', False):
+                    lines.append('Bundled component: update with the next Mister Muscle installer.')
+                elif name in ('yt-dlp', 'PySide6'):
                     updates.append((name, latest, url))
                 elif name == 'Mister Muscle Downloader':
                     lines.append('GitHub Release has no compatible EXE installer yet.')
+                elif getattr(sys, 'frozen', False):
+                    lines.append(f'{name} is bundled; update through a future Mister Muscle installer.')
             else:
                 lines.append(f'{name}: {current} | {latest}')
                 self.log('WARN' if latest.startswith('Check unavailable') else 'INFO', 'UPDATE', f'{name}: {latest}')
