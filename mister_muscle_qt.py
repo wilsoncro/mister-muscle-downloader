@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.3'
+APP_VERSION = '5.1.4'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -934,8 +934,34 @@ class Main(QMainWindow):
             if hasattr(self,'_original_server'):
                 self._original_server.shutdown()
                 self._original_server.server_close()
-            handler=functools.partial(http.server.SimpleHTTPRequestHandler,directory=str(root))
-            self._original_server=http.server.ThreadingHTTPServer(('127.0.0.1',0),handler)
+            # PyInstaller --windowed sets sys.stderr to None. The default
+            # SimpleHTTPRequestHandler writes every request to stderr, which
+            # can raise inside the HTTP request handler before headers are sent.
+            # Keep HTTP diagnostics in the application's persistent status log.
+            app_logger = self.log
+            class PlayerHTTPHandler(http.server.SimpleHTTPRequestHandler):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, directory=str(root), **kwargs)
+                def log_message(self, fmt, *args):
+                    try:
+                        app_logger('DEBUG', 'PLAYER HTTP', fmt % args)
+                    except Exception:
+                        pass
+                def log_error(self, fmt, *args):
+                    try:
+                        app_logger('ERROR', 'PLAYER HTTP', fmt % args)
+                    except Exception:
+                        pass
+            class PlayerHTTPServer(http.server.ThreadingHTTPServer):
+                daemon_threads = True
+                allow_reuse_address = True
+                def handle_error(self, request, client_address):
+                    try:
+                        app_logger('ERROR', 'PLAYER HTTP',
+                                   'Request handler crashed: ' + traceback.format_exc())
+                    except Exception:
+                        pass
+            self._original_server=PlayerHTTPServer(('127.0.0.1',0),PlayerHTTPHandler)
             self._original_server_thread=threading.Thread(
                 target=self._original_server.serve_forever,daemon=True)
             self._original_server_thread.start()
@@ -1014,7 +1040,9 @@ class Main(QMainWindow):
         url=f'http://127.0.0.1:{self._original_server.server_port}/player.html'
         # Confirm the local HTTP endpoint works before asking Chromium to load it.
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={
+            # Explicitly bypass system proxies for 127.0.0.1.
+            local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with local_opener.open(urllib.request.Request(url, headers={
                     'User-Agent': 'MisterMuscleDownloader/5.1'}), timeout=3) as response:
                 sample=response.read(512)
                 if response.status != 200 or not sample:
