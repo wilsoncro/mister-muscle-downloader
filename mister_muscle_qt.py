@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.8'
+APP_VERSION = '5.1.9'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -2198,6 +2198,18 @@ class Main(QMainWindow):
         self.cut_to.setText(self.format_seconds(ranges[0][1]))
         self.remote_cut(batch=True)
 
+    @staticmethod
+    def available_clip_filename(filename):
+        """Suggest a new output name instead of overwriting an earlier clip."""
+        path=Path(filename)
+        if not path.exists():
+            return str(path)
+        for index in range(2, 10000):
+            candidate=path.with_name(f'{path.stem}_{index}{path.suffix}')
+            if not candidate.exists():
+                return str(candidate)
+        raise OSError('No available clip filename in the selected folder')
+
     def remote_cut(self,batch=False):
         """Fetch the original source at the requested quality, then perform accurate local cutting."""
         if self.remote_proc and self.remote_proc.state()!=QProcess.NotRunning:
@@ -2218,8 +2230,17 @@ class Main(QMainWindow):
             output=str(Path(self._multi_folder)/'MisterMuscle_clip_001.mp4')
         else:
             output,_=QFileDialog.getSaveFileName(self,'Save original-quality clip',
-                        str(Path(self.folder)/'MisterMuscle_original_cut.mp4'),'MP4 video (*.mp4)')
+                        self.available_clip_filename(Path(self.folder)/'MisterMuscle_original_cut.mp4'),'MP4 video (*.mp4)')
             if not output:return
+        # Resolve output conflicts before downloading the entire source.
+        if Path(output).exists():
+            if batch:
+                output=self.available_clip_filename(output)
+            elif QMessageBox.question(self,'Overwrite existing clip?',
+                    'This file already exists. Replace it?')!=QMessageBox.Yes:
+                self.cut_status.setText('Export canceled before source download.')
+                return
+        self._remote_overwrite_approved=not batch
         self._multi_active=bool(batch)
         self.remote_output=output
         self.remote_url=links[0]
@@ -2272,9 +2293,10 @@ class Main(QMainWindow):
         self.remote_source=max(files,key=lambda f:f.stat().st_size)
         if Path(self.remote_output).resolve()==self.remote_source.resolve():
             self.remote_fail('Output cannot overwrite source.');return
-        if Path(self.remote_output).exists() and QMessageBox.question(
-            self,'Overwrite?','Replace existing output file?')!=QMessageBox.Yes:
-            self.remote_fail('Export canceled.');return
+        # The initial output was checked before downloading; never ask again
+        # after an expensive source fetch. For batch output, avoid collisions.
+        if getattr(self,'_multi_active',False) and Path(self.remote_output).exists():
+            self.remote_output=self.available_clip_filename(self.remote_output)
         ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
         self.remote_proc=QProcess(self)
         self.remote_proc.setProgram(ffmpeg)
@@ -2305,9 +2327,7 @@ class Main(QMainWindow):
                 if self._multi_index<len(self._multi_ranges):
                     self.remote_start,self.remote_end=self._multi_ranges[self._multi_index]
                     self.remote_output=str(Path(self._multi_folder)/f'MisterMuscle_clip_{self._multi_index+1:03d}.mp4')
-                    if Path(self.remote_output).exists() and QMessageBox.question(
-                        self,'Overwrite?','Replace existing clip '+Path(self.remote_output).name+'?')!=QMessageBox.Yes:
-                        self.remote_fail('Batch export canceled.');return
+                    self.remote_output=self.available_clip_filename(self.remote_output)
                     self._start_next_batch_export()
                     return
                 self.cut_status.setText(f'✓ Exported {self._multi_index} clips to {self._multi_folder}')
@@ -2319,6 +2339,7 @@ class Main(QMainWindow):
             self.remote_fail('Clip export failed: '+errors[-250:])
 
     def remote_cleanup(self):
+        self.remote_proc=None
         self.remote_cut_button.setEnabled(True)
         if self.remote_tmp:
             self.remote_tmp.cleanup()
