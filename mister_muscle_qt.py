@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.0'
+APP_VERSION = '5.2.1'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -293,6 +293,7 @@ class UpdateCheckWorker(QThread):
 
 class UpdateDownloadWorker(QThread):
     progress = Signal(str)
+    download_bytes = Signal(str, int, int)
     completed = Signal(object)
 
     def __init__(self, updates, parent=None):
@@ -318,11 +319,14 @@ class UpdateDownloadWorker(QThread):
                         output.append((name, 'Installer ready: ' + str(dest), str(dest)))
                         continue
                     self.progress.emit('Downloading ' + name + ' ' + version)
+                    self.download_bytes.emit(name, 0, 0)
                     request = urllib.request.Request(url, headers={'User-Agent':'MisterMuscleDownloader/7.14'})
                     temp = dest.with_suffix(dest.suffix + '.part')
                     try:
                         with urllib.request.urlopen(request, timeout=30) as response, temp.open('wb') as out:
                             downloaded = 0
+                            total = int(response.headers.get('Content-Length') or 0)
+                            self.download_bytes.emit(name, 0, total)
                             while True:
                                 block = response.read(256 * 1024)
                                 if not block: break
@@ -330,6 +334,7 @@ class UpdateDownloadWorker(QThread):
                                 if downloaded > 750 * 1024 * 1024:
                                     raise ValueError('Installer exceeds size limit')
                                 out.write(block)
+                                self.download_bytes.emit(name, downloaded, total)
                         if downloaded < 1024:
                             raise ValueError('Downloaded file is too small')
                         temp.replace(dest)
@@ -451,6 +456,25 @@ class Main(QMainWindow):
         tr.addWidget(button('♥  Donate',lambda:QDesktopServices.openUrl(QUrl(DONATE_URL))))
         tr.addWidget(top_new)
         shell_layout.addWidget(top)
+        # Visible on every tab: update downloads must never look like a frozen app.
+        self.update_banner=QFrame()
+        self.update_banner.setStyleSheet('QFrame{background:#191d38;border-bottom:1px solid #6253a6}')
+        update_row=QHBoxLayout(self.update_banner)
+        update_row.setContentsMargins(24,9,24,9)
+        self.update_banner_label=QLabel('Downloading application update…')
+        self.update_banner_label.setMinimumWidth(240)
+        update_row.addWidget(self.update_banner_label,2)
+        self.update_banner_progress=QProgressBar()
+        self.update_banner_progress.setRange(0,0)
+        self.update_banner_progress.setMinimumWidth(160)
+        update_row.addWidget(self.update_banner_progress,2)
+        self.update_banner_details=button('Details',lambda:self.switch(5))
+        update_row.addWidget(self.update_banner_details)
+        self.update_banner_install=button('Install update',self.install_downloaded_update,True)
+        self.update_banner_install.hide()
+        update_row.addWidget(self.update_banner_install)
+        shell_layout.addWidget(self.update_banner)
+        self.update_banner.hide()
         self.stack=QStackedWidget();shell_layout.addWidget(self.stack,1)
         self.nav=[]
         pages=[('⊕   New Download',self.make_download),('▣   Download Center',self.make_center),
@@ -1404,58 +1428,51 @@ class Main(QMainWindow):
             self.show_whats_new()
 
     def show_whats_new(self):
+        """Show only the previous release and the current release, not old history."""
         dialog=QDialog(self)
-        dialog.setWindowTitle('What’s New — Mister Muscle Downloader v' + APP_VERSION)
+        dialog.setWindowTitle(('Što je novo' if APP_LANGUAGE=='hr' else 'What’s New') + ' — Mister Muscle Downloader v' + APP_VERSION)
         dialog.setMinimumWidth(540)
-        dialog.resize(630, 520)
+        dialog.resize(630, 410)
         layout=QVBoxLayout(dialog)
         layout.setContentsMargins(26,24,26,22)
         layout.setSpacing(14)
-        title=QLabel('🚀  What’s New in v' + APP_VERSION)
+        title=QLabel(('🚀  Što je novo u v' if APP_LANGUAGE=='hr' else '🚀  What’s New in v') + APP_VERSION)
         title.setStyleSheet('font-size:23px;font-weight:800;color:#f7f8ff')
         layout.addWidget(title)
-        intro=QLabel('Latest features and fixes through v5.1.7.')
-        intro.setWordWrap(True)
-        intro.setObjectName('sub')
-        layout.addWidget(intro)
-        highlights=[
-            ('🔔  Alarm sound repair', 'Bundled notification sound, improved error sound volume, a Test Alarm button in Status Log, and sound-load diagnostics.'),
-            ('⛶  Player fullscreen', 'Embedded player fullscreen requests now open a fullscreen Qt window; Esc returns to the app.'),
-            ('🧹  Cleaner player log', 'Ignore harmless YouTube/DoubleClick conversion tracking CORS console errors without disabling browser security.'),
-            ('🐞  Report a Bug', 'Send a report with up to 3 screenshots and optional redacted diagnostics directly to the developer without an account.'),
-            ('📋  Instant auto-paste', 'Supported YouTube, Instagram and TikTok links are added as soon as they are copied, even when the app is in the background. Disable with the checkbox in New Download.'),
-            ('🔎  Clipboard filtering', 'Only supported media links are accepted; ordinary text and duplicate links are ignored.'),
-            ('📸  Instagram Photos', 'Download photo posts and carousels with gallery-dl using browser cookies or a cookies.txt file where required.'),
-            ('▶  YouTube controls', 'Show native YouTube playback controls when the embedded player allows them.'),
-            ('🛠  Media Studio stability', 'Improved packaged-app local HTTP handling, 404 diagnostics, video routes and Qt WebEngine loading-status reporting.'),
-            ('🔄  Update Center', 'Improved bundled component version checks and installer update download/launch flow.'),
-            ('⚡  Faster release builds', 'Removed unconditional PyInstaller --clean for quicker repeat builds.'),
-            ('🎨  Desktop workspace', 'Qt interface, Download Center, queue, history, clipping, format choices, and English/Croatian support.'),
-        ]
-        scroll=QScrollArea()
-        scroll.setWidgetResizable(True)
-        inner=QWidget()
-        content=QVBoxLayout(inner)
-        content.setSpacing(12)
-        for heading_text, description in highlights:
-            heading_label=QLabel(heading_text)
-            heading_label.setStyleSheet('font-size:14px;font-weight:700;color:#e8e0ff')
-            content.addWidget(heading_label)
-            detail=QLabel(description)
-            detail.setObjectName('sub')
-            detail.setWordWrap(True)
-            content.addWidget(detail)
-        content.addStretch()
-        scroll.setWidget(inner)
-        layout.addWidget(scroll,1)
-        close_button=button('Let’s go!',dialog.accept,True)
-        layout.addWidget(close_button)
         if APP_LANGUAGE=='hr':
-            for label in dialog.findChildren(QLabel):
-                label.setText(ui_translate(label.text()))
-            for control in dialog.findChildren(QPushButton):
-                control.setText(ui_translate(control.text()))
-            dialog.setWindowTitle('Što je novo — Mister Muscle Downloader v'+APP_VERSION)
+            releases=[
+                ('v5.2.1 — Trenutna verzija', [
+                    'Vidljiv napredak automatskog preuzimanja ažuriranja na svim karticama.',
+                    'Prikaz postotka i preuzetih MB te obavijest kada je instalacija spremna.',
+                    'Gumb za instalaciju preuzetog ažuriranja.'
+                ]),
+                ('v5.2.0 — Prethodna verzija', [
+                    'Napredak rezanja isječaka u Download Centeru.',
+                    'Detaljnija FFmpeg dijagnostika, napredak kodiranja i praćenje procesa.'
+                ])]
+        else:
+            releases=[
+                ('v5.2.1 — Current release', [
+                    'Visible automatic update download progress across all tabs.',
+                    'Download percentage and MB tracking, plus an install-ready notification.',
+                    'Install update button when the installer is ready.'
+                ]),
+                ('v5.2.0 — Previous release', [
+                    'Clipping progress shown in Download Center.',
+                    'Detailed FFmpeg diagnostics, encoding progress and process tracking.'
+                ])]
+        for heading_text, entries in releases:
+            heading_label=QLabel(heading_text)
+            heading_label.setStyleSheet('font-size:16px;font-weight:700;color:#e8e0ff')
+            layout.addWidget(heading_label)
+            for entry in entries:
+                detail=QLabel('•  '+entry)
+                detail.setObjectName('sub')
+                detail.setWordWrap(True)
+                layout.addWidget(detail)
+        layout.addStretch()
+        close_button=button('Krenimo!' if APP_LANGUAGE=='hr' else 'Let’s go!',dialog.accept,True)
+        layout.addWidget(close_button)
         dialog.exec()
         try:
             WHATS_NEW_MARKER.write_text(APP_VERSION,encoding='utf-8')
@@ -1481,6 +1498,22 @@ class Main(QMainWindow):
         worker.finished.connect(lambda: self.update_button.setEnabled(True))
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _show_update_download_progress(self, name, downloaded, total):
+        if name != 'Mister Muscle Downloader':
+            return
+        self.update_banner.show()
+        amount=f'{downloaded/1048576:.1f} MB'
+        if total > 0:
+            percent=min(100,int(downloaded*100/total))
+            self.update_banner_progress.setRange(0,100)
+            self.update_banner_progress.setValue(percent)
+            message=f'Downloading update: {percent}%  •  {amount} / {total/1048576:.1f} MB'
+        else:
+            self.update_banner_progress.setRange(0,0)
+            message=f'Downloading update: {amount} (calculating total size…)'
+        self.update_banner_label.setText(message)
+        self.update_status.setText(message)
 
     def show_update_results(self, results):
         updates = []
@@ -1510,7 +1543,12 @@ class Main(QMainWindow):
                 return
             worker = UpdateDownloadWorker(updates, self)
             self._download_worker = worker
+            self.update_banner_install.hide()
+            self.update_banner_label.setText('Preparing update download…')
+            self.update_banner_progress.setRange(0,0)
+            self.update_banner.show()
             worker.progress.connect(lambda msg: self.log('INFO', 'UPDATE', msg))
+            worker.download_bytes.connect(self._show_update_download_progress)
             worker.completed.connect(self.show_download_results)
             worker.finished.connect(lambda w=worker: self._clear_finished_worker('_download_worker', w))
             worker.finished.connect(worker.deleteLater)
@@ -1531,6 +1569,11 @@ class Main(QMainWindow):
                     installers.append(installer)
         self.update_status.setText(self.update_status.text() + '\n\n' + '\n'.join(lines))
         if installers:
+            self.update_banner_progress.setRange(0,100)
+            self.update_banner_progress.setValue(100)
+            self.update_banner_label.setText('Update downloaded — ready to install')
+            self.update_banner_install.show()
+            self.update_banner.show()
             self._pending_installer = str(installers[-1])
             self.install_update_button.setEnabled(True)
             answer = QMessageBox.question(
@@ -1541,6 +1584,8 @@ class Main(QMainWindow):
                 QMessageBox.StandardButton.Yes)
             if answer == QMessageBox.StandardButton.Yes:
                 self.install_downloaded_update()
+        else:
+            self.update_banner.hide()
 
     def install_downloaded_update(self):
         path = Path(getattr(self, '_pending_installer', ''))
