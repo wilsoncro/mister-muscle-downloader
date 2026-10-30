@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.4'
+APP_VERSION = '5.2.5'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -1815,9 +1815,16 @@ class Main(QMainWindow):
             mime={' .png':'image/png','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp'}.get(ext)
             if not mime:raise ValueError('Only PNG, JPG and WEBP screenshots are supported.')
             images.append({'mime':mime,'data':base64.b64encode(data).decode('ascii')})
-        return {'category':self.bug_category.currentText(), 'description':description,
+        diagnostics=self.bug_diagnostics() if self.bug_include_log.isChecked() else ''
+        # Duplicate a bounded, redacted diagnostic excerpt into description for backends
+        # that persist only the main report fields (not diagnostic_log).
+        submitted_description=description
+        if diagnostics:
+            excerpt=diagnostics[-min(6500,max(0,9500-len(description)-70)):]
+            submitted_description=description+'\n\n--- STATUS LOG (REDACTED) ---\n'+excerpt
+        return {'category':self.bug_category.currentText(), 'description':submitted_description,
                 'app_version':APP_VERSION, 'system_info':platform.system()+' '+platform.release(),
-                'diagnostic_log':self.bug_diagnostics() if self.bug_include_log.isChecked() else '',
+                'diagnostic_log':diagnostics,
                 'images':images}
 
     def bug_preview(self):
@@ -1840,6 +1847,7 @@ class Main(QMainWindow):
             'Send the description, '+str(len(payload['images']))+' screenshot(s) and '+
             ('redacted diagnostics' if payload['diagnostic_log'] else 'no diagnostics')+
             ' to the developer? Review screenshots for personal information before continuing.')!=QMessageBox.Yes:return
+        self.log('INFO','BUG REPORT',f"Sending diagnostics: {len(payload['diagnostic_log'])} characters; included in report description: {'yes' if payload['diagnostic_log'] else 'no'}")
         self.bug_send_button.setEnabled(False)
         self.bug_status.setText('Sending report…')
         self.bug_worker=BugReportWorker(payload,self)
@@ -1849,7 +1857,7 @@ class Main(QMainWindow):
     def bug_sent(self,ok,message):
         self.bug_send_button.setEnabled(True)
         if ok:
-            self.bug_status.setText('Report sent successfully. ID: '+message)
+            self.bug_status.setText('Report accepted by server. ID: '+message+' (check description for STATUS LOG section)')
             self.bug_description.clear();self.bug_images=[];self.bug_refresh_images()
             self.log('INFO','BUG REPORT','Report submitted: '+message)
         else:
@@ -1997,7 +2005,14 @@ class Main(QMainWindow):
         if self.proc and self.proc.state()!=QProcess.NotRunning:return
         if not self.queue:
             self.status.setText('Queue completed.');self.refresh_center();return
-        self.current_url,mode,quality,output_format=self.queue.pop(0);self._premiere_for_download=(mode in (0,1) and self.premiere_compatible.isChecked());self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
+        self.current_url,mode,quality,output_format=self.queue.pop(0);self._premiere_path_record=DATA/'premiere_last_download_path.txt';self._premiere_path_record.unlink(missing_ok=True);self._premiere_for_download=(mode in (0,1) and self.premiere_compatible.isChecked());self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
+        # Capture output folder state to identify the exact new file if yt-dlp omits its final path.
+        self._premiere_before_files={}
+        if self._premiere_for_download:
+            try:
+                self._premiere_before_files={str(p.resolve()):(p.stat().st_mtime_ns,p.stat().st_size) for p in Path(self.folder).iterdir() if p.is_file()}
+            except OSError as exc:
+                self.log('WARN','PREMIERE','Cannot snapshot output folder: '+str(exc))
         self.proc=QProcess(self);self.proc.setProcessChannelMode(QProcess.MergedChannels)
         self.proc.readyReadStandardOutput.connect(self.on_output)
         self.watch_process(self.proc,'DOWNLOAD',stderr=False,stdout=False)
@@ -2022,7 +2037,7 @@ class Main(QMainWindow):
             self.persist_session();self.refresh_queue();self.refresh_center()
             return
         fmt={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[quality]
-        args=['-m','yt_dlp','--newline','--continue','--no-playlist','--print','after_move:filepath','-P',self.folder,'-o','%(title).180B [%(id)s].%(ext)s']
+        args=['-m','yt_dlp','--newline','--continue','--no-playlist','--print','after_move:filepath','--print-to-file','after_move:filepath',str(self._premiere_path_record),'-P',self.folder,'-o','%(title).180B [%(id)s].%(ext)s']
         if self._premiere_for_download:
             output_format='mp4';self.current_output_format='mp4'
         if mode==2:args+=['-x','--audio-format',('vorbis' if output_format=='ogg' else output_format),'--audio-quality','0']
@@ -2134,6 +2149,8 @@ class Main(QMainWindow):
             self.persist_session()
             return
         ok=(exitcode==0 and status==QProcess.NormalExit)
+        if ok and getattr(self,'_premiere_for_download',False):
+            self.resolve_premiere_source()
         if ok and getattr(self,'_premiere_for_download',False) and self.current_mode in (0,1):
             if self.begin_premiere_conversion():
                 return
@@ -2149,6 +2166,57 @@ class Main(QMainWindow):
             if not self.canceled:self.failed_items.append({'url':self.current_url,'date':datetime.now().strftime('%Y-%m-%d %H:%M'),'mode':self.current_mode,'quality':getattr(self,'current_quality',self.quality.currentText()),'format':getattr(self,'current_output_format','mp4')})
         self.start_btn.setEnabled(True);self.proc=None
         self.refresh_center();self.refresh_history();self.persist_session();self.run_next()
+    def resolve_premiere_source(self):
+        """Resolve the completed file using yt-dlp's output, then verified new files."""
+        candidates=[]
+        record=getattr(self,'_premiere_path_record',None)
+        if record and record.is_file():
+            try:
+                candidates.extend(record.read_text(encoding='utf-8-sig',errors='replace').splitlines())
+            except OSError as exc:
+                self.log('WARN','PREMIERE','Cannot read yt-dlp path record: '+str(exc))
+        if self.last_file:
+            candidates.append(self.last_file)
+        # yt-dlp may print relative paths. Resolve them relative to the output folder.
+        for raw in reversed(candidates):
+            raw=raw.strip().strip('"')
+            if not raw:continue
+            candidate=Path(raw)
+            options=[candidate] if candidate.is_absolute() else [Path(self.folder)/candidate,candidate]
+            for option in options:
+                try:
+                    if option.is_file() and option.suffix.lower() in ('.mp4','.mkv','.webm','.mov'):
+                        self.last_file=str(option.resolve())
+                        self.log('INFO','PREMIERE','Resolved completed output: '+self.last_file)
+                        return
+                except OSError:pass
+        # The print hook can be absent with some yt-dlp versions. Match newly created
+        # media by video ID (when present) and avoid unrelated pre-existing downloads.
+        before=getattr(self,'_premiere_before_files',{})
+        video_id=self.media_info.get(self.current_url,{}).get('id','')
+        if not video_id:
+            m=re.search(r'(?:[?&]v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})',self.current_url)
+            if m:video_id=m.group(1)
+        fresh=[]
+        try:
+            for candidate in Path(self.folder).iterdir():
+                if not candidate.is_file() or candidate.suffix.lower() not in ('.mp4','.mkv','.webm','.mov'):continue
+                if candidate.name.endswith('.part'):continue
+                stat=candidate.stat()
+                old=before.get(str(candidate.resolve()))
+                if old==(stat.st_mtime_ns,stat.st_size):continue
+                if video_id and f'[{video_id}]' not in candidate.name:continue
+                fresh.append(candidate)
+        except OSError as exc:
+            self.log('WARN','PREMIERE','Cannot inspect completed files: '+str(exc))
+        if len(fresh)==1:
+            self.last_file=str(fresh[0].resolve())
+            self.log('INFO','PREMIERE','Recovered completed output from folder: '+self.last_file)
+        elif len(fresh)>1:
+            self.log('ERROR','PREMIERE','Several possible outputs found; refusing to convert an uncertain file')
+        else:
+            self.log('ERROR','PREMIERE','No matching completed media file found in output folder: '+self.folder)
+
     def begin_premiere_conversion(self):
         # yt-dlp has already selected/downloaded the best available resolution.
         self._premiere_conversion_error=False
