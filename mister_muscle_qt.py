@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.1'
+APP_VERSION = '5.2.2'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -2328,6 +2328,15 @@ class Main(QMainWindow):
                 return str(candidate)
         raise OSError('No available clip filename in the selected folder')
 
+    @staticmethod
+    def safe_clip_title(title):
+        """Windows-safe source title for exported clip filenames."""
+        title=re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(title or '')).strip(' .')
+        title=re.sub(r'\s+', ' ', title)
+        if title.upper().split('.')[0] in {'CON','PRN','AUX','NUL',*(f'COM{i}' for i in range(1,10)),*(f'LPT{i}' for i in range(1,10))}:
+            title='Video '+title
+        return title[:130].rstrip(' .') or 'MisterMuscle_clip'
+
     def remote_cut(self,batch=False):
         """Fetch the original source at the requested quality, then perform accurate local cutting."""
         if self.remote_proc and self.remote_proc.state()!=QProcess.NotRunning:
@@ -2344,11 +2353,13 @@ class Main(QMainWindow):
         ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
         if not (shutil.which('ffmpeg') or Path(ffmpeg).is_file()):
             QMessageBox.warning(self,'FFmpeg missing','Install FFmpeg before cutting.');return
+        self._clip_source_title=self.media_info.get(links[0],{}).get('title','')
+        suggested=self.safe_clip_title(self._clip_source_title) if self._clip_source_title else 'MisterMuscle_original_cut'
         if batch:
-            output=str(Path(self._multi_folder)/'MisterMuscle_clip_001.mp4')
+            output=str(Path(self._multi_folder)/(suggested+'_clip_001.mp4'))
         else:
             output,_=QFileDialog.getSaveFileName(self,'Save original-quality clip',
-                        self.available_clip_filename(Path(self.folder)/'MisterMuscle_original_cut.mp4'),'MP4 video (*.mp4)')
+                        self.available_clip_filename(Path(self.folder)/(suggested+'_clip.mp4')),'MP4 video (*.mp4)')
             if not output:return
         # Resolve output conflicts before downloading the entire source.
         if Path(output).exists():
@@ -2358,6 +2369,7 @@ class Main(QMainWindow):
                     'This file already exists. Replace it?')!=QMessageBox.Yes:
                 self.cut_status.setText('Export canceled before source download.')
                 return
+        self._clip_auto_filename=(not batch and Path(output).stem in (suggested+'_clip', 'MisterMuscle_original_cut'))
         self._remote_overwrite_approved=not batch
         self._multi_active=bool(batch)
         self.remote_output=output
@@ -2373,7 +2385,7 @@ class Main(QMainWindow):
         height=f'[height<={max_height}]' if max_height else ''
         fmt=f'bestvideo{height}+bestaudio/best{height}' if mode==0 else f'bestvideo{height}/best{height}'
         args=['-m','yt_dlp','--no-playlist','--newline','-f',fmt,
-              '--merge-output-format','mkv','-P',str(source_dir),
+              '--merge-output-format','mkv','--print','before_dl:MM_CLIP_TITLE=%(title)s','-P',str(source_dir),
               '-o','source.%(ext)s',self.remote_url]
         self.remote_proc=QProcess(self)
         self.remote_proc.setProcessChannelMode(QProcess.MergedChannels)
@@ -2391,6 +2403,10 @@ class Main(QMainWindow):
         if self.remote_proc:
             lines=bytes(self.remote_proc.readAllStandardOutput()).decode('utf-8',errors='replace')
             for line in lines.splitlines():
+                if 'MM_CLIP_TITLE=' in line:
+                    self._clip_source_title=line.split('MM_CLIP_TITLE=',1)[1].strip()
+                    self.log('INFO','REMOTE CUT','Source title: '+self._clip_source_title)
+                    continue
                 self.log('ERROR' if 'ERROR:' in line else 'WARN' if 'WARNING:' in line else 'INFO','REMOTE CUT',line)
                 if '[download]' in line and '%' in line:
                     self.cut_status.setText('Source download: '+line.strip()[:120])
@@ -2412,6 +2428,13 @@ class Main(QMainWindow):
             self.remote_fail('Source video was not found after download.')
             return
         self.remote_source=max(files,key=lambda f:f.stat().st_size)
+        # Name clips after the actual source title, without changing manually chosen names.
+        if self._clip_source_title:
+            title=self.safe_clip_title(self._clip_source_title)
+            if getattr(self,'_multi_active',False):
+                self.remote_output=self.available_clip_filename(str(Path(self._multi_folder)/(title+'_clip_001.mp4')))
+            elif getattr(self,'_clip_auto_filename',False):
+                self.remote_output=self.available_clip_filename(str(Path(self.remote_output).with_name(title+'_clip.mp4')))
         if Path(self.remote_output).resolve()==self.remote_source.resolve():
             self.remote_fail('Output cannot overwrite source.');return
         # The initial output was checked before downloading; never ask again
@@ -2452,7 +2475,7 @@ class Main(QMainWindow):
                 self._multi_index+=1
                 if self._multi_index<len(self._multi_ranges):
                     self.remote_start,self.remote_end=self._multi_ranges[self._multi_index]
-                    self.remote_output=str(Path(self._multi_folder)/f'MisterMuscle_clip_{self._multi_index+1:03d}.mp4')
+                    self.remote_output=str(Path(self._multi_folder)/f'{self.safe_clip_title(self._clip_source_title)}_clip_{self._multi_index+1:03d}.mp4')
                     self.remote_output=self.available_clip_filename(self.remote_output)
                     self._start_next_batch_export()
                     return
