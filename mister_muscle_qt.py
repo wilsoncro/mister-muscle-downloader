@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.9'
+APP_VERSION = '5.2.0'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -415,7 +415,7 @@ class Main(QMainWindow):
         self._log_flush_timer.timeout.connect(self.flush_log_view)
         self._log_flush_timer.start()
         self.folder=str(DEFAULT_FOLDER);self.history=self.load_history();self.proc=None;self.queue=[]
-        self.current_url='';self.current_title='';self.finished_count=0;self.current_mode=None;self.last_file='';self.canceled=False;self.cut_proc=None;self.meta_proc=None;self.preview_proc=None;self.preview_dir=None;self.preview_file=None;self.remote_proc=None;self.remote_tmp=None;self.remote_output=None;self.remote_source=None;self.remote_url=None;self.remote_format=None;self.remote_stage=None;self.download_percent=0;self.download_detail='';self.failed_items=[];self.center_filter='All';self.current_download_record=None;self.output_buffer='';self.last_ui_percent=-1;self.pause_requested=False;self.paused=False;self.session_loading=False;self.last_saved_state=None;self.current_quality='Best available'
+        self.current_url='';self.current_title='';self.finished_count=0;self.current_mode=None;self.last_file='';self.canceled=False;self.cut_proc=None;self.meta_proc=None;self.preview_proc=None;self.preview_dir=None;self.preview_file=None;self.remote_proc=None;self.remote_tmp=None;self.remote_output=None;self.remote_source=None;self.remote_url=None;self.remote_format=None;self.remote_stage=None;self.clip_percent=0;self.clip_detail='';self._clip_last_log=-1;self._clip_last_activity=0;self._clip_started=0;self._clip_ffmpeg_buffer='';self.download_percent=0;self.download_detail='';self.failed_items=[];self.center_filter='All';self.current_download_record=None;self.output_buffer='';self.last_ui_percent=-1;self.pause_requested=False;self.paused=False;self.session_loading=False;self.last_saved_state=None;self.current_quality='Best available'
         self.media_info={r.get('url'):r.get('metadata',{}) for r in self.history if r.get('url') and isinstance(r.get('metadata'),dict)};self.thumb_cache={};self.thumb_pending=set();self.net=QNetworkAccessManager(self)
         self.player=QMediaPlayer();self.audio=QAudioOutput();self.player.setAudioOutput(self.audio)
         root=QWidget();root.setObjectName('root');self.setCentralWidget(root)
@@ -1021,6 +1021,7 @@ class Main(QMainWindow):
         self.remote_proc.setArguments(self.clip_ffmpeg_args(self.remote_source,output,self.remote_start,self.remote_end))
         self.cut_status.setText('Exporting local clip…')
         self.remote_proc.finished.connect(self.remote_export_finished)
+        self.remote_proc.readyReadStandardOutput.connect(self.clip_ffmpeg_progress)
         self.watch_process(self.remote_proc,'FFMPEG',stderr=True,stdout=False)
         self.remote_proc.start()
 
@@ -1028,7 +1029,7 @@ class Main(QMainWindow):
         ratios={'16:9 (YouTube)':(16,9),'9:16 (TikTok / Reels / Shorts)':(9,16),
                 '1:1 (Square)':(1,1),'4:5 (Instagram)':(4,5),'3:4 (Portrait)':(3,4),
                 '21:9 (Ultrawide)':(21,9),'4:3 (Classic)':(4,3)}
-        args=['-hide_banner','-loglevel','error','-y','-ss',str(start),'-i',str(source),
+        args=['-hide_banner','-loglevel','warning','-nostats','-progress','pipe:1','-y','-ss',str(start),'-i',str(source),
               '-t',str(end-start),'-map','0:v:0','-map','0:a?']
         ratio=ratios.get(self.aspect.currentText())
         if ratio:
@@ -1946,10 +1947,76 @@ class Main(QMainWindow):
         for u,mode,q,fmt in self.queue:self.queue_list.addItem(f'{u}  •  {q}  •  {fmt.upper()}')
         self.refresh_center()
         self.persist_session()
+    def clip_center_update(self, detail=None, percent=None):
+        if detail is not None:self.clip_detail=str(detail)
+        if percent is not None:self.clip_percent=max(0,min(100,int(percent)))
+        if hasattr(self,'center_layout'):
+            self.refresh_center()
+
+    def clip_diagnostic_tick(self):
+        if not self.remote_proc or self.remote_proc.state()==QProcess.NotRunning:return
+        import time
+        now=time.monotonic()
+        if now-self._clip_last_activity>=15:
+            elapsed=int(now-self._clip_started)
+            silent=int(now-self._clip_last_activity)
+            self.log('WARN' if silent>=60 else 'INFO','CLIP DIAGNOSTICS',
+                     f'Stage={self.remote_stage}; elapsed={elapsed}s; no output for {silent}s; '
+                     f'process state={self.remote_proc.state()}; output={self.remote_output}; '
+                     f'progress={self.clip_percent}%. FFmpeg may still be encoding.')
+            self._clip_last_activity=now  # repeat diagnostic every 15s, not every timer tick
+
+    def clip_begin_stage(self,stage,detail):
+        import time
+        self.remote_stage=stage
+        self.clip_percent=0 if stage=='download' else 50
+        self.clip_detail=detail
+        self._clip_started=time.monotonic()
+        self._clip_last_activity=self._clip_started
+        self._clip_last_log=-1
+        self._clip_ffmpeg_buffer=''
+        if not hasattr(self,'_clip_diagnostic_timer'):
+            self._clip_diagnostic_timer=QTimer(self)
+            self._clip_diagnostic_timer.setInterval(15000)
+            self._clip_diagnostic_timer.timeout.connect(self.clip_diagnostic_tick)
+        self._clip_diagnostic_timer.start()
+        self.log('INFO','CLIP DIAGNOSTICS',f'Starting {stage}: {detail}; output={self.remote_output}')
+        self.clip_center_update()
+
+    def clip_ffmpeg_progress(self):
+        if not self.remote_proc:return
+        import time
+        data=bytes(self.remote_proc.readAllStandardOutput()).decode('utf-8',errors='replace')
+        self._clip_ffmpeg_buffer+=data
+        while '\n' in self._clip_ffmpeg_buffer:
+            line,self._clip_ffmpeg_buffer=self._clip_ffmpeg_buffer.split('\n',1)
+            line=line.strip()
+            if not line or '=' not in line:continue
+            key,value=line.split('=',1)
+            if key in ('out_time_us','out_time_ms','out_time'):
+                try:
+                    if key=='out_time':
+                        parts=value.split(':');seconds=float(parts[-1])+60*float(parts[-2])+3600*float(parts[-3])
+                    else:seconds=int(value)/1000000
+                    duration=max(0.001,self.remote_end-self.remote_start)
+                    pct=min(99,max(0,int(seconds/duration*100)))
+                    self._clip_last_activity=time.monotonic()
+                    if pct!=self._clip_last_log and (pct//5!=self._clip_last_log//5 or pct>=99):
+                        self._clip_last_log=pct
+                        self.log('INFO','CLIP PROGRESS',f'FFmpeg encoding {pct}% ({seconds:.1f}s / {duration:.1f}s)')
+                    self.clip_center_update(f'FFmpeg encoding: {pct}% • {seconds:.1f}s / {duration:.1f}s',50+pct//2)
+                    self.cut_status.setText(self.clip_detail)
+                except (ValueError,IndexError,OverflowError):pass
+            elif key=='speed':
+                self.log('DEBUG','CLIP DIAGNOSTICS',f'FFmpeg speed={value}')
+            elif key=='progress' and value=='end':
+                self.log('INFO','CLIP DIAGNOSTICS','FFmpeg reported progress=end')
+
     def refresh_center(self):
         if not hasattr(self,'center_layout'):return
         active=bool(self.proc and self.proc.state()!=QProcess.NotRunning)
-        for key,count in [('Completed',len(self.history)),('Downloading',int(active)),
+        clip_active=bool(self.remote_proc and self.remote_proc.state()!=QProcess.NotRunning)
+        for key,count in [('Completed',len(self.history)),('Downloading',int(active)+int(clip_active)),
                           ('Pending',len(self.queue)),('Failed',len(self.failed_items))]:
             self.center_stats_cards[key].setText(str(count))
         while self.center_layout.count():
@@ -1960,6 +2027,12 @@ class Main(QMainWindow):
         shown=0
         def matches(title,other=''):
             return not search or search in (str(title)+' '+str(other)).casefold()
+        if self.center_filter in ('All','Downloading') and clip_active and matches('Clip export',self.remote_url or self.remote_output or ''):
+            self.center_layout.addWidget(self.center_task(
+                '✂ Clip: '+Path(self.remote_output or 'clip.mp4').name,
+                self.clip_detail or 'Preparing clip', 'Downloading',
+                self.clip_percent,self.clip_detail,url=self.remote_url or '',active=True))
+            shown+=1
         if self.center_filter in ('All','Downloading') and active and matches(self.current_title,self.current_url):
             self.center_layout.addWidget(self.center_task(
                 self.current_title,self.current_url,'Downloading',
@@ -2266,7 +2339,7 @@ class Main(QMainWindow):
         self.remote_proc.finished.connect(self.remote_download_finished)
         self.remote_cut_button.setEnabled(False)
         self.cut_status.setText('Downloading source at '+self.remote_format+' for accurate cutting…')
-        self.remote_stage='download'
+        self.clip_begin_stage('download','Downloading source for clip')
         self.remote_proc.start()
 
     def remote_progress(self):
@@ -2276,6 +2349,9 @@ class Main(QMainWindow):
                 self.log('ERROR' if 'ERROR:' in line else 'WARN' if 'WARNING:' in line else 'INFO','REMOTE CUT',line)
                 if '[download]' in line and '%' in line:
                     self.cut_status.setText('Source download: '+line.strip()[:120])
+                    m=re.search(r'(\d+(?:\.\d+)?)%',line)
+                    if m:
+                        self.clip_center_update('Downloading source: '+m.group(1)+'%',int(float(m.group(1))*0.5))
                 elif 'ERROR:' in line:
                     self.cut_status.setText(line.strip()[-250:])
 
@@ -2301,9 +2377,10 @@ class Main(QMainWindow):
         self.remote_proc=QProcess(self)
         self.remote_proc.setProgram(ffmpeg)
         self.remote_proc.setArguments(self.clip_ffmpeg_args(self.remote_source,self.remote_output,self.remote_start,self.remote_end))
-        self.remote_stage='export'
+        self.clip_begin_stage('export','Source downloaded. FFmpeg encoding clip…')
         self.cut_status.setText('Source downloaded. Exporting accurate clip…')
         self.remote_proc.finished.connect(self.remote_export_finished)
+        self.remote_proc.readyReadStandardOutput.connect(self.clip_ffmpeg_progress)
         self.watch_process(self.remote_proc,'FFMPEG',stderr=True,stdout=False)
         self.remote_proc.start()
 
@@ -2312,13 +2389,17 @@ class Main(QMainWindow):
         self.remote_proc=QProcess(self)
         self.remote_proc.setProgram(ffmpeg)
         self.remote_proc.setArguments(self.clip_ffmpeg_args(self.remote_source,self.remote_output,self.remote_start,self.remote_end))
+        self.clip_begin_stage('export',f'Exporting clip {self._multi_index+1}/{len(self._multi_ranges)}')
         self.cut_status.setText(f'Exporting clip {self._multi_index+1}/{len(self._multi_ranges)}…')
         self.remote_proc.finished.connect(self.remote_export_finished)
+        self.remote_proc.readyReadStandardOutput.connect(self.clip_ffmpeg_progress)
         self.watch_process(self.remote_proc,'FFMPEG',stderr=True,stdout=False)
         self.remote_proc.start()
 
     def remote_export_finished(self,code,status):
+        self.clip_ffmpeg_progress()
         errors=bytes(self.remote_proc.readAllStandardError()).decode('utf-8',errors='replace')
+        self.log('INFO','CLIP DIAGNOSTICS',f'FFmpeg finished: exit_code={code}; exit_status={status}; stderr_tail={errors[-700:]}')
         success=(code==0 and status==QProcess.NormalExit and Path(self.remote_output).is_file())
         self.remote_proc=None
         if success:
@@ -2334,6 +2415,7 @@ class Main(QMainWindow):
                 self.original_player_note.setText(f'Exported {self._multi_index} clips successfully.')
             else:
                 self.cut_status.setText('✓ Original-quality clip exported: '+self.remote_output)
+            self.clip_center_update('Clip completed',100)
             self.remote_cleanup()
         else:
             self.remote_fail('Clip export failed: '+errors[-250:])
@@ -2345,6 +2427,8 @@ class Main(QMainWindow):
             self.remote_tmp.cleanup()
             self.remote_tmp=None
         self.remote_stage=None
+        if hasattr(self,'_clip_diagnostic_timer'):self._clip_diagnostic_timer.stop()
+        self.clip_center_update()
         self._multi_active=False
 
     def remote_fail(self,message):
