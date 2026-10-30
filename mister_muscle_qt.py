@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.6'
+APP_VERSION = '5.2.7'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -1531,27 +1531,29 @@ class Main(QMainWindow):
         layout.addWidget(title)
         if APP_LANGUAGE=='hr':
             releases=[
-                ('v5.2.3 — Trenutna verzija', [
-                    'Instagram prijava unutar aplikacije i spremljena sesija.',
-                    'Poboljšano rukovanje Instagram objavama i pregledom.',
-                    'Automatski dijagnostički log uz prijavu greške.',
-                    'Opcija Premiere Compatible: H.264/AAC uz očuvanje izvorne rezolucije, uključujući 4K.'
+                ('v5.2.7 — Trenutna verzija', [
+                    'Ubrzana Premiere Compatible konverzija: automatski pokušaj NVIDIA NVENC, Intel Quick Sync i AMD AMF GPU enkodera.',
+                    'Automatski CPU fallback kada hardverski enkoder nije dostupan ili ne radi.',
+                    'Postavke visoke kvalitete uz očuvanje izvorne rezolucije, uključujući 4K.',
+                    'Samo jedan završni Premiere Ready MP4; Download Manager čeka završetak konverzije i provjere.'
                 ]),
-                ('v5.2.2 — Prethodna verzija', [
-                    'Nazivi izvezenih isječaka koriste naslov izvornog videa.',
-                    'Bolje imenovanje više isječaka i kompatibilnost s Windows nazivima datoteka.'
+                ('v5.2.6 — Prethodna verzija', [
+                    'Poboljšana kompatibilnost H.264/AAC MP4 datoteka s Adobe Premiere Pro.',
+                    'Ispravljeno praćenje završetka preuzimanja i konverzije.',
+                    'Izvorna datoteka uklanja se tek nakon uspješne konverzije i provjere.'
                 ])]
         else:
             releases=[
-                ('v5.2.3 — Current release', [
-                    'Built-in Instagram login with saved sessions.',
-                    'Improved Instagram post and preview handling.',
-                    'Automatic diagnostic logs in bug reports.',
-                    'Premiere Compatible: H.264/AAC conversion while preserving original resolution, including 4K.'
+                ('v5.2.7 — Current release', [
+                    'Faster Premiere Compatible conversion: automatically tries NVIDIA NVENC, Intel Quick Sync and AMD AMF GPU encoders.',
+                    'Automatic CPU fallback if hardware encoding is unavailable or fails.',
+                    'High-quality encoding settings while preserving source resolution, including 4K.',
+                    'One final Premiere Ready MP4; Download Manager waits for conversion and validation.'
                 ]),
-                ('v5.2.2 — Previous release', [
-                    'Exported clips use original video titles.',
-                    'Improved multi-clip naming and Windows filename compatibility.'
+                ('v5.2.6 — Previous release', [
+                    'Improved H.264/AAC MP4 compatibility with Adobe Premiere Pro.',
+                    'Fixed download and conversion completion tracking.',
+                    'Original intermediate file is removed only after successful conversion and validation.'
                 ])]
         for heading_text, entries in releases:
             heading_label=QLabel(heading_text)
@@ -2259,31 +2261,56 @@ class Main(QMainWindow):
             self._premiere_ffmpeg=ffmpeg
             self._premiere_ffprobe=ffprobe
             self._premiere_busy=True
-            self._premiere_proc=QProcess(self)
-            self._premiere_proc.setProcessChannelMode(QProcess.MergedChannels)
-            self._premiere_proc.readyReadStandardOutput.connect(self.premiere_conversion_output)
-            self._premiere_proc.finished.connect(self.premiere_conversion_finished)
-            # Generate fresh timestamps and constant-frame-rate output; keep native dimensions.
-            args=['-hide_banner','-nostdin','-y','-fflags','+genpts',
-                  '-i',str(source),'-map','0:v:0']
-            if self.current_mode==0:args+=['-map','0:a:0?']
-            args+=['-c:v','libx264','-preset','medium','-crf','18',
-                   '-pix_fmt','yuv420p','-fps_mode:v','cfr',
-                   '-profile:v','high','-tag:v','avc1']
+            # Prefer working hardware encoders, with automatic fallback if drivers
+            # or FFmpeg's hardware support are unavailable on a user's PC.
+            encoders=subprocess.run([ffmpeg,'-hide_banner','-encoders'],capture_output=True,
+                text=True,timeout=15,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            available=encoders.stdout if encoders.returncode==0 else ''
+            self._premiere_encoders=[e for e in ('h264_nvenc','h264_qsv','h264_amf')
+                                    if re.search(r'\b'+e+r'\b',available)]
+            self._premiere_encoders.append('libx264')
+            self._premiere_encoder_index=0
+            self._premiere_video_dimensions=(video.get('width'),video.get('height'))
+            self._premiere_args_base=['-hide_banner','-nostdin','-y','-fflags','+genpts',
+                '-i',str(source),'-map','0:v:0']
+            if self.current_mode==0:self._premiere_args_base+=['-map','0:a:0?']
+            self._premiere_args_end=['-pix_fmt','yuv420p','-fps_mode:v','cfr',
+                '-tag:v','avc1']
             if self.current_mode==0:
-                args+=['-c:a','aac','-b:a','192k','-ar','48000','-af','aresample=async=1:first_pts=0']
-            else:args+=['-an']
-            args+=['-avoid_negative_ts','make_zero','-movflags','+faststart',
-                   '-max_muxing_queue_size','4096',str(temp)]
-            self.status.setText('Rebuilding clean Premiere MP4 (original resolution)…')
-            self.log('INFO','PREMIERE',f'Full H.264/AAC rebuild, {video.get("width")}x{video.get("height")}; source preserved')
-            self._premiere_proc.start(ffmpeg,args)
+                self._premiere_args_end+=['-c:a','aac','-b:a','192k','-ar','48000',
+                    '-af','aresample=async=1:first_pts=0']
+            else:self._premiere_args_end+=['-an']
+            self._premiere_args_end+=['-avoid_negative_ts','make_zero','-movflags','+faststart',
+                '-max_muxing_queue_size','4096',str(temp)]
+            self.start_premiere_encoder()
             return True
         except Exception as exc:
             self._premiere_busy=False
             self._premiere_conversion_error=True
             self.log('ERROR','PREMIERE','Cannot start conversion: '+str(exc))
             return None
+
+    def start_premiere_encoder(self):
+        """Try an encoder; failure retries the next option without completing the job."""
+        encoder=self._premiere_encoders[self._premiere_encoder_index]
+        try:self._premiere_temp.unlink(missing_ok=True)
+        except OSError:pass
+        settings={
+            'h264_nvenc':['-c:v','h264_nvenc','-preset','p5','-rc','vbr','-cq','18','-b:v','0'],
+            'h264_qsv':['-c:v','h264_qsv','-global_quality','18'],
+            'h264_amf':['-c:v','h264_amf','-quality','quality','-rc','cqp','-qp_i','18','-qp_p','20'],
+            'libx264':['-c:v','libx264','-preset','fast','-crf','18','-profile:v','high'],
+        }
+        self._premiere_proc=QProcess(self)
+        self._premiere_proc.setProcessChannelMode(QProcess.MergedChannels)
+        self._premiere_proc.readyReadStandardOutput.connect(self.premiere_conversion_output)
+        self._premiere_proc.finished.connect(self.premiere_conversion_finished)
+        self.status.setText('Premiere conversion ('+encoder+', original resolution)…')
+        self.download_detail='Converting for Premiere: '+encoder
+        self.log('INFO','PREMIERE','Starting '+encoder+' high-quality conversion; '
+                 +str(self._premiere_video_dimensions))
+        self._premiere_proc.start(self._premiere_ffmpeg,
+            self._premiere_args_base+settings[encoder]+self._premiere_args_end)
 
     def premiere_conversion_output(self):
         proc=getattr(self,'_premiere_proc',None)
@@ -2302,6 +2329,14 @@ class Main(QMainWindow):
         self.premiere_conversion_output()
         good=(exitcode==0 and status==QProcess.NormalExit and
               self._premiere_temp.is_file() and self._premiere_temp.stat().st_size>0)
+        if not good and not self.canceled and self._premiere_encoder_index+1<len(self._premiere_encoders):
+            failed=self._premiere_encoders[self._premiere_encoder_index]
+            self._premiere_encoder_index+=1
+            self.log('WARN','PREMIERE',failed+' failed; retrying with '
+                     +self._premiere_encoders[self._premiere_encoder_index])
+            self._premiere_proc.deleteLater()
+            self.start_premiere_encoder()
+            return
         if good:
             try:
                 probe=subprocess.run([self._premiere_ffprobe,'-v','error',
