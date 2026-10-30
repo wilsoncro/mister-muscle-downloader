@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.6'
+APP_VERSION = '5.1.7'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -197,6 +197,9 @@ if WEB_ENGINE_AVAILABLE:
             if level_name=='WARN' and ('Failed to create WebGPU Context Provider' in message
                                         or "Unrecognized feature: 'web-share'" in message):
                 level_name='DEBUG'
+            # YouTube/DoubleClick conversion tracking CORS failures do not affect playback.
+            if ('doubleclick.net/pagead/' in message or 'youtube.com/pagead/viewthroughconversion/' in message) and ('CORS' in message or 'Access to fetch' in message):
+                return
             self._logger(level_name,'PLAYER JS',f'{message} ({source}:{line})')
 
 
@@ -405,7 +408,8 @@ class Main(QMainWindow):
         self._error_sound_cooldown=QElapsedTimer()
         self._error_sound=QSoundEffect(self)
         self._error_sound.setSource(QUrl.fromLocalFile(str(BASE/'assets'/'soft_error.wav')))
-        self._error_sound.setVolume(0.13)
+        self._error_sound.setVolume(0.60)
+        self._error_sound.statusChanged.connect(self._on_alarm_status)
         self._log_flush_timer=QTimer(self)
         self._log_flush_timer.setInterval(180)
         self._log_flush_timer.timeout.connect(self.flush_log_view)
@@ -595,6 +599,51 @@ class Main(QMainWindow):
         if hasattr(self,'log_count_label'):
             self.log_count_label.setText(f'{self._log_count} events  •  {self._log_path}')
 
+    def _on_alarm_status(self):
+        if self._error_sound.status()==QSoundEffect.Status.Error:
+            self.log('WARN','ALARM','Audio file failed to load: '+str(BASE/'assets'/'soft_error.wav'))
+
+    def test_alarm(self):
+        if self._error_sound.status()==QSoundEffect.Status.Ready:
+            self._error_sound.stop()
+            self._error_sound.play()
+            self.log('INFO','ALARM','Test alarm playback requested')
+        else:
+            self.log('WARN','ALARM','Sound not ready; checking Windows system sound fallback')
+            if sys.platform=='win32':
+                try:
+                    import winsound
+                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                except Exception as exc:
+                    self.log('WARN','ALARM','Windows sound fallback failed: '+str(exc))
+
+    def _on_web_fullscreen_request(self, request):
+        request.accept()
+        if request.toggleOn():
+            self._fullscreen_host=QDialog(self)
+            self._fullscreen_host.setWindowTitle('Mister Muscle — Player fullscreen (Esc to exit)')
+            self._fullscreen_host.setWindowFlags(Qt.WindowType.Window)
+            layout=QVBoxLayout(self._fullscreen_host)
+            layout.setContentsMargins(0,0,0,0)
+            self.original_web.setParent(self._fullscreen_host)
+            self.original_web.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
+            layout.addWidget(self.original_web)
+            self._fullscreen_host.finished.connect(self._restore_web_player)
+            self._fullscreen_host.showFullScreen()
+        else:
+            if getattr(self,'_fullscreen_host',None):
+                self._fullscreen_host.close()
+
+    def _restore_web_player(self):
+        if not getattr(self,'_fullscreen_host',None):
+            return
+        self.original_web.setParent(self._player_web_parent)
+        self._player_web_layout.insertWidget(self._player_web_index,self.original_web)
+        self.original_web.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        self.original_web.show()
+        self._fullscreen_host=None
+        QTimer.singleShot(0,self.adjust_original_player_height)
+
     def make_log(self):
         w,v=self.column()
         v.addWidget(heading('Status Log','Live yt-dlp, FFmpeg, player and application diagnostics.'))
@@ -607,6 +656,7 @@ class Main(QMainWindow):
         self.log_sound_enabled.setChecked(True)
         self.log_sound_enabled.setToolTip('Play a quiet notification at most once every 8 seconds when a new ERROR is logged.')
         toolbar.addWidget(self.log_sound_enabled)
+        toolbar.addWidget(button('Test Alarm',self.test_alarm))
         toolbar.addWidget(button('Copy log',self.copy_log))
         toolbar.addWidget(button('Save log as…',self.save_log_as))
         toolbar.addWidget(button('Open log folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(DATA)))))
@@ -832,12 +882,16 @@ class Main(QMainWindow):
             self.original_web=QWebEngineView()
             self.original_page=LoggedWebPage(self.original_web.page().profile(),self.original_web,self.log)
             self.original_web.setPage(self.original_page)
+            self.original_page.fullScreenRequested.connect(self._on_web_fullscreen_request)
             self.original_web.loadFinished.connect(self._on_player_load_finished)
             self.original_web.page().loadingChanged.connect(self._on_player_loading_changed)
             self.original_web.setMinimumHeight(0)
             self.original_web.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
             QTimer.singleShot(0,self.adjust_original_player_height)
             pc.addWidget(self.original_web)
+            self._player_web_parent=self.original_web.parentWidget()
+            self._player_web_layout=pc
+            self._player_web_index=pc.indexOf(self.original_web)
             self.original_web.hide()  # No blank white WebEngine canvas before a source is loaded
             self.original_bridge=OriginalPlayerBridge(self)
             self.original_channel=QWebChannel(self.original_web.page())
@@ -1337,11 +1391,14 @@ class Main(QMainWindow):
         title=QLabel('🚀  What’s New in v' + APP_VERSION)
         title.setStyleSheet('font-size:23px;font-weight:800;color:#f7f8ff')
         layout.addWidget(title)
-        intro=QLabel('Latest features and fixes through v5.1.6.')
+        intro=QLabel('Latest features and fixes through v5.1.7.')
         intro.setWordWrap(True)
         intro.setObjectName('sub')
         layout.addWidget(intro)
         highlights=[
+            ('🔔  Alarm sound repair', 'Bundled notification sound, improved error sound volume, a Test Alarm button in Status Log, and sound-load diagnostics.'),
+            ('⛶  Player fullscreen', 'Embedded player fullscreen requests now open a fullscreen Qt window; Esc returns to the app.'),
+            ('🧹  Cleaner player log', 'Ignore harmless YouTube/DoubleClick conversion tracking CORS console errors without disabling browser security.'),
             ('🐞  Report a Bug', 'Send a report with up to 3 screenshots and optional redacted diagnostics directly to the developer without an account.'),
             ('📋  Instant auto-paste', 'Supported YouTube, Instagram and TikTok links are added as soon as they are copied, even when the app is in the background. Disable with the checkbox in New Download.'),
             ('🔎  Clipboard filtering', 'Only supported media links are accepted; ordinary text and duplicate links are ignored.'),

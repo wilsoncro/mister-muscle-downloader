@@ -1,6 +1,14 @@
-# Mister Muscle Downloader v5.1.6
+# Mister Muscle Downloader v5.1.7
 
-## New in v5.1.6
+## New in v5.1.7
+- Bundled missing `assets/soft_error.wav` to restore error notification sound in packaged builds.
+- Increased notification volume and added **Test Alarm** button in Status Log with sound-load diagnostics and Windows system sound fallback for testing.
+- Embedded YouTube fullscreen requests handled in a dedicated fullscreen Qt window (Esc to return).
+- Ignore harmless YouTube/DoubleClick conversion tracking CORS console messages while retaining real player errors and CORS protections.
+- Updated in-app What’s New for v5.1.7.
+
+## Previous v5.1.6 changes
+
 - Report a Bug page below Settings: category, description, up to three screenshots (including clipboard image paste), optional redacted diagnostics, review and confirmation before sending.
 - Reports sent to private Supabase bug_reports table and screenshot storage through submit-bug-report Edge Function; no user login required.
 - Administrator can view reports in Supabase Table Editor.
