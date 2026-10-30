@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QProcess, QUrl, QSize, QTimer, QObject, Slot, QEl
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,
     QTextEdit,QLineEdit,QComboBox,QStackedWidget,QFrame,QScrollArea,QProgressBar,QFileDialog,
     QMessageBox,QListWidget,QListWidgetItem,QSlider,QCheckBox,QSizePolicy,QButtonGroup,QGraphicsDropShadowEffect,QPlainTextEdit,QDialog)
-from PySide6.QtGui import QFont, QPixmap, QIcon, QPainter, QColor, QDesktopServices, QTextCursor, QTextCharFormat
+from PySide6.QtGui import QFont, QPixmap, QIcon, QPainter, QColor, QDesktopServices, QTextCursor, QTextCharFormat, QShortcut, QKeySequence
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QSoundEffect
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.7'
+APP_VERSION = '5.1.8'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -548,6 +548,7 @@ class Main(QMainWindow):
 
     def adjust_original_player_height(self):
         """Keep a true 16:9 video with timeline controls below it."""
+        if getattr(self, '_fullscreen_host', None) is not None:return
         if not hasattr(self,'original_web') or not self.original_web.isVisible():return
         width=self.original_web.width()
         if width<200:return
@@ -618,31 +619,49 @@ class Main(QMainWindow):
                     self.log('WARN','ALARM','Windows sound fallback failed: '+str(exc))
 
     def _on_web_fullscreen_request(self, request):
-        request.accept()
+        """Handle HTML5 video fullscreen without rebuilding/reloading the player."""
         if request.toggleOn():
-            self._fullscreen_host=QDialog(self)
-            self._fullscreen_host.setWindowTitle('Mister Muscle — Player fullscreen (Esc to exit)')
+            if getattr(self, '_fullscreen_host', None) is not None:
+                request.accept()
+                return
+            request.accept()
+            self._fullscreen_host = QDialog(self)
+            self._fullscreen_host.setWindowTitle('Mister Muscle - Player fullscreen')
             self._fullscreen_host.setWindowFlags(Qt.WindowType.Window)
-            layout=QVBoxLayout(self._fullscreen_host)
-            layout.setContentsMargins(0,0,0,0)
+            self._fullscreen_host.setStyleSheet('background: black;')
+            layout = QVBoxLayout(self._fullscreen_host)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            self.original_web.setMinimumHeight(0)
+            self.original_web.setMaximumHeight(16777215)
             self.original_web.setParent(self._fullscreen_host)
-            self.original_web.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
+            self.original_web.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             layout.addWidget(self.original_web)
             self._fullscreen_host.finished.connect(self._restore_web_player)
+            # A Qt shortcut catches Esc even when the embedded page has focus.
+            self._fullscreen_escape = QShortcut(QKeySequence('Esc'), self._fullscreen_host)
+            self._fullscreen_escape.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            self._fullscreen_escape.activated.connect(self._fullscreen_host.close)
             self._fullscreen_host.showFullScreen()
+            self.original_web.show()
+            self.original_web.setFocus()
         else:
-            if getattr(self,'_fullscreen_host',None):
-                self._fullscreen_host.close()
+            request.accept()
+            host = getattr(self, '_fullscreen_host', None)
+            if host is not None:
+                host.close()
 
     def _restore_web_player(self):
-        if not getattr(self,'_fullscreen_host',None):
+        host = getattr(self, '_fullscreen_host', None)
+        if host is None:
             return
+        self._fullscreen_host = None
+        self._fullscreen_escape = None
         self.original_web.setParent(self._player_web_parent)
-        self._player_web_layout.insertWidget(self._player_web_index,self.original_web)
-        self.original_web.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        self._player_web_layout.insertWidget(self._player_web_index, self.original_web)
+        self.original_web.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.original_web.show()
-        self._fullscreen_host=None
-        QTimer.singleShot(0,self.adjust_original_player_height)
+        QTimer.singleShot(0, self.adjust_original_player_height)
 
     def make_log(self):
         w,v=self.column()
@@ -882,6 +901,9 @@ class Main(QMainWindow):
             self.original_web=QWebEngineView()
             self.original_page=LoggedWebPage(self.original_web.page().profile(),self.original_web,self.log)
             self.original_web.setPage(self.original_page)
+            # Chromium disables HTML5 fullscreen by default unless explicitly enabled.
+            self.original_web.settings().setAttribute(
+                self.original_web.settings().WebAttribute.FullScreenSupportEnabled, True)
             self.original_page.fullScreenRequested.connect(self._on_web_fullscreen_request)
             self.original_web.loadFinished.connect(self._on_player_load_finished)
             self.original_web.page().loadingChanged.connect(self._on_player_loading_changed)
