@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.1'
+APP_VERSION = '5.1.3'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -290,9 +290,10 @@ class UpdateDownloadWorker(QThread):
                         output.append((name, 'No compatible Windows installer in GitHub Release; skipped'))
                         continue
                     filename = Path(urllib.parse.urlsplit(url).path).name
-                    dest = target / filename
+                    safe_version = re.sub(r'[^A-Za-z0-9._-]', '_', str(version))[:60]
+                    dest = target / (Path(filename).stem + '_v' + safe_version + '.exe')
                     if dest.exists() and dest.stat().st_size > 1024:
-                        output.append((name, 'Already downloaded: ' + str(dest)))
+                        output.append((name, 'Installer ready: ' + str(dest), str(dest)))
                         continue
                     self.progress.emit('Downloading ' + name + ' ' + version)
                     request = urllib.request.Request(url, headers={'User-Agent':'MisterMuscleDownloader/7.14'})
@@ -312,7 +313,7 @@ class UpdateDownloadWorker(QThread):
                         temp.replace(dest)
                     finally:
                         temp.unlink(missing_ok=True)
-                    output.append((name, 'Downloaded: ' + str(dest) + ' (not installed)'))
+                    output.append((name, 'Installer ready: ' + str(dest), str(dest)))
                 elif name in ('yt-dlp', 'PySide6'):
                     if getattr(sys, 'frozen', False):
                         output.append((name, 'Bundled component: update via next Mister Muscle installer'))
@@ -1313,10 +1314,47 @@ class Main(QMainWindow):
             self.log('INFO', 'UPDATE', 'No downloadable updates found')
 
     def show_download_results(self, results):
-        for name, result in results:
+        installers = []
+        lines = []
+        for entry in results:
+            name, result = entry[:2]
             self.log('ERROR' if 'failed' in result.lower() else 'INFO', 'UPDATE', name + ': ' + result)
-        self.update_status.setText(self.update_status.text() + '\n\n' + '\n'.join(
-            f'{name}: {result}' for name, result in results))
+            lines.append(f'{name}: {result}')
+            if name == 'Mister Muscle Downloader' and len(entry) > 2:
+                installer = Path(entry[2])
+                if installer.is_file() and installer.stat().st_size > 1024:
+                    installers.append(installer)
+        self.update_status.setText(self.update_status.text() + '\n\n' + '\n'.join(lines))
+        if installers:
+            self._pending_installer = str(installers[-1])
+            self.install_update_button.setEnabled(True)
+            answer = QMessageBox.question(
+                self, 'Install Mister Muscle update',
+                'The new Mister Muscle installer is ready.\n\n'
+                'Install it now? The application will close and Windows may request permission.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if answer == QMessageBox.StandardButton.Yes:
+                self.install_downloaded_update()
+
+    def install_downloaded_update(self):
+        path = Path(getattr(self, '_pending_installer', ''))
+        expected = (DATA / 'updates').resolve()
+        if not path.is_file() or path.suffix.lower() != '.exe' or path.resolve().parent != expected:
+            QMessageBox.warning(self, 'Installer unavailable', 'The downloaded installer could not be verified locally.')
+            return
+        if not getattr(sys, 'frozen', False):
+            QMessageBox.information(self, 'Developer mode', 'Automatic installation is only available in the installed Windows app.')
+            return
+        self.log('INFO', 'UPDATE', 'Launching installer: ' + str(path))
+        try:
+            # Windows launches the installer as a separate process; UAC remains under user control.
+            os.startfile(str(path))
+        except OSError as exc:
+            self.log('ERROR', 'UPDATE', 'Could not start installer: ' + str(exc))
+            QMessageBox.warning(self, 'Update failed', str(exc))
+            return
+        self.close()
 
     def make_settings(self):
         w,v=self.column();v.addWidget(heading('Settings','Downloader tools and configuration.'))
@@ -1342,7 +1380,10 @@ class Main(QMainWindow):
         cl.addWidget(self.update_status)
         self.update_button=button('Check for updates now',self.check_updates)
         cl.addWidget(self.update_button)
-        update_note=QLabel('Available updates download automatically to AppData/MisterMuscleQt/updates. Installation is NOT automatic; the running app is never overwritten. FFmpeg is checked locally only.')
+        self.install_update_button=button('Install downloaded update',self.install_downloaded_update,True)
+        self.install_update_button.setEnabled(False)
+        cl.addWidget(self.install_update_button)
+        update_note=QLabel('Updates download to AppData/MisterMuscleQt/updates. When a new installer is ready, you can approve installation and restart. FFmpeg is checked locally only.')
         update_note.setObjectName('sub');update_note.setWordWrap(True);cl.addWidget(update_note)
         cl.addWidget(QLabel('All cutting controls are now in New Download → Media Studio.'));v.addWidget(c);return w
     def paste(self):

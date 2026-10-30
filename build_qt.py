@@ -10,7 +10,7 @@ try: import PySide6.QtWebEngineWidgets, PySide6.QtWebChannel, PySide6.QtMultimed
 except ImportError as exc: raise SystemExit(f'Missing PySide6 component: {exc}')
 try: import PyInstaller
 except ImportError: raise SystemExit('Install PyInstaller: py -m pip install pyinstaller')
-cmd=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir',
+cmd=[sys.executable,'-m','PyInstaller','--noconfirm','--windowed','--onedir',
  '--name','MisterMuscle','--icon',str(root/'ikona.ico'),'--distpath',str(root/'dist'),'--workpath',str(root/'build'),
  '--specpath',str(root), '--collect-all','PySide6.QtWebEngineCore',
  '--collect-all','PySide6.QtWebEngineWidgets','--collect-all','PySide6.QtWebChannel',
