@@ -17,13 +17,13 @@ from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QSoundEffect
 from PySide6.QtMultimediaWidgets import QVideoWidget
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
-    from PySide6.QtWebEngineCore import QWebEngineScript, QWebEnginePage
+    from PySide6.QtWebEngineCore import QWebEngineScript, QWebEnginePage, QWebEngineProfile
     from PySide6.QtWebChannel import QWebChannel
     WEB_ENGINE_AVAILABLE=True
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.2'
+APP_VERSION = '5.2.3'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -43,6 +43,7 @@ SESSION=DATA/'session.json'
 LOG_FILE=DATA/'status.log'
 WHATS_NEW_MARKER=DATA/'last_whats_new_version.txt'
 LANGUAGE_FILE=DATA/'language.json'
+INSTAGRAM_COOKIES=DATA/'instagram_cookies.txt'
 try:
     APP_LANGUAGE=json.loads(LANGUAGE_FILE.read_text(encoding='utf-8')).get('language','en')
 except (OSError,ValueError,AttributeError):
@@ -377,6 +378,67 @@ def scrub_bug_log(value):
     return '\n'.join(lines)[-15000:]
 
 
+class InstagramLoginDialog(QDialog):
+    """Real Instagram login in an isolated, persistent Qt WebEngine profile."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Instagram login — Mister Muscle')
+        self.resize(520, 740)
+        self._cookies = {}
+        self._saved = False
+        self._profile = QWebEngineProfile('MisterMuscleInstagram', self)
+        self._profile.setPersistentStoragePath(str(DATA / 'instagram_web_profile'))
+        self._profile.setCachePath(str(DATA / 'instagram_web_cache'))
+        self._profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        self._store = self._profile.cookieStore()
+        self._store.cookieAdded.connect(self._on_cookie)
+        self._store.loadAllCookies()
+        layout = QVBoxLayout(self)
+        note = QLabel('Sign in on the real instagram.com page. Your password is not collected by Mister Muscle.')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self._status = QLabel('Waiting for Instagram sign-in…')
+        layout.addWidget(self._status)
+        self._view = QWebEngineView(self)
+        self._page = QWebEnginePage(self._profile, self._view)
+        self._view.setPage(self._page)
+        layout.addWidget(self._view, 1)
+        self._view.setUrl(QUrl('https://www.instagram.com/accounts/login/'))
+
+    def _on_cookie(self, cookie):
+        domain = bytes(cookie.domain().encode('utf-8')).decode('utf-8', 'replace').lower()
+        if not (domain == 'instagram.com' or domain.endswith('.instagram.com')):
+            return
+        name = bytes(cookie.name()).decode('utf-8', 'replace')
+        value = bytes(cookie.value()).decode('utf-8', 'replace')
+        if not name or not value or any(ch in name + value for ch in '\r\n\t'):
+            return
+        self._cookies[(domain, cookie.path(), name)] = (value, bool(cookie.isSecure()), cookie.expirationDate().toSecsSinceEpoch() if not cookie.isSessionCookie() else 0)
+        if name == 'sessionid' and not self._saved:
+            # Allow the cookie store to deliver the remaining Instagram cookies.
+            QTimer.singleShot(1100, self._finish_login)
+
+    def _finish_login(self):
+        if self._saved or not any(name == 'sessionid' for (_, _, name) in self._cookies):
+            return
+        rows = ['# Netscape HTTP Cookie File', '# Saved locally by Mister Muscle Downloader']
+        for (domain, path, name), (value, secure, expires) in self._cookies.items():
+            # Session cookies use a future expiry for Netscape cookie-file readers.
+            if not expires:
+                expires = int(datetime.now().timestamp()) + 7 * 86400
+            rows.append('\t'.join([domain, 'TRUE' if domain.startswith('.') else 'FALSE', path or '/', 'TRUE' if secure else 'FALSE', str(expires), name, value]))
+        try:
+            temp = INSTAGRAM_COOKIES.with_suffix('.tmp')
+            temp.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+            try: os.chmod(temp, 0o600)
+            except OSError: pass
+            temp.replace(INSTAGRAM_COOKIES)
+        except OSError as exc:
+            self._status.setText('Could not save Instagram session: ' + str(exc))
+            return
+        self._saved = True
+        self.accept()
+
 class BugReportWorker(QThread):
     completed = Signal(bool, str)
 
@@ -595,6 +657,7 @@ class Main(QMainWindow):
         if i==1:self.refresh_center()
         if i==2:self.refresh_queue()
         if i==3:self.refresh_history()
+        if i==6:self.bug_prepare_diagnostics()
 
     def log(self,level,source,message):
         """Timestamped diagnostics to the new tab and persistent status.log."""
@@ -878,6 +941,15 @@ class Main(QMainWindow):
         self.ig_cookie_path.setPlaceholderText('Path to cookies.txt')
         ig_layout.addWidget(self.ig_cookie_path)
         ig_layout.addWidget(button('Choose cookies.txt',self.choose_instagram_cookies))
+        ig_layout.addWidget(button('🔑 Log into Instagram inside the app',self.login_instagram))
+        ig_layout.addWidget(button('Log out of Instagram',self.logout_instagram))
+        self.ig_login_status=QLabel('Instagram login not configured')
+        self.ig_login_status.setWordWrap(True)
+        ig_layout.addWidget(self.ig_login_status)
+        if INSTAGRAM_COOKIES.is_file():
+            self.ig_cookie_source.setCurrentIndex(1)
+            self.ig_cookie_path.setText(str(INSTAGRAM_COOKIES))
+            self.ig_login_status.setText('Saved Instagram session found')
         self.ig_cookie_source.currentIndexChanged.connect(self.update_instagram_cookie_controls)
         self.update_instagram_cookie_controls()
         self.instagram_options.hide()
@@ -1077,6 +1149,9 @@ class Main(QMainWindow):
         self._studio_local=None
         self._original_preview_url=url
         self.log('INFO','PLAYER',f'Auto-load requested for {url}')
+        if 'instagram.com' in urllib.parse.urlsplit(url).netloc.lower() and self.mode.currentIndex()==3:
+            self.original_player_note.setText('Instagram photos/carousel: use Download to save all items. Video preview is not needed.')
+            return
         if not WEB_ENGINE_AVAILABLE:
             self.original_player_note.setText('QtWebEngine is unavailable; use Preview Link instead.')
             return
@@ -1630,9 +1705,13 @@ class Main(QMainWindow):
         row.addWidget(button('Remove selected',self.bug_remove_image))
         cl.addLayout(row)
         self.bug_include_log=QCheckBox('Include recent Status Log (sensitive content redacted)')
-        self.bug_include_log.setChecked(False)
+        self.bug_include_log.setChecked(True)
         cl.addWidget(self.bug_include_log)
-        note=QLabel('Before sending, review the description, images and optional log preview. Screenshots may contain personal information. Reports are stored privately.')
+        self.bug_log_status=QLabel('Diagnostics will be loaded automatically when you open this page.')
+        self.bug_log_status.setObjectName('sub')
+        self.bug_log_status.setWordWrap(True)
+        cl.addWidget(self.bug_log_status)
+        note=QLabel('Recent diagnostics are attached automatically (with sensitive content redacted). You can uncheck the box or preview the report before sending. Screenshots may contain personal information. Reports are stored privately.')
         note.setWordWrap(True);note.setObjectName('sub');cl.addWidget(note)
         cl.addWidget(button('Preview report',self.bug_preview))
         self.bug_send_button=button('Send Bug Report',self.bug_send,True)
@@ -1642,6 +1721,39 @@ class Main(QMainWindow):
         cl.addWidget(self.bug_status)
         v.addWidget(c)
         return w
+
+    def bug_prepare_diagnostics(self):
+        """Read persisted diagnostics when the report page is opened, without UI blocking."""
+        self.bug_include_log.setChecked(True)
+        try:
+            # Read only the tail of the log file, including events from previous runs.
+            with self._log_path.open('rb') as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell()-160_000))
+                raw=handle.read().decode('utf-8',errors='replace')
+            if raw and not raw.startswith('['):
+                raw=raw.partition('\n')[2]
+            self._bug_log_snapshot=scrub_bug_log(raw)
+        except OSError:
+            self._bug_log_snapshot=scrub_bug_log('\n'.join(line for _,line in self._log_lines))
+        if self._bug_log_snapshot.strip():
+            lines=len(self._bug_log_snapshot.splitlines())
+            self.bug_log_status.setText(f'✓ Diagnostic log attached automatically ({lines} recent lines, redacted).')
+        else:
+            self.bug_log_status.setText('No diagnostic log available yet. New events will be included when sending.')
+
+    def bug_diagnostics(self):
+        """Include the latest events, not just those present when the page opened."""
+        try:
+            with self._log_path.open('rb') as handle:
+                handle.seek(0,2)
+                handle.seek(max(0,handle.tell()-160_000))
+                raw=handle.read().decode('utf-8',errors='replace')
+            if raw and not raw.startswith('['):
+                raw=raw.partition('\n')[2]
+            return scrub_bug_log(raw)
+        except OSError:
+            return scrub_bug_log('\n'.join(line for _,line in self._log_lines))
 
     def bug_add_images(self):
         paths,_=QFileDialog.getOpenFileNames(self,'Select screenshots',str(Path.home()),'Images (*.png *.jpg *.jpeg *.webp)')
@@ -1688,7 +1800,7 @@ class Main(QMainWindow):
             images.append({'mime':mime,'data':base64.b64encode(data).decode('ascii')})
         return {'category':self.bug_category.currentText(), 'description':description,
                 'app_version':APP_VERSION, 'system_info':platform.system()+' '+platform.release(),
-                'diagnostic_log':scrub_bug_log('\n'.join(line for _,line in self._log_lines)) if self.bug_include_log.isChecked() else '',
+                'diagnostic_log':self.bug_diagnostics() if self.bug_include_log.isChecked() else '',
                 'images':images}
 
     def bug_preview(self):
@@ -1757,6 +1869,36 @@ class Main(QMainWindow):
         update_note=QLabel('Updates download to AppData/MisterMuscleQt/updates. When a new installer is ready, you can approve installation and restart. FFmpeg is checked locally only.')
         update_note.setObjectName('sub');update_note.setWordWrap(True);cl.addWidget(update_note)
         cl.addWidget(QLabel('All cutting controls are now in New Download → Media Studio.'));v.addWidget(c);return w
+    def login_instagram(self):
+        if not WEB_ENGINE_AVAILABLE:
+            QMessageBox.warning(self, 'Instagram login', 'Qt WebEngine is required for in-app login.')
+            return
+        dialog = InstagramLoginDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.ig_cookie_source.setCurrentIndex(1)
+            self.ig_cookie_path.setText(str(INSTAGRAM_COOKIES))
+            self.ig_login_status.setText('Instagram login saved — ready to download')
+            self.log('INFO', 'INSTAGRAM', 'In-app Instagram login completed; local cookies file ready')
+        else:
+            self.ig_login_status.setText('Login canceled or not completed')
+
+    def logout_instagram(self):
+        if INSTAGRAM_COOKIES.exists():
+            try: INSTAGRAM_COOKIES.unlink()
+            except OSError as exc:
+                QMessageBox.warning(self, 'Instagram logout', str(exc)); return
+        if self.ig_cookie_path.text().strip() == str(INSTAGRAM_COOKIES):
+            self.ig_cookie_path.clear()
+        # Clear the isolated WebEngine profile as well, not just the exported file.
+        if WEB_ENGINE_AVAILABLE:
+            profile = QWebEngineProfile('MisterMuscleInstagram', self)
+            profile.setPersistentStoragePath(str(DATA / 'instagram_web_profile'))
+            profile.cookieStore().deleteAllCookies()
+            profile.clearHttpCache()
+            self._ig_logout_profile = profile
+        self.ig_login_status.setText('Instagram session removed')
+        self.log('INFO', 'INSTAGRAM', 'Local Instagram session removed')
+
     def choose_instagram_cookies(self):
         path,_=QFileDialog.getOpenFileName(self,'Choose cookies.txt',str(Path.home()),'Text files (*.txt);;All files (*)')
         if path:self.ig_cookie_path.setText(path)
@@ -2262,7 +2404,7 @@ class Main(QMainWindow):
 
     def preview_finished(self,code,status):
         output=bytes(self.preview_proc.readAllStandardOutput()).decode('utf-8',errors='replace')
-        if code==0 and status==QProcess.NormalExit and Path(self.preview_file).is_file():
+        if status==QProcess.NormalExit and Path(self.preview_file).is_file() and Path(self.preview_file).stat().st_size > 1024:
             self.local_path=self.preview_file
             self.player.setSource(QUrl.fromLocalFile(self.preview_file))
             if WEB_ENGINE_AVAILABLE:
@@ -2276,7 +2418,7 @@ class Main(QMainWindow):
             self.cut_status.setText('Preview opened. Local cutting uses the temporary preview; remote cutting downloads the original quality.')
         else:
             self.link_info.setText('Preview unavailable: '+output[-400:])
-        self.log('INFO' if code==0 else 'ERROR','PREVIEW',f'Preview process finished: exit={code}, file={self.preview_file}')
+        self.log('INFO' if Path(self.preview_file).is_file() and Path(self.preview_file).stat().st_size > 1024 else 'ERROR','PREVIEW',f'Preview process finished: exit={code}, file={self.preview_file}')
         self.preview_proc=None
 
     def parse_cut_times(self):
