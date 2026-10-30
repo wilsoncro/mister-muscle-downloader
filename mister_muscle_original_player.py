@@ -147,7 +147,7 @@ def _player_html(platform, video_id=None, video_src=None, jezik="en"):
         player = new YT.Player('player', {{
           videoId: {video_id_json},
           playerVars: {{
-            playsinline: 1, controls: 0, disablekb: 1, modestbranding: 1,
+            playsinline: 1, controls: 1, disablekb: 0, modestbranding: 1,
             rel: 0, origin: window.location.origin, cc_load_policy: 0
           }}
         }});

@@ -3,7 +3,7 @@
 Requires: pip install PySide6 yt-dlp
 Optional: ffmpeg on PATH for merging and cutting.
 """
-import os, sys, re, json, subprocess, shutil, tempfile, threading, functools, http.server, traceback, logging, urllib.request, urllib.parse, importlib.metadata
+import os, sys, re, json, subprocess, shutil, tempfile, threading, functools, http.server, traceback, logging, urllib.request, urllib.parse, importlib.metadata, base64, platform, io
 import shiboken6
 from pathlib import Path
 from datetime import datetime
@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.1.5'
+APP_VERSION = '5.1.6'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -58,6 +58,25 @@ def ui_translate(value):
         if value.endswith(english) and len(value)-len(english)<8:
             return value[:-len(english)]+croatian
     return value
+
+SUPPORTED_MEDIA_HOSTS = {'youtube.com','youtu.be','m.youtube.com','www.youtube.com','music.youtube.com','instagram.com','www.instagram.com','tiktok.com','www.tiktok.com','vm.tiktok.com','vt.tiktok.com','facebook.com','www.facebook.com','fb.watch','twitter.com','x.com','www.x.com','vimeo.com','www.vimeo.com','reddit.com','www.reddit.com'}
+
+def valid_media_url(raw):
+    try:
+        parsed=urllib.parse.urlsplit(raw.strip())
+        host=(parsed.hostname or '').lower().rstrip('.')
+        return parsed.scheme in ('http','https') and host in SUPPORTED_MEDIA_HOSTS and bool(parsed.path.strip('/') or parsed.query)
+    except (ValueError,TypeError):
+        return False
+
+def extract_media_links(text):
+    candidates=re.findall(r'https?://[^\s<>\"\']+',text or '',flags=re.I)
+    seen=set();result=[]
+    for candidate in candidates:
+        url=candidate.rstrip('.,;!)]}')
+        if valid_media_url(url) and url not in seen:
+            seen.add(url);result.append(url)
+    return result
 
 DEFAULT_FOLDER=Path.home()/'Downloads'
 STYLE='''
@@ -335,6 +354,44 @@ class UpdateDownloadWorker(QThread):
         self.completed.emit(output)
 
 
+BUG_REPORT_ENDPOINT = 'https://fjxxavinkqhjeqiolwsk.supabase.co/functions/v1/submit-bug-report'
+
+
+def scrub_bug_log(value):
+    """Conservative log redaction: no URLs, paths, email addresses or credentials."""
+    lines = []
+    for line in str(value).splitlines()[-150:]:
+        line = re.sub(r'https?://\S+', '[URL REDACTED]', line, flags=re.I)
+        line = re.sub(r'(?i)(authorization|cookie|token|password|secret|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]', line)
+        line = re.sub(r'(?i)\b[A-Z]:\\[^\s]+', '[PATH REDACTED]', line)
+        line = re.sub(r'(?i)\b[\w.+-]+@[\w.-]+\.[A-Z]{2,}\b', '[EMAIL REDACTED]', line)
+        lines.append(line[:400])
+    return '\n'.join(lines)[-15000:]
+
+
+class BugReportWorker(QThread):
+    completed = Signal(bool, str)
+
+    def __init__(self, payload, parent=None):
+        super().__init__(parent)
+        self.payload = payload
+
+    def run(self):
+        try:
+            body = json.dumps(self.payload, ensure_ascii=False).encode('utf-8')
+            if len(body) > 11_000_000:
+                raise ValueError('Report exceeds maximum upload size (11 MB).')
+            request = urllib.request.Request(BUG_REPORT_ENDPOINT, data=body,
+                headers={'Content-Type':'application/json', 'User-Agent':'MisterMuscleDownloader/' + APP_VERSION}, method='POST')
+            with urllib.request.urlopen(request, timeout=45) as response:
+                result = json.loads(response.read(8192).decode('utf-8'))
+                if not result.get('ok') or not result.get('report_id'):
+                    raise ValueError(result.get('error', 'Server did not confirm report'))
+                self.completed.emit(True, str(result['report_id']))
+        except Exception as exc:
+            self.completed.emit(False, str(exc)[:400])
+
+
 class Main(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('Mister Muscle Downloader — v' + APP_VERSION)
@@ -395,7 +452,7 @@ class Main(QMainWindow):
         pages=[('⊕   New Download',self.make_download),('▣   Download Center',self.make_center),
                ('☷   Queue',self.make_queue),('◷   History',self.make_history),
                ('▶   Player & Cutting',self.make_player),('⚙   Settings',self.make_settings),
-               ('☰   Status Log',self.make_log)]
+               ('⚑   Report a Bug',self.make_bug_report),('☰   Status Log',self.make_log)]
         group_label=QLabel('   WORKSPACE');group_label.setObjectName('eyebrow')
         sv.addWidget(group_label)
         for i,(name,factory) in enumerate(pages):
@@ -420,6 +477,7 @@ class Main(QMainWindow):
         self._auto_player_timer.timeout.connect(self.auto_load_original_player)
         self.urls.textChanged.connect(self.on_studio_source_changed)
         self.switch(0)
+        QApplication.clipboard().dataChanged.connect(self.auto_paste_clipboard)
         self.log('INFO','APP','Mister Muscle Downloader v' + APP_VERSION + ' started')
         self.log('INFO','APP',f'Python {sys.version.split()[0]} | Qt WebEngine: {WEB_ENGINE_AVAILABLE}')
         self.log('INFO','APP',f'Log file: {self._log_path}')
@@ -503,7 +561,7 @@ class Main(QMainWindow):
         w=QWidget();v=QVBoxLayout(w);v.setContentsMargins(0,0,0,0);v.setSpacing(18);return w,v
     def switch(self,i):
         self.stack.setCurrentIndex(i)
-        self.top_section.setText('STATUS LOG' if i==6 else 'SETTINGS' if i==5 else 'DOWNLOAD TASKS' if i in (0,1,2,3) else 'MEDIA STUDIO')
+        self.top_section.setText('STATUS LOG' if i==7 else 'REPORT A BUG' if i==6 else 'SETTINGS' if i==5 else 'DOWNLOAD TASKS' if i in (0,1,2,3) else 'MEDIA STUDIO')
         for n,b in enumerate(self.nav):b.setChecked(n==i)
         if i==1:self.refresh_center()
         if i==2:self.refresh_queue()
@@ -683,7 +741,7 @@ class Main(QMainWindow):
         eyebrow=QLabel('02  FORMAT & QUALITY');eyebrow.setObjectName('eyebrow');ol.addWidget(eyebrow)
         choices=QHBoxLayout();choices.setSpacing(12)
         modebox=QVBoxLayout();modebox.addWidget(QLabel('File type'))
-        self.mode=QComboBox();self.mode.addItems(['Video + audio','Video only','Audio only'])
+        self.mode=QComboBox();self.mode.addItems(['Video + audio','Video only','Audio only','Instagram Photos'])
         modebox.addWidget(self.mode)
         qualitybox=QVBoxLayout();qualitybox.addWidget(QLabel('Resolution'))
         self.quality=QComboBox();self.quality.addItems(['Best available','2160p','1440p','1080p','720p','480p','360p'])
@@ -694,8 +752,8 @@ class Main(QMainWindow):
         vc=QVBoxLayout()
         self.format_label=QLabel('Output format');vc.addWidget(self.format_label)
         self.video_container=QComboBox();vc.addWidget(self.video_container)
-        self._mode_formats={0:['MP4','MKV','WEBM'],1:['MP4','MKV','WEBM'],2:['MP3','M4A','WAV','FLAC','OPUS','OGG','AAC']}
-        self._saved_formats={0:'MP4',1:'MP4',2:'MP3'}
+        self._mode_formats={0:['MP4','MKV','WEBM'],1:['MP4','MKV','WEBM'],2:['MP3','M4A','WAV','FLAC','OPUS','OGG','AAC'],3:['Original']}
+        self._saved_formats={0:'MP4',1:'MP4',2:'MP3',3:'Original'}
         self._previous_mode=0
         self.mode.currentIndexChanged.connect(self.update_mode_formats)
         self.update_mode_formats(0)
@@ -714,6 +772,26 @@ class Main(QMainWindow):
         folderrow.addLayout(foldercol,1)
         folderrow.addWidget(button('Change folder',self.choose_folder))
         ol.addLayout(folderrow)
+        self.instagram_options=QFrame()
+        ig_layout=QVBoxLayout(self.instagram_options)
+        ig_layout.addWidget(QLabel('Instagram login / Cookies (from old downloader)'))
+        self.ig_cookie_source=QComboBox()
+        self.ig_cookie_source.addItems(['Logged-in browser','cookies.txt file'])
+        ig_layout.addWidget(self.ig_cookie_source)
+        self.ig_browser=QComboBox()
+        self.ig_browser.addItems(['Chrome','Edge','Firefox','Brave','Opera','Vivaldi'])
+        ig_layout.addWidget(self.ig_browser)
+        self.ig_cookie_path=QLineEdit()
+        self.ig_cookie_path.setPlaceholderText('Path to cookies.txt')
+        ig_layout.addWidget(self.ig_cookie_path)
+        ig_layout.addWidget(button('Choose cookies.txt',self.choose_instagram_cookies))
+        self.ig_cookie_source.currentIndexChanged.connect(self.update_instagram_cookie_controls)
+        self.update_instagram_cookie_controls()
+        self.instagram_options.hide()
+        ol.addWidget(self.instagram_options)
+        self.autopaste_checkbox=QCheckBox('Auto-paste supported links while app is running')
+        self.autopaste_checkbox.setChecked(True)
+        sl.addWidget(self.autopaste_checkbox)
         right.addWidget(options)
 
         actioncard,ac=card()
@@ -790,7 +868,8 @@ class Main(QMainWindow):
         self.video_container.setCurrentText(self._saved_formats.get(mode,self._mode_formats[mode][0]))
         self.video_container.blockSignals(False)
         self._previous_mode=mode
-        self.quality.setEnabled(mode!=2)
+        self.quality.setEnabled(mode in (0,1))
+        self.instagram_options.setVisible(mode==3) if hasattr(self,'instagram_options') else None
 
     def selected_download_format(self):
         return self.video_container.currentText().lower()
@@ -804,7 +883,7 @@ class Main(QMainWindow):
         if quality not in ('Best available','2160p','1440p','1080p','720p','480p','360p'):return None
         if len(item)==4:
             fmt=str(item[3]).lower()
-            if mode not in (0,1,2) or fmt not in ({0:('mp4','mkv','webm'),1:('mp4','mkv','webm'),2:('mp3','m4a','wav','flac','opus','ogg','aac')}[mode]):return None
+            if mode not in (0,1,2,3) or fmt not in ({0:('mp4','mkv','webm'),1:('mp4','mkv','webm'),2:('mp3','m4a','wav','flac','opus','ogg','aac'),3:('original',)}[mode]):return None
         else:
             if mode not in range(9):return None
             old_audio={2:'mp3',3:'m4a',4:'wav',5:'flac',6:'opus',7:'aac',8:'ogg'}
@@ -885,7 +964,11 @@ class Main(QMainWindow):
 
     def auto_load_original_player(self):
         """Debounced auto-load, following the original Tkinter app's behavior."""
-        links=[x.strip() for x in self.urls.toPlainText().splitlines() if x.strip()]
+        links=extract_media_links(self.urls.toPlainText())
+        if self.urls.toPlainText().strip() and not links:
+            QMessageBox.warning(self,'Invalid links','Only supported media URLs are accepted.');return
+        if self.mode.currentIndex()==3 and any(urllib.parse.urlsplit(u).hostname not in ('instagram.com','www.instagram.com') for u in links):
+            QMessageBox.warning(self,'Instagram Photos','Use Instagram post links in this mode.');return
         if not links:return
         url=links[0]
         if not re.match(r'^https?://',url,re.I):return
@@ -908,7 +991,7 @@ class Main(QMainWindow):
     def _on_player_loading_changed(self, info):
         # Qt reports the actual Chromium network error, unlike loadFinished(False).
         try:
-            if info.status() == info.LoadingStatus.LoadFailedStatus:
+            if info.status() == info.LoadStatus.LoadFailedStatus:
                 self.log('ERROR', 'PLAYER',
                     f'WebEngine navigation failed: {info.url().toString()} | '
                     f'code={info.errorCode()} | {info.errorString()}')
@@ -1254,17 +1337,20 @@ class Main(QMainWindow):
         title=QLabel('🚀  What’s New in v' + APP_VERSION)
         title.setStyleSheet('font-size:23px;font-weight:800;color:#f7f8ff')
         layout.addWidget(title)
-        intro=QLabel('A major update with a new interface, more download control, and built-in media tools.')
+        intro=QLabel('Latest features and fixes through v5.1.6.')
         intro.setWordWrap(True)
         intro.setObjectName('sub')
         layout.addWidget(intro)
         highlights=[
-            ('🎨  Redesigned interface', 'A modern Qt workspace with faster navigation and a dedicated Download Center.'),
-            ('🎬  Flexible formats', 'Video + Audio, Video Only, and Audio Only now have separate format choices and quality controls.'),
-            ('✂  Media Studio', 'Preview videos, mark timeline selections, and export clips with multiple aspect ratios.'),
-            ('📥  Better download management', 'Pause and resume, manage your queue, retry failed downloads, and browse history.'),
-            ('🛠  Reliability & diagnostics', 'Session recovery, detailed Status Log, and built-in update checks.'),
-            ('📦  Easier Windows installation', 'A single installer bundles the app and required download tools.'),
+            ('🐞  Report a Bug', 'Send a report with up to 3 screenshots and optional redacted diagnostics directly to the developer without an account.'),
+            ('📋  Instant auto-paste', 'Supported YouTube, Instagram and TikTok links are added as soon as they are copied, even when the app is in the background. Disable with the checkbox in New Download.'),
+            ('🔎  Clipboard filtering', 'Only supported media links are accepted; ordinary text and duplicate links are ignored.'),
+            ('📸  Instagram Photos', 'Download photo posts and carousels with gallery-dl using browser cookies or a cookies.txt file where required.'),
+            ('▶  YouTube controls', 'Show native YouTube playback controls when the embedded player allows them.'),
+            ('🛠  Media Studio stability', 'Improved packaged-app local HTTP handling, 404 diagnostics, video routes and Qt WebEngine loading-status reporting.'),
+            ('🔄  Update Center', 'Improved bundled component version checks and installer update download/launch flow.'),
+            ('⚡  Faster release builds', 'Removed unconditional PyInstaller --clean for quicker repeat builds.'),
+            ('🎨  Desktop workspace', 'Qt interface, Download Center, queue, history, clipping, format choices, and English/Croatian support.'),
         ]
         scroll=QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1395,6 +1481,127 @@ class Main(QMainWindow):
             return
         self.close()
 
+    def make_bug_report(self):
+        w,v=self.column()
+        v.addWidget(heading('Report a Bug','Send a problem report directly to the developer. No account needed.'))
+        c,cl=card()
+        cl.addWidget(QLabel('Problem category'))
+        self.bug_category=QComboBox()
+        self.bug_category.addItems(['Player / Media Studio','Downloads','Instagram Photos','Auto-Paste','Updates','Other'])
+        cl.addWidget(self.bug_category)
+        cl.addWidget(QLabel('Describe the problem (at least 10 characters)'))
+        self.bug_description=QTextEdit()
+        self.bug_description.setPlaceholderText('What happened? What did you expect? How can we reproduce it?')
+        self.bug_description.setMinimumHeight(115)
+        cl.addWidget(self.bug_description)
+        cl.addWidget(QLabel('Screenshots (up to 3 PNG/JPG/WEBP, max 5 MB each)'))
+        self.bug_images=[]
+        self.bug_image_list=QListWidget()
+        self.bug_image_list.setMaximumHeight(135)
+        cl.addWidget(self.bug_image_list)
+        row=QHBoxLayout()
+        row.addWidget(button('Add images',self.bug_add_images))
+        row.addWidget(button('Paste screenshot',self.bug_paste_screenshot))
+        row.addWidget(button('Remove selected',self.bug_remove_image))
+        cl.addLayout(row)
+        self.bug_include_log=QCheckBox('Include recent Status Log (sensitive content redacted)')
+        self.bug_include_log.setChecked(False)
+        cl.addWidget(self.bug_include_log)
+        note=QLabel('Before sending, review the description, images and optional log preview. Screenshots may contain personal information. Reports are stored privately.')
+        note.setWordWrap(True);note.setObjectName('sub');cl.addWidget(note)
+        cl.addWidget(button('Preview report',self.bug_preview))
+        self.bug_send_button=button('Send Bug Report',self.bug_send,True)
+        cl.addWidget(self.bug_send_button)
+        self.bug_status=QLabel('Ready to report')
+        self.bug_status.setWordWrap(True);self.bug_status.setObjectName('sub')
+        cl.addWidget(self.bug_status)
+        v.addWidget(c)
+        return w
+
+    def bug_add_images(self):
+        paths,_=QFileDialog.getOpenFileNames(self,'Select screenshots',str(Path.home()),'Images (*.png *.jpg *.jpeg *.webp)')
+        for path in paths:
+            if len(self.bug_images)>=3:break
+            if path not in self.bug_images and Path(path).is_file() and Path(path).stat().st_size<=5*1024*1024:
+                self.bug_images.append(path)
+        self.bug_refresh_images()
+
+    def bug_paste_screenshot(self):
+        image=QApplication.clipboard().image()
+        if image.isNull():
+            QMessageBox.information(self,'Screenshot','Clipboard does not contain an image.');return
+        if len(self.bug_images)>=3:
+            QMessageBox.warning(self,'Screenshots','Maximum 3 screenshots.');return
+        path=DATA / ('bug_clipboard_' + str(datetime.now().timestamp()).replace('.','_') + '.png')
+        if not image.save(str(path),'PNG') or path.stat().st_size>5*1024*1024:
+            path.unlink(missing_ok=True)
+            QMessageBox.warning(self,'Screenshot','Screenshot could not be saved or exceeds 5 MB.');return
+        self.bug_images.append(str(path));self.bug_refresh_images()
+
+    def bug_remove_image(self):
+        index=self.bug_image_list.currentRow()
+        if 0<=index<len(self.bug_images):self.bug_images.pop(index)
+        self.bug_refresh_images()
+
+    def bug_refresh_images(self):
+        self.bug_image_list.clear()
+        for path in self.bug_images:
+            self.bug_image_list.addItem(Path(path).name + '  (' + str(round(Path(path).stat().st_size/1024)) + ' KB)')
+
+    def bug_payload(self):
+        description=self.bug_description.toPlainText().strip()
+        if not 10<=len(description)<=10000:
+            raise ValueError('Description must contain 10–10000 characters.')
+        images=[]
+        for path in self.bug_images:
+            file=Path(path)
+            data=file.read_bytes()
+            if len(data)>5*1024*1024:raise ValueError('Each screenshot must be smaller than 5 MB.')
+            ext=file.suffix.lower()
+            mime={' .png':'image/png','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp'}.get(ext)
+            if not mime:raise ValueError('Only PNG, JPG and WEBP screenshots are supported.')
+            images.append({'mime':mime,'data':base64.b64encode(data).decode('ascii')})
+        return {'category':self.bug_category.currentText(), 'description':description,
+                'app_version':APP_VERSION, 'system_info':platform.system()+' '+platform.release(),
+                'diagnostic_log':scrub_bug_log('\n'.join(line for _,line in self._log_lines)) if self.bug_include_log.isChecked() else '',
+                'images':images}
+
+    def bug_preview(self):
+        try:payload=self.bug_payload()
+        except Exception as exc:QMessageBox.warning(self,'Invalid report',str(exc));return
+        dialog=QDialog(self);dialog.setWindowTitle('Review Bug Report');dialog.resize(650,480)
+        layout=QVBoxLayout(dialog)
+        preview=QPlainTextEdit();preview.setReadOnly(True)
+        preview.setPlainText('Category: '+payload['category']+'\nVersion: '+payload['app_version']+
+            '\nSystem: '+payload['system_info']+'\nScreenshots: '+', '.join(Path(x).name for x in self.bug_images)+
+            '\n\nDescription:\n'+payload['description']+'\n\nDiagnostic log:\n'+(payload['diagnostic_log'] or '(not included)'))
+        layout.addWidget(preview)
+        layout.addWidget(button('Close preview',dialog.accept))
+        dialog.exec()
+
+    def bug_send(self):
+        try:payload=self.bug_payload()
+        except Exception as exc:QMessageBox.warning(self,'Invalid report',str(exc));return
+        if QMessageBox.question(self,'Send Bug Report',
+            'Send the description, '+str(len(payload['images']))+' screenshot(s) and '+
+            ('redacted diagnostics' if payload['diagnostic_log'] else 'no diagnostics')+
+            ' to the developer? Review screenshots for personal information before continuing.')!=QMessageBox.Yes:return
+        self.bug_send_button.setEnabled(False)
+        self.bug_status.setText('Sending report…')
+        self.bug_worker=BugReportWorker(payload,self)
+        self.bug_worker.completed.connect(self.bug_sent)
+        self.bug_worker.start()
+
+    def bug_sent(self,ok,message):
+        self.bug_send_button.setEnabled(True)
+        if ok:
+            self.bug_status.setText('Report sent successfully. ID: '+message)
+            self.bug_description.clear();self.bug_images=[];self.bug_refresh_images()
+            self.log('INFO','BUG REPORT','Report submitted: '+message)
+        else:
+            self.bug_status.setText('Could not send report: '+message)
+            self.log('WARN','BUG REPORT',message)
+
     def make_settings(self):
         w,v=self.column();v.addWidget(heading('Settings','Downloader tools and configuration.'))
         c,cl=card();cl.addWidget(QLabel('MISTER MUSCLE • v' + APP_VERSION))
@@ -1425,9 +1632,25 @@ class Main(QMainWindow):
         update_note=QLabel('Updates download to AppData/MisterMuscleQt/updates. When a new installer is ready, you can approve installation and restart. FFmpeg is checked locally only.')
         update_note.setObjectName('sub');update_note.setWordWrap(True);cl.addWidget(update_note)
         cl.addWidget(QLabel('All cutting controls are now in New Download → Media Studio.'));v.addWidget(c);return w
+    def choose_instagram_cookies(self):
+        path,_=QFileDialog.getOpenFileName(self,'Choose cookies.txt',str(Path.home()),'Text files (*.txt);;All files (*)')
+        if path:self.ig_cookie_path.setText(path)
+
+    def update_instagram_cookie_controls(self,*_):
+        file_mode=self.ig_cookie_source.currentIndex()==1
+        self.ig_browser.setVisible(not file_mode)
+        self.ig_cookie_path.setVisible(file_mode)
+
+    def auto_paste_clipboard(self):
+        if not hasattr(self,'autopaste_checkbox') or not self.autopaste_checkbox.isChecked():return
+        # React to clipboard changes even when another window has focus.
+        self.paste()
+
     def paste(self):
-        t=QApplication.clipboard().text().strip()
-        if t:self.urls.insertPlainText(('\n' if self.urls.toPlainText().strip() else '')+t)
+        links=extract_media_links(QApplication.clipboard().text())
+        existing=set(x.strip() for x in self.urls.toPlainText().splitlines())
+        new=[u for u in links if u not in existing]
+        if new:self.urls.insertPlainText(('\n' if self.urls.toPlainText().strip() else '')+'\n'.join(new))
     def choose_folder(self):
         p=QFileDialog.getExistingDirectory(self,'Download folder',self.folder)
         if p:self.folder=p;self.folder_label.setText(p);self.persist_session()
@@ -1436,7 +1659,11 @@ class Main(QMainWindow):
         if sys.platform=='win32':os.startfile(self.folder)
         else:subprocess.Popen(['xdg-open',self.folder])
     def start_download(self):
-        links=[x.strip() for x in self.urls.toPlainText().splitlines() if x.strip()]
+        links=extract_media_links(self.urls.toPlainText())
+        if self.urls.toPlainText().strip() and not links:
+            QMessageBox.warning(self,'Invalid links','Only supported media URLs are accepted.');return
+        if self.mode.currentIndex()==3 and any(urllib.parse.urlsplit(u).hostname not in ('instagram.com','www.instagram.com') for u in links):
+            QMessageBox.warning(self,'Instagram Photos','Use Instagram post links in this mode.');return
         if not links:QMessageBox.information(self,'Missing links','Paste at least one link first.');return
         self.queue.extend((u,self.mode.currentIndex(),self.quality.currentText(),self.selected_download_format()) for u in links)
         self.urls.clear();self.paused=False;self.persist_session();self.run_next()
@@ -1491,6 +1718,25 @@ class Main(QMainWindow):
         self.proc.readyReadStandardOutput.connect(self.on_output)
         self.watch_process(self.proc,'DOWNLOAD',stderr=False,stdout=False)
         self.proc.finished.connect(self.on_finished)
+        if mode==3:
+            gallery=str(TOOLS_DIR/'gallery-dl.exe') if getattr(sys,'frozen',False) else (shutil.which('gallery-dl') or str(TOOLS_DIR/'gallery-dl.exe'))
+            if not Path(gallery).is_file():
+                self.log('ERROR','INSTAGRAM','gallery-dl.exe missing from tools folder')
+                QMessageBox.warning(self,'Instagram Photos','gallery-dl.exe is missing. Rebuild with gallery-dl bundled.')
+                self.proc=None;self.start_btn.setEnabled(True);self.queue.insert(0,(self.current_url,mode,quality,output_format));return
+            if self.ig_cookie_source.currentIndex()==1:
+                cookie_path=self.ig_cookie_path.text().strip()
+                if not Path(cookie_path).is_file():
+                    QMessageBox.warning(self,'Instagram Photos','Choose an existing cookies.txt file.')
+                    self.proc=None;self.start_btn.setEnabled(True);self.queue.insert(0,(self.current_url,mode,quality,output_format));return
+                cookie_args=['--cookies',cookie_path]
+            else:
+                cookie_args=['--cookies-from-browser',self.ig_browser.currentText().lower()]
+            self.log('INFO','INSTAGRAM','Starting gallery-dl with selected cookie source')
+            self.proc.start(gallery,[*cookie_args,'--directory',self.folder,self.current_url])
+            self.start_btn.setEnabled(False)
+            self.persist_session();self.refresh_queue();self.refresh_center()
+            return
         fmt={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[quality]
         args=['-m','yt_dlp','--newline','--continue','--no-playlist','--print','after_move:filepath','-P',self.folder,'-o','%(title).180B [%(id)s].%(ext)s']
         if mode==2:args+=['-x','--audio-format',('vorbis' if output_format=='ogg' else output_format),'--audio-quality','0']
