@@ -1,4 +1,4 @@
-﻿; ============================================================================
+; ============================================================================
 ;  MisterMuscle_Setup.iss
 ;  Inno Setup skripta koja od VEĆ IZGRAĐENE dist\MisterMuscle\ mape
 ;  (napravljene preko "python build_exe.py") pravi pravi Windows
@@ -29,7 +29,7 @@
 ; ============================================================================
 
 #define MyAppName "Mister Muscle Downloader"
-#define MyAppVersion "4.2"
+#define MyAppVersion "5.0"
 #define MyAppPublisher "Mister Muscle"
 #define MyAppExeName "MisterMuscle.exe"
 
@@ -38,7 +38,7 @@ AppId={{7C1E9F2A-4B3D-4E7A-9C2F-6A1D8E5B3F90}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-AppSupportURL=https://github.com/yt-dlp/yt-dlp
+AppSupportURL=https://github.com/wilsoncro/mister-muscle-downloader
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

@@ -1,119 +1,91 @@
-# ============================================================================
-#  release.ps1
-#  Automatizira CIJELI proces objavljivanja nove verzije - jednom komandom:
-#    1) upise novi broj verzije na oba mjesta (skini_klip_gui.py i .iss)
-#    2) pokrene build_exe.py (napravi .exe i Setup.exe)
-#    3) git add + commit + push
-#    4) napravi GitHub Release i na njega prikaci Setup.exe
-#
-#  PRIPREMA (jednom, prije prve upotrebe):
-#    1) Instaliraj GitHub CLI (besplatno): https://cli.github.com/
-#    2) U terminalu pokreni:  gh auth login   (jednom se prijavis, pamti te)
-#    3) Svaki put kad zatreba novi build/release, u ovom folderu pokreni:
-#         .\release.ps1 -Verzija "1.2" -Opis "Kratak opis izmjena"
-#
-#  Ako izostavis -Opis, skripta ce zatraziti da ga upises interaktivno.
-# ============================================================================
-
-param(
-    [Parameter(Mandatory=$true)]
-    [string]$Verzija,
-
-    [string]$Opis = ""
+﻿param(
+    [Parameter(Mandatory=$true)][string]$Verzija,
+    [string]$Opis = '',
+    [switch]$Publish
 )
-
-$ErrorActionPreference = "Stop"
-$Ovdje = $PSScriptRoot
-Set-Location $Ovdje
-
-function Korak($tekst) {
-    Write-Host ""
-    Write-Host "=== $tekst ===" -ForegroundColor Cyan
+$ErrorActionPreference = 'Stop'
+Set-Location -LiteralPath $PSScriptRoot
+$repo = 'wilsoncro/mister-muscle-downloader'
+if ($Verzija -notmatch '^\d+\.\d+(\.\d+)?$') { throw 'Verzija mora biti npr. 5.0 ili 5.0.1.' }
+foreach ($command in @('py','git','gh')) {
+    if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Nedostaje alat: $command" }
 }
 
-function Provjeri($naredba, $poruka) {
-    if (-not (Get-Command $naredba -ErrorAction SilentlyContinue)) {
-        Write-Host "GRESKA: '$naredba' nije pronadjen. $poruka" -ForegroundColor Red
-        exit 1
-    }
+# Git repo must be checked BEFORE building. Never create an unrelated history.
+$gitRoot = (& git rev-parse --show-toplevel 2>$null)
+if ($LASTEXITCODE -ne 0 -or -not $gitRoot) {
+    throw "Ova mapa nije Git repozitorij: $PSScriptRoot`nKloniraj postojeći repo: git clone https://github.com/$repo.git`nZatim prebaci izvorne datoteke u kloniranu mapu (bez dist/build/Output/tools) i pokreni skriptu tamo."
+}
+$origin = (& git remote get-url origin 2>$null)
+if ($LASTEXITCODE -ne 0 -or -not $origin) { throw 'Git remote origin nije postavljen.' }
+if ($origin -notmatch '(^|[:/])wilsoncro/mister-muscle-downloader(\.git)?$') {
+    throw "Git origin nije očekivani repozitorij: $origin"
 }
 
-# ---- 0) provjera alata ----
-Provjeri "git" "Instaliraj Git: https://git-scm.com/download/win"
-Provjeri "python" "Instaliraj Python: https://python.org"
-Provjeri "gh" "Instaliraj GitHub CLI: https://cli.github.com/"
+$source = Join-Path $PSScriptRoot 'mister_muscle_qt.py'
+$iss = Join-Path $PSScriptRoot 'MisterMuscle_Setup.iss'
+$notesFile = Join-Path $PSScriptRoot 'CHANGELOG_v5.0.md'
+foreach ($required in @($source,$iss,$notesFile,(Join-Path $PSScriptRoot 'build_qt.py'))) {
+    if (-not (Test-Path -LiteralPath $required)) { throw "Nedostaje: $required" }
+}
+$code = [IO.File]::ReadAllText($source)
+if ($code -notmatch "APP_VERSION\s*=\s*'[^']*'") { throw 'APP_VERSION nije pronađen u mister_muscle_qt.py' }
+$code = [regex]::Replace($code,"APP_VERSION\s*=\s*'[^']*'","APP_VERSION = '$Verzija'",1)
+[IO.File]::WriteAllText($source,$code,(New-Object System.Text.UTF8Encoding($false)))
+$setupText = [IO.File]::ReadAllText($iss)
+if ($setupText -notmatch '#define MyAppVersion "[^"]*"') { throw 'MyAppVersion nije pronađen u .iss datoteci' }
+$setupText = [regex]::Replace($setupText,'#define MyAppVersion "[^"]*"',"#define MyAppVersion `"$Verzija`"",1)
+[IO.File]::WriteAllText($iss,$setupText,(New-Object System.Text.UTF8Encoding($false)))
 
-$ghStatus = gh auth status 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "GRESKA: nisi prijavljen u GitHub CLI. Pokreni jednom: gh auth login" -ForegroundColor Red
-    exit 1
+Write-Host "Building Mister Muscle v$Verzija..." -ForegroundColor Cyan
+& py -3 (Join-Path $PSScriptRoot 'build_qt.py')
+if ($LASTEXITCODE -ne 0) { throw 'Build failed. Nothing published.' }
+$setup = Join-Path $PSScriptRoot 'Output\MisterMuscle_Setup.exe'
+if (-not (Test-Path -LiteralPath $setup)) { throw "Installer nije pronađen: $setup" }
+Write-Host "Installer ready: $setup" -ForegroundColor Green
+if (-not $Publish) {
+    Write-Host 'Test build complete; no GitHub changes. Add -Publish to publish.' -ForegroundColor Yellow
+    exit 0
 }
 
-if (-not $Opis) {
-    $Opis = Read-Host "Kratak opis ove verzije (za Release napomene)"
+& gh auth status 2>$null
+if ($LASTEXITCODE -ne 0) { throw 'Prijavi se: gh auth login' }
+$releaseJson = & gh release list --repo $repo --limit 100 --json tagName
+if ($LASTEXITCODE -ne 0) { throw 'GitHub release check failed.' }
+$existing = @($releaseJson | ConvertFrom-Json)
+if ($existing | Where-Object { $_.tagName -eq "v$Verzija" }) {
+    throw "Release v$Verzija već postoji. Za novu objavu koristi novu verziju."
 }
 
-# ---- 1) upisi novi broj verzije na oba mjesta ----
-Korak "Postavljam verziju na $Verzija"
-
-$guiPath = Join-Path $Ovdje "skini_klip_gui.py"
-$issPath = Join-Path $Ovdje "MisterMuscle_Setup.iss"
-
-(Get-Content $guiPath -Raw -Encoding UTF8) -replace 'APP_VERZIJA = "[^"]*"', "APP_VERZIJA = `"$Verzija`"" |
-    Set-Content $guiPath -NoNewline -Encoding UTF8
-
-(Get-Content $issPath -Raw -Encoding UTF8) -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion `"$Verzija`"" |
-    Set-Content $issPath -NoNewline -Encoding UTF8
-
-Write-Host "Verzija postavljena u skini_klip_gui.py i MisterMuscle_Setup.iss" -ForegroundColor Green
-
-# ---- 2) build (exe + setup) ----
-Korak "Gradim .exe i instalater"
-# MM_BEZ_PAUZE govori build_exe.py da PRESKOCI svoj "Pritisni Enter za izlaz"
-# na kraju - inace bi ovaj skript tiho zapeo tu i cekao Enter koji nitko ne
-# zna da treba pritisnuti (build_exe.py se inace pokrece samostalno, gdje ta
-# pauza ima smisla - drzi cmd prozor otvoren da se ispis stigne procitati).
-$env:MM_BEZ_PAUZE = "1"
-try {
-    python build_exe.py
-} finally {
-    Remove-Item Env:MM_BEZ_PAUZE -ErrorAction SilentlyContinue
+# Only stage source files. Ignore generated files and dependencies.
+$paths = @('mister_muscle_qt.py','mister_muscle_original_player.py','build_qt.py',
+    'release.ps1','objavi.bat','MisterMuscle_Setup.iss','README_RELEASE.txt',
+    'CHANGELOG_v5.0.md','assets','ikona.ico')
+foreach ($path in $paths) {
+    if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $path))) { continue }
+    # git warnings on stderr must not become terminating PowerShell errors.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & git -c core.quotepath=false add -- $path 2>$null | Out-Null; $exitCode = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previous }
+    if ($exitCode -ne 0) { Write-Warning "Preskačem Git staging: $path (exit $exitCode)" }
 }
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "GRESKA: build_exe.py nije uspio." -ForegroundColor Red
-    exit 1
+$staged = @(& git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) { throw 'git diff --cached failed.' }
+# Prevent accidentally publishing dependencies that were already staged earlier.
+$bad = @($staged | Where-Object { $_ -match '^(dist|build|Output|tools|node_modules|bgutil-ytdlp-pot-provider)/' })
+if ($bad.Count -gt 0) {
+    throw "U Git stagingu su generirane datoteke ($($bad.Count)). Očisti staging naredbom 'git restore --staged .' pa pokušaj ponovno."
 }
-
-$setupExe = Join-Path $Ovdje "Output\MisterMuscle_Setup.exe"
-if (-not (Test-Path $setupExe) -or (Get-Item $setupExe).Length -lt 1000000) {
-    Write-Host "GRESKA: $setupExe nije pronadjen nakon builda - je li Inno Setup instaliran?" -ForegroundColor Red
-    exit 1
+if ($staged.Count -gt 0) {
+    if (-not $Opis) { $Opis = "Mister Muscle Downloader v$Verzija" }
+    & git commit -m "v$Verzija - $Opis"
+    if ($LASTEXITCODE -ne 0) { throw 'git commit failed.' }
+    & git push
+    if ($LASTEXITCODE -ne 0) { throw 'git push failed. Release not created.' }
+} else {
+    Write-Host 'No new source changes to commit.' -ForegroundColor Yellow
 }
-
-# ---- 3) git commit + push ----
-Korak "Saljem izmjene na GitHub"
-git add -- skini_klip_gui.py MisterMuscle_Setup.iss build_exe.py release.ps1 objavi.bat
-if ($LASTEXITCODE -ne 0) { throw "git add nije uspio" }
-git diff --cached --quiet
-if ($LASTEXITCODE -eq 1) {
-    git commit -m "v$Verzija - $Opis"
-    if ($LASTEXITCODE -ne 0) { throw "git commit nije uspio" }
-} elseif ($LASTEXITCODE -ne 0) { throw "git diff nije uspio" }
-git push
-if ($LASTEXITCODE -ne 0) { throw "git push nije uspio" }
-
-# ---- 4) GitHub Release s Setup.exe ----
-Korak "Pravim GitHub Release v$Verzija"
-# Native stderr u Windows PowerShell 5.1 moze izazvati terminating error
-# kada gh prijavi da Release jos ne postoji. Uhvati izlaz kroz cmd.exe.
-$releaseCheck = cmd /d /c "gh release view v$Verzija 2>nul"
-$releaseExit = $LASTEXITCODE
-if ($releaseExit -eq 0) {
-    throw "Release v$Verzija vec postoji. Koristi novi broj verzije ili rucno upravljaj postojecim releaseom."
-}
-gh release create "v$Verzija" $setupExe --title "v$Verzija" --notes "$Opis"
-if ($LASTEXITCODE -ne 0) { throw "GitHub Release nije napravljen" }
-
-Write-Host ""
-Write-Host "GOTOVO! v$Verzija je objavljena." -ForegroundColor Green
-Write-Host "Pogledaj: gh repo view --web" -ForegroundColor Green
+& gh release create "v$Verzija" "$setup" --repo $repo --title "Mister Muscle Downloader v$Verzija" --notes-file "$notesFile" --latest
+if ($LASTEXITCODE -ne 0) { throw 'GitHub release failed.' }
+Write-Host "PUBLISHED v$Verzija" -ForegroundColor Green
