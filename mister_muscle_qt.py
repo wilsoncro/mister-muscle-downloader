@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.7'
+APP_VERSION = '5.2.8'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -1531,30 +1531,30 @@ class Main(QMainWindow):
         layout.addWidget(title)
         if APP_LANGUAGE=='hr':
             releases=[
-                ('v5.2.7 — Trenutna verzija', [
+                ('v5.2.8 — Trenutna verzija', [
+                    'Download Manager prikazuje stvarni postotak Premiere konverzije i aktivni GPU/CPU enkoder.',
+                    'Jasno se vidi koristi li se NVIDIA NVENC, Intel QSV, AMD AMF ili CPU fallback.',
+                    'Status ostaje Converting do završetka provjere MP4 datoteke.'
+                ]),
+                ('v5.2.7 — Prethodna verzija', [
                     'Ubrzana Premiere Compatible konverzija: automatski pokušaj NVIDIA NVENC, Intel Quick Sync i AMD AMF GPU enkodera.',
                     'Automatski CPU fallback kada hardverski enkoder nije dostupan ili ne radi.',
                     'Postavke visoke kvalitete uz očuvanje izvorne rezolucije, uključujući 4K.',
                     'Samo jedan završni Premiere Ready MP4; Download Manager čeka završetak konverzije i provjere.'
-                ]),
-                ('v5.2.6 — Prethodna verzija', [
-                    'Poboljšana kompatibilnost H.264/AAC MP4 datoteka s Adobe Premiere Pro.',
-                    'Ispravljeno praćenje završetka preuzimanja i konverzije.',
-                    'Izvorna datoteka uklanja se tek nakon uspješne konverzije i provjere.'
-                ])]
+                ]),]
         else:
             releases=[
-                ('v5.2.7 — Current release', [
+                ('v5.2.8 — Current release', [
+                    'Download Manager now displays Premiere conversion percentage and active GPU/CPU encoder.',
+                    'Shows whether NVIDIA NVENC, Intel QSV, AMD AMF or CPU fallback is in use.',
+                    'Converting status remains until MP4 validation is finished.'
+                ]),
+                ('v5.2.7 — Previous release', [
                     'Faster Premiere Compatible conversion: automatically tries NVIDIA NVENC, Intel Quick Sync and AMD AMF GPU encoders.',
                     'Automatic CPU fallback if hardware encoding is unavailable or fails.',
                     'High-quality encoding settings while preserving source resolution, including 4K.',
                     'One final Premiere Ready MP4; Download Manager waits for conversion and validation.'
-                ]),
-                ('v5.2.6 — Previous release', [
-                    'Improved H.264/AAC MP4 compatibility with Adobe Premiere Pro.',
-                    'Fixed download and conversion completion tracking.',
-                    'Original intermediate file is removed only after successful conversion and validation.'
-                ])]
+                ]),]
         for heading_text, entries in releases:
             heading_label=QLabel(heading_text)
             heading_label.setStyleSheet('font-size:16px;font-weight:700;color:#e8e0ff')
@@ -2243,10 +2243,12 @@ class Main(QMainWindow):
         try:
             probe=subprocess.run([ffprobe,'-v','error','-show_entries',
                 'stream=codec_type,codec_name,width,height,avg_frame_rate',
-                '-of','json',str(source)],capture_output=True,text=True,timeout=25,
+                '-show_entries','format=duration','-of','json',str(source)],capture_output=True,text=True,timeout=25,
                 creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             if probe.returncode:raise RuntimeError(probe.stderr[-500:])
-            streams=json.loads(probe.stdout).get('streams',[])
+            probe_data=json.loads(probe.stdout)
+            self._premiere_duration=float(probe_data.get('format',{}).get('duration') or 0)
+            streams=probe_data.get('streams',[])
             video=next((x for x in streams if x.get('codec_type')=='video'),None)
             if not video:raise RuntimeError('Source contains no video stream')
             target=source.with_name(source.stem+' - Premiere H264.mp4')
@@ -2270,6 +2272,8 @@ class Main(QMainWindow):
                                     if re.search(r'\b'+e+r'\b',available)]
             self._premiere_encoders.append('libx264')
             self._premiere_encoder_index=0
+            self._premiere_progress_buffer=''
+            self._premiere_progress_seconds=0.0
             self._premiere_video_dimensions=(video.get('width'),video.get('height'))
             self._premiere_args_base=['-hide_banner','-nostdin','-y','-fflags','+genpts',
                 '-i',str(source),'-map','0:v:0']
@@ -2305,22 +2309,42 @@ class Main(QMainWindow):
         self._premiere_proc.setProcessChannelMode(QProcess.MergedChannels)
         self._premiere_proc.readyReadStandardOutput.connect(self.premiere_conversion_output)
         self._premiere_proc.finished.connect(self.premiere_conversion_finished)
+        self._premiere_progress_buffer=''
+        self._premiere_progress_seconds=0.0
         self.status.setText('Premiere conversion ('+encoder+', original resolution)…')
-        self.download_detail='Converting for Premiere: '+encoder
+        self.download_percent=90
+        self.download_detail='Converting 0% | Encoder: '+encoder+(' (GPU)' if encoder!='libx264' else ' (CPU)')
+        self.refresh_center()
         self.log('INFO','PREMIERE','Starting '+encoder+' high-quality conversion; '
                  +str(self._premiere_video_dimensions))
         self._premiere_proc.start(self._premiere_ffmpeg,
-            self._premiere_args_base+settings[encoder]+self._premiere_args_end)
+            self._premiere_args_base+settings[encoder]+['-progress','pipe:1','-nostats']+self._premiere_args_end)
 
     def premiere_conversion_output(self):
         proc=getattr(self,'_premiere_proc',None)
         if proc is None:return
         data=bytes(proc.readAllStandardOutput()).decode('utf-8',errors='replace')
-        for line in data.splitlines():
-            if 'time=' in line and ('frame=' in line or 'size=' in line):
-                self.status.setText('Premiere conversion: '+line.strip()[-135:])
-                self.download_detail='Converting to Premiere H.264: '+line.strip()[-100:]
-                self.download_percent=99
+        self._premiere_progress_buffer=getattr(self,'_premiere_progress_buffer','')+data
+        lines=self._premiere_progress_buffer.split('\n')
+        self._premiere_progress_buffer=lines.pop()
+        encoder=self._premiere_encoders[self._premiere_encoder_index]
+        label=encoder+(' (GPU)' if encoder!='libx264' else ' (CPU)')
+        for raw in lines:
+            line=raw.strip()
+            if line.startswith('out_time='):
+                try:
+                    parts=line[9:].split(':')
+                    self._premiere_progress_seconds=max(0.0,float(parts[0])*3600+float(parts[1])*60+float(parts[2]))
+                except (ValueError,IndexError):pass
+            elif line.startswith('out_time_us=') or line.startswith('out_time_ms='):
+                try:self._premiere_progress_seconds=max(0.0,int(line.split('=',1)[1])/1000000)
+                except ValueError:pass
+            elif line=='progress=continue' or line=='progress=end':
+                duration=getattr(self,'_premiere_duration',0)
+                percent=min(99,int(self._premiere_progress_seconds/duration*100)) if duration>0 else 0
+                self.download_percent=90+min(9,int(percent*0.09))
+                self.download_detail=f'Converting {percent}% | Encoder: {label}'
+                self.status.setText(f'Premiere conversion {percent}% — {label}')
                 self.refresh_center()
             elif 'Error' in line or 'error' in line:
                 self.log('WARN','PREMIERE',line[-300:])
@@ -2357,6 +2381,9 @@ class Main(QMainWindow):
                     capture_output=True,text=True,timeout=3600,
                     creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 if check.returncode:raise RuntimeError('Video validation: '+check.stderr[-500:])
+                self.download_detail='Validating Premiere MP4 | Encoder: '+self._premiere_encoders[self._premiere_encoder_index]
+                self.status.setText('Validating Premiere MP4…')
+                self.refresh_center()
                 self._premiere_temp.replace(self._premiere_target)
                 self.last_file=str(self._premiere_target)
                 # Only remove the source AFTER the new file passed complete validation.
