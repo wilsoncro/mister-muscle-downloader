@@ -1,5 +1,5 @@
 ﻿param(
-    [Parameter(Mandatory=$true)][string]$Verzija,
+    [string]$Verzija = '',
     [string]$Opis = '',
     [switch]$Publish
 )
@@ -25,10 +25,34 @@ function Invoke-Native {
     return [pscustomobject]@{ ExitCode = $exitCode; Output = ($output -join "`n") }
 }
 
-if ($Verzija -notmatch '^\d+\.\d+(\.\d+)?$') { throw 'Version must look like 5.0 or 5.0.1' }
 $source = Join-Path $PSScriptRoot 'mister_muscle_qt.py'
 $iss = Join-Path $PSScriptRoot 'MisterMuscle_Setup.iss'
-$notesFile = Join-Path $PSScriptRoot 'CHANGELOG_v5.0.md'
+$notesFile = Join-Path $PSScriptRoot 'CHANGELOG.md'
+if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) {
+    throw 'CHANGELOG.md missing. Add a version heading like ## v5.2.12 before publishing.'
+}
+$changelog = [IO.File]::ReadAllText($notesFile)
+$headingPattern = '(?m)^\s{0,3}#{1,3}\s*\[?v?(?<version>\d+\.\d+(?:\.\d+)?)\]?\b[^\r\n]*$'
+$headings = [regex]::Matches($changelog, $headingPattern)
+if ($headings.Count -eq 0) { throw 'No version heading found in CHANGELOG.md (example: ## v5.2.12).' }
+$latestHeading = $headings[0]
+$detectedVersion = $latestHeading.Groups['version'].Value
+if ([string]::IsNullOrWhiteSpace($Verzija)) { $Verzija = $detectedVersion }
+elseif ($Verzija -ne $detectedVersion) {
+    throw "Requested version $Verzija does not match first CHANGELOG.md version $detectedVersion."
+}
+$notesStart = $latestHeading.Index
+$notesEnd = if ($headings.Count -gt 1) { $headings[1].Index } else { $changelog.Length }
+$releaseNotes = $changelog.Substring($notesStart, $notesEnd - $notesStart).Trim()
+if ($releaseNotes -notmatch '(?m)^\s*[-*]\s+\S') {
+    throw "Changelog v$Verzija has no bullet-point release notes."
+}
+if ($Verzija -notmatch '^\d+\.\d+(\.\d+)?$') { throw 'Invalid changelog version' }
+if ([string]::IsNullOrWhiteSpace($Opis)) { $Opis = "Release v$Verzija from CHANGELOG.md" }
+$releaseNotesPath = Join-Path $PSScriptRoot '.release-notes-current.md'
+[IO.File]::WriteAllText($releaseNotesPath, $releaseNotes + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "Detected v$Verzija from CHANGELOG.md" -ForegroundColor Cyan
+Write-Host $releaseNotes -ForegroundColor DarkGray
 $setup = Join-Path $PSScriptRoot 'Output\MisterMuscle_Setup.exe'
 $repo = 'wilsoncro/mister-muscle-downloader'
 
@@ -38,7 +62,7 @@ foreach ($file in @($source, $iss, (Join-Path $PSScriptRoot 'build_qt.py'))) {
 if (-not (Get-Command py -ErrorAction SilentlyContinue)) { throw 'Python launcher (py) missing' }
 
 if ($Publish) {
-    if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) { throw 'CHANGELOG_v5.0.md missing.' }
+    if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) { throw 'CHANGELOG.md missing.' }
     foreach ($program in @('git','gh')) {
         if (-not (Get-Command $program -ErrorAction SilentlyContinue)) { throw "$program is missing" }
     }
@@ -75,11 +99,11 @@ if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Setup EXE miss
 Write-Host "Installer ready: $setup" -ForegroundColor Green
 if (-not $Publish) { Write-Host 'DRY RUN: no GitHub changes. Use -Publish after testing.' -ForegroundColor Yellow; exit 0 }
 
-if (-not $Opis) { $Opis = Read-Host 'Release notes' }
+
 Write-Host 'Publishing release...' -ForegroundColor Cyan
 # Commit only release source files. Never stage the entire repository.
 # Thousands of deleted node_modules/build files can be left unstaged safely.
-$paths = @('mister_muscle_qt.py','mister_muscle_original_player.py','build_qt.py','release.ps1','objavi.bat','MisterMuscle_Setup.iss','README_RELEASE.txt','CHANGELOG_v5.0.md','assets','ikona.ico')
+$paths = @('mister_muscle_qt.py','mister_muscle_original_player.py','build_qt.py','release.ps1','objavi.bat','MisterMuscle_Setup.iss','README_RELEASE.txt','CHANGELOG.md','assets','ikona.ico')
 $existing = @($paths | Where-Object { Test-Path -LiteralPath (Join-Path $PSScriptRoot $_) })
 # Do not accidentally include changes that were staged before this script ran.
 $preStaged = Invoke-Native git @('diff','--cached','--name-only') -Quiet
@@ -117,7 +141,9 @@ if (-not [string]::IsNullOrWhiteSpace($staged.Output)) {
 $push = Invoke-Native git @('push')
 if ($push.Output) { Write-Host $push.Output }
 if ($push.ExitCode -ne 0) { throw "git push failed (exit $($push.ExitCode)): $($push.Output)" }
-$release = Invoke-Native gh @('release','create',"v$Verzija",$setup,'--repo',$repo,'--title',"Mister Muscle Downloader v$Verzija",'--notes-file',$notesFile,'--latest') -Quiet
+$release = Invoke-Native gh @('release','create',"v$Verzija",$setup,'--repo',$repo,'--title',"Mister Muscle Downloader v$Verzija",'--notes-file',$releaseNotesPath,'--latest') -Quiet
 if ($release.ExitCode -ne 0) { throw "GitHub release failed: $($release.Output)" }
 Write-Host "PUBLISHED v$Verzija" -ForegroundColor Green
 Write-Host $release.Output
+
+Remove-Item -LiteralPath $releaseNotesPath -ErrorAction SilentlyContinue

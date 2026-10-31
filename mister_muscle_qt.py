@@ -7,10 +7,10 @@ import os, sys, re, json, subprocess, shutil, tempfile, threading, functools, ht
 import shiboken6
 from pathlib import Path
 from datetime import datetime
-from PySide6.QtCore import Qt, QProcess, QUrl, QSize, QTimer, QObject, Slot, QElapsedTimer, QFile, QIODevice, QThread, Signal
+from PySide6.QtCore import Qt, QProcess, QUrl, QSize, QTimer, QObject, Slot, QElapsedTimer, QFile, QIODevice, QThread, Signal, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,
     QTextEdit,QLineEdit,QComboBox,QStackedWidget,QFrame,QScrollArea,QProgressBar,QFileDialog,
-    QMessageBox,QListWidget,QListWidgetItem,QSlider,QCheckBox,QSizePolicy,QButtonGroup,QGraphicsDropShadowEffect,QPlainTextEdit,QDialog)
+    QMessageBox,QListWidget,QListWidgetItem,QSlider,QCheckBox,QSizePolicy,QButtonGroup,QGraphicsDropShadowEffect,QGraphicsOpacityEffect,QPlainTextEdit,QDialog)
 from PySide6.QtGui import QFont, QPixmap, QIcon, QPainter, QColor, QDesktopServices, QTextCursor, QTextCharFormat, QShortcut, QKeySequence
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QSoundEffect
@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.12'
+APP_VERSION = '5.2.13'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -1518,55 +1518,97 @@ class Main(QMainWindow):
             self.show_whats_new()
 
     def show_whats_new(self):
-        """Show only the previous release and the current release, not old history."""
+        """Animated release highlights for the newest and preceding versions."""
         dialog=QDialog(self)
         dialog.setWindowTitle(('Što je novo' if APP_LANGUAGE=='hr' else 'What’s New') + ' — Mister Muscle Downloader v' + APP_VERSION)
-        dialog.setMinimumWidth(540)
-        dialog.resize(630, 410)
-        layout=QVBoxLayout(dialog)
-        layout.setContentsMargins(26,24,26,22)
-        layout.setSpacing(14)
-        title=QLabel(('🚀  Što je novo u v' if APP_LANGUAGE=='hr' else '🚀  What’s New in v') + APP_VERSION)
-        title.setStyleSheet('font-size:23px;font-weight:800;color:#f7f8ff')
-        layout.addWidget(title)
+        dialog.resize(680, 540)
+        dialog.setMinimumSize(560, 430)
+        dialog.setStyleSheet('''QDialog {background:#10121d;color:#f4f4fa;}
+            QLabel {color:#e9e9f5;background:transparent;}
+            QFrame#releaseCard {background:#1c2030;border:1px solid #34384c;border-radius:14px;}
+            QPushButton {background:#7156dc;color:white;border:0;border-radius:10px;padding:11px 22px;font-weight:700;}
+            QPushButton:hover {background:#886cf1;}''')
+        outer=QVBoxLayout(dialog)
+        outer.setContentsMargins(28,24,28,22)
+        outer.setSpacing(15)
+        badge=QLabel('✦  MISTER MUSCLE DOWNLOADER')
+        badge.setStyleSheet('color:#b8a7ff;font-size:11px;font-weight:800;letter-spacing:1px;')
+        outer.addWidget(badge)
+        title=QLabel(('Što je novo u v' if APP_LANGUAGE=='hr' else 'What’s new in v')+APP_VERSION)
+        title.setStyleSheet('font-size:26px;font-weight:800;color:#ffffff;')
+        outer.addWidget(title)
+        subtitle=QLabel('Brže, jednostavnije i pouzdanije preuzimanje.' if APP_LANGUAGE=='hr' else 'A smoother, faster and more reliable download experience.')
+        subtitle.setStyleSheet('color:#aeb3c8;font-size:13px;')
+        outer.addWidget(subtitle)
+        scroll=QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet('QScrollArea {background:transparent;border:none;}')
+        content=QWidget()
+        cards=QVBoxLayout(content)
+        cards.setContentsMargins(0,4,5,4)
+        cards.setSpacing(13)
         if APP_LANGUAGE=='hr':
             releases=[
-                ('v5.2.9 — Trenutna verzija', [
-                    'Brzi Premiere remux bez ponovnog kodiranja kada je izvor već H.264/AAC yuv420p.',
-                    'Uklonjena dodatna provjera koja je ponovno dekodirala cijeli video.',
-                    'GPU podrška i CPU fallback ostaju za videe kojima je konverzija potrebna.'
+                ('v5.2.13', 'NAJNOVIJE', [
+                    'Animirani What’s New s pregledom posljednje dvije verzije.',
+                    'Nakon uspješnog završetka svih preuzimanja vraća se na Novo preuzimanje za 3,5 sekunde.',
+                    'Izvorni naslov videa bez dodanog ID-a u nazivu datoteke.',
+                    'Zaštita od duplih zadataka i ponovljenih Premiere konverzija.',
+                    '4K rezolucija, brza H.264 obrada i NVIDIA / AMD / Intel GPU podrška.'
                 ]),
-                ('v5.2.8 — Prethodna verzija', [
-                    'Download Manager prikazuje stvarni postotak Premiere konverzije i aktivni GPU/CPU enkoder.',
-                    'Jasno se vidi koristi li se NVIDIA NVENC, Intel QSV, AMD AMF ili CPU fallback.',
-                    'Status ostaje Converting do završetka provjere MP4 datoteke.'
-                ]),
-                ]
+                ('v5.2.12', 'PRETHODNA VERZIJA', [
+                    'Automatsko otvaranje Download Centera i povratak nakon završetka.',
+                    'Izvorni nazivi videa, zaštita od duplikata i 4K GPU podrška.'
+                ])]
         else:
             releases=[
-                ('v5.2.9 — Current release', [
-                    'Fast Premiere remux without re-encoding for compatible H.264/AAC yuv420p sources.',
-                    'Removed redundant full-video decode after encoding.',
-                    'GPU support and CPU fallback remain for sources requiring transcoding.'
+                ('v5.2.13', 'LATEST RELEASE', [
+                    'Animated What’s New showing the latest two releases.',
+                    'Returns to New Download 3.5 seconds after all downloads complete successfully.',
+                    'Original video titles without added IDs in filenames.',
+                    'Protection against duplicate tasks and repeated Premiere conversions.',
+                    'Preserved 4K resolution, fast H.264 processing and NVIDIA / AMD / Intel GPU support.'
                 ]),
-                ('v5.2.8 — Previous release', [
-                    'Download Manager now displays Premiere conversion percentage and active GPU/CPU encoder.',
-                    'Shows whether NVIDIA NVENC, Intel QSV, AMD AMF or CPU fallback is in use.',
-                    'Converting status remains until MP4 validation is finished.'
-                ]),
-                ]
-        for heading_text, entries in releases:
-            heading_label=QLabel(heading_text)
-            heading_label.setStyleSheet('font-size:16px;font-weight:700;color:#e8e0ff')
-            layout.addWidget(heading_label)
+                ('v5.2.12', 'PREVIOUS RELEASE', [
+                    'Automatic Download Center opening and return after completion.',
+                    'Original filenames, duplicate protection and 4K GPU support.'
+                ])]
+        animated=[]
+        for index,(version,caption,entries) in enumerate(releases):
+            card=QFrame()
+            card.setObjectName('releaseCard')
+            card_layout=QVBoxLayout(card)
+            card_layout.setContentsMargins(19,17,19,18)
+            card_layout.setSpacing(9)
+            heading=QLabel('✦  '+version+'    '+caption)
+            heading.setStyleSheet('color:'+('#c9bbff' if index==0 else '#aeb3c8')+';font-size:14px;font-weight:800;')
+            card_layout.addWidget(heading)
             for entry in entries:
-                detail=QLabel('•  '+entry)
-                detail.setObjectName('sub')
-                detail.setWordWrap(True)
-                layout.addWidget(detail)
-        layout.addStretch()
-        close_button=button('Krenimo!' if APP_LANGUAGE=='hr' else 'Let’s go!',dialog.accept,True)
-        layout.addWidget(close_button)
+                item=QLabel('✓  '+entry)
+                item.setWordWrap(True)
+                item.setStyleSheet('color:#e0e3ef;font-size:12px;')
+                card_layout.addWidget(item)
+            cards.addWidget(card)
+            effect=QGraphicsOpacityEffect(card)
+            effect.setOpacity(0.0)
+            card.setGraphicsEffect(effect)
+            animation=QPropertyAnimation(effect,b'opacity',dialog)
+            animation.setDuration(480)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
+            animation.setEasingCurve(QEasingCurve.OutCubic)
+            animated.append(animation)
+        cards.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll,1)
+        close_button=QPushButton('Krenimo!' if APP_LANGUAGE=='hr' else 'Let’s go!')
+        close_button.clicked.connect(dialog.accept)
+        outer.addWidget(close_button)
+        # Keep animations alive throughout the modal dialog lifetime.
+        dialog._whats_new_animations=animated
+        for index,animation in enumerate(animated):
+            QTimer.singleShot(110+index*170, animation.start)
         dialog.exec()
         try:
             WHATS_NEW_MARKER.write_text(APP_VERSION,encoding='utf-8')
@@ -1959,8 +2001,25 @@ class Main(QMainWindow):
         if self.mode.currentIndex()==3 and any(urllib.parse.urlsplit(u).hostname not in ('instagram.com','www.instagram.com') for u in links):
             QMessageBox.warning(self,'Instagram Photos','Use Instagram post links in this mode.');return
         if not links:QMessageBox.information(self,'Missing links','Paste at least one link first.');return
-        self.queue.extend((u,self.mode.currentIndex(),self.quality.currentText(),self.selected_download_format()) for u in links)
+        # One click / one URL / one active task. Do not enqueue the same link twice.
+        active_url=self.current_url if getattr(self,'proc',None) and self.proc.state()!=QProcess.NotRunning else None
+        if getattr(self,'_premiere_busy',False):active_url=self.current_url
+        known={task[0] for task in self.queue}
+        if active_url:known.add(active_url)
+        added=0
+        for u in links:
+            if u in known:
+                self.log('INFO','DOWNLOAD','Skipped duplicate active/pending URL: '+u)
+                continue
+            self.queue.append((u,self.mode.currentIndex(),self.quality.currentText(),self.selected_download_format()))
+            known.add(u);added+=1
+        if not added:
+            self.status.setText('This URL is already downloading or queued.')
+            return
+        self._auto_return_generation=getattr(self, '_auto_return_generation', 0)+1
         self.urls.clear();self.paused=False;self.persist_session();self.run_next()
+        # Show the Download Center immediately after the user starts a download.
+        self.switch(1)
     def start_pending(self):
         self.paused=False
         self.pause_btn.setText('Ⅱ  Pause active download')
@@ -2004,11 +2063,12 @@ class Main(QMainWindow):
         self.queue.clear();self.refresh_queue()
     def run_next(self):
         if getattr(self,'_premiere_busy',False):return
+        if getattr(self,'_download_finishing',False):return
         if self.paused:return
         if self.proc and self.proc.state()!=QProcess.NotRunning:return
         if not self.queue:
             self.status.setText('Queue completed.');self.refresh_center();return
-        self.current_url,mode,quality,output_format=self.queue.pop(0);self._premiere_path_record=DATA/'premiere_last_download_path.txt';self._premiere_path_record.unlink(missing_ok=True);self._premiere_for_download=(mode in (0,1) and self.premiere_compatible.isChecked());self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
+        self.current_url,mode,quality,output_format=self.queue.pop(0);self._download_finishing=False;self._premiere_finalizing=False;self._premiere_path_record=DATA/'premiere_last_download_path.txt';self._premiere_path_record.unlink(missing_ok=True);self._premiere_for_download=(mode in (0,1) and self.premiere_compatible.isChecked());self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
         # Capture output folder state to identify the exact new file if yt-dlp omits its final path.
         self._premiere_before_files={}
         if self._premiere_for_download:
@@ -2040,7 +2100,7 @@ class Main(QMainWindow):
             self.persist_session();self.refresh_queue();self.refresh_center()
             return
         fmt={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[quality]
-        args=['-m','yt_dlp','--newline','--continue','--no-playlist','--print','after_move:filepath','--print-to-file','after_move:filepath',str(self._premiere_path_record),'-P',self.folder,'-o','%(title).180B [%(id)s].%(ext)s']
+        args=['-m','yt_dlp','--newline','--continue','--no-playlist','--print','after_move:filepath','--print-to-file','after_move:filepath',str(self._premiere_path_record),'-P',self.folder,'-o','%(title)s.%(ext)s']
         if self._premiere_for_download:
             output_format='mp4';self.current_output_format='mp4'
         if mode==2:args+=['-x','--audio-format',('vorbis' if output_format=='ogg' else output_format),'--audio-quality','0']
@@ -2051,12 +2111,45 @@ class Main(QMainWindow):
         else:
             args+=['-f',f'bestvideo[height<={fmt}]+bestaudio/best[height<={fmt}]' if fmt else 'bestvideo+bestaudio/best']
             if not self._premiere_for_download:args+=['--merge-output-format',output_format,'--remux-video',output_format]
+        if self._premiere_for_download:
+            # Prefer H.264 at the SAME selected resolution, never downgrade 4K.
+            # Resolution remains the primary yt-dlp sort key.
+            args+=['-S','res,vcodec:h264']
         args.append(self.current_url)
         self.download_percent=0;self.download_detail='Preparing download...';self.progress.setValue(0);self.status.setText('Starting: '+self.current_url)
         self.proc.start(YTDLP_EXE,ytdlp_args(args));self.start_btn.setEnabled(False)
         self.pause_btn.setText('Ⅱ  Pause active download')
         self.persist_session()
         self.refresh_queue();self.refresh_center()
+        self.fetch_download_title(self.current_url)
+
+    def fetch_download_title(self, url):
+        """Resolve the exact source title without delaying or restarting the download."""
+        if self.media_info.get(url,{}).get('title'):
+            return
+        old=getattr(self,'download_title_proc',None)
+        if old is not None and old.state()!=QProcess.NotRunning:
+            return
+        proc=QProcess(self)
+        self.download_title_proc=proc
+        proc.setProgram(YTDLP_EXE)
+        proc.setArguments(ytdlp_args(['-m','yt_dlp','--no-playlist','--skip-download',
+                                      '--print','%(title)s',url]))
+        def title_ready(code,status):
+            raw=bytes(proc.readAllStandardOutput()).decode('utf-8',errors='replace')
+            if code==0 and raw.strip():
+                title=raw.splitlines()[0].strip()
+                if title:
+                    self.media_info.setdefault(url,{})['title']=title
+                    if self.current_url==url:
+                        self.current_title=title
+                    self.refresh_center()
+            proc.deleteLater()
+            if getattr(self,'download_title_proc',None) is proc:
+                self.download_title_proc=None
+        proc.finished.connect(title_ready)
+        proc.start()
+
     def on_output(self,flush=False):
         if not self.proc:return
         self.output_buffer+=bytes(self.proc.readAllStandardOutput()).decode('utf-8',errors='replace')
@@ -2079,8 +2172,6 @@ class Main(QMainWindow):
                     self.download_detail=line.strip()[:160]
                     self.progress.setValue(pct)
                     changed=True
-            if '[download] Destination:' in line and not self.media_info.get(self.current_url,{}).get('title'):
-                self.current_title=Path(line.split('Destination:',1)[1].strip()).name
             path=line.strip()
             if path and (path.startswith(str(Path(self.folder))) or Path(path).is_absolute()):
                 if Path(path).is_file():self.last_file=path
@@ -2139,12 +2230,32 @@ class Main(QMainWindow):
             self.session_loading=False
             QMessageBox.warning(self,'Session recovery','Could not restore saved queue: '+str(e))
 
+    def _return_to_new_download_after_success(self, generation):
+        # Only return when all queued work has completed. Never interrupt a
+        # subsequent download, Premiere conversion, or a manually opened tab.
+        if generation!=getattr(self, '_auto_return_generation', 0):
+            return
+        if self.queue or getattr(self, '_premiere_busy', False):
+            return
+        if self.proc and self.proc.state()!=QProcess.NotRunning:
+            return
+        if self.stack.currentIndex()!=1:
+            return
+        self.switch(0)
+
     def on_finished(self,exitcode,status):
+        # A finished signal can be delivered while a Premiere conversion is active.
+        # It must never start another conversion for the same download.
+        if getattr(self,'_download_finishing',False):
+            self.log('WARN','DOWNLOAD','Ignored duplicate download finished callback')
+            return
+        self._download_finishing=True
         self.on_output(flush=True)
         self.log('INFO' if exitcode==0 else 'ERROR','DOWNLOAD',f'Process finished: exit={exitcode}, status={status}')
         if self.pause_requested:
             self.queue.insert(0,(self.current_url,self.current_mode,self.current_quality,self.current_output_format))
             self.pause_requested=False
+            self._download_finishing=False
             self.proc=None
             self.start_btn.setEnabled(True)
             self.pause_btn.setEnabled(True)
@@ -2174,7 +2285,10 @@ class Main(QMainWindow):
             self.status.setText(('Canceled: ' if self.canceled else '✕ Download failed: ')+self.current_url)
             if not self.canceled:self.failed_items.append({'url':self.current_url,'date':datetime.now().strftime('%Y-%m-%d %H:%M'),'mode':self.current_mode,'quality':getattr(self,'current_quality',self.quality.currentText()),'format':getattr(self,'current_output_format','mp4')})
         self.start_btn.setEnabled(True);self.proc=None
+        self._download_finishing=False
         self.refresh_center();self.refresh_history();self.persist_session();self.run_next()
+        if ok and not self.queue and not getattr(self, '_premiere_busy', False):
+            QTimer.singleShot(3500, lambda generation=getattr(self, '_auto_return_generation', 0): self._return_to_new_download_after_success(generation))
     def resolve_premiere_source(self):
         """Resolve the completed file using yt-dlp's output, then verified new files."""
         candidates=[]
@@ -2227,7 +2341,7 @@ class Main(QMainWindow):
             self.log('ERROR','PREMIERE','No matching completed media file found in output folder: '+self.folder)
 
     def begin_premiere_conversion(self):
-        """Always rebuild a clean, CFR H.264/AAC MP4 for Premiere (no scaling)."""
+        """Avoid unnecessary encoding; preserve source resolution and use tested GPU encoders."""
         self._premiere_conversion_error=False
         source=Path(self.last_file) if self.last_file else None
         if not source or not source.is_file():
@@ -2255,6 +2369,7 @@ class Main(QMainWindow):
             # A clean MP4 remux rebuilds the container and timestamps without quality loss.
             pix_fmt=video.get('pix_fmt')
             audio_streams=[x for x in streams if x.get('codec_type')=='audio']
+            self._premiere_audio_copy=(self.current_mode==0 and all(x.get('codec_name')=='aac' for x in audio_streams))
             self._premiere_stream_copy=(video.get('codec_name')=='h264' and
                 pix_fmt=='yuv420p' and
                 (self.current_mode==1 or all(x.get('codec_name')=='aac' for x in audio_streams)))
@@ -2286,9 +2401,35 @@ class Main(QMainWindow):
                 encoders=subprocess.run([ffmpeg,'-hide_banner','-encoders'],capture_output=True,
                     text=True,timeout=15,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 available=encoders.stdout if encoders.returncode==0 else ''
-            self._premiere_encoders=(['copy'] if self._premiere_stream_copy else
-                [e for e in ('h264_nvenc','h264_qsv','h264_amf')
-                 if re.search(r'\b'+e+r'\b',available)]+['libx264'])
+            # An encoder listed by FFmpeg is not necessarily usable by this PC.
+            # Run a tiny real encode before touching the downloaded video so a
+            # missing GPU/driver does not trigger a second full-length attempt.
+            working=[]
+            if not self._premiere_stream_copy:
+                probe_settings={
+                    'h264_nvenc':['-preset','p5'],
+                    'h264_qsv':[],
+                    'h264_amf':[],
+                }
+                for enc in ('h264_nvenc','h264_qsv','h264_amf'):
+                    if not re.search(r'\b'+enc+r'\b',available):continue
+                    try:
+                        test=subprocess.run([ffmpeg,'-hide_banner','-loglevel','error',
+                            '-f','lavfi','-i','color=c=black:s=128x128:r=25:d=0.2',
+                            '-frames:v','3','-pix_fmt','yuv420p','-c:v',enc,
+                            *probe_settings[enc],'-f','null','-'],
+                            stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                            timeout=12,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                        if test.returncode==0:
+                            working.append(enc)
+                            self.log('INFO','PREMIERE',enc+' GPU encoder passed runtime test')
+                        else:
+                            self.log('WARN','PREMIERE',enc+' unavailable; skipping GPU retry: '+
+                                     test.stderr.decode('utf-8',errors='replace')[-220:])
+                    except (OSError,subprocess.TimeoutExpired) as test_exc:
+                        self.log('WARN','PREMIERE',enc+' test failed: '+str(test_exc))
+            self._premiere_encoders=(['copy'] if self._premiere_stream_copy else working+['libx264'])
+            self.log('INFO','PREMIERE','Encoder plan: '+', '.join(self._premiere_encoders))
             self._premiere_encoder_index=0
             self._premiere_progress_buffer=''
             self._premiere_progress_seconds=0.0
@@ -2298,8 +2439,11 @@ class Main(QMainWindow):
             if self.current_mode==0:self._premiere_args_base+=['-map','0:a:0?']
             self._premiere_args_end=['-pix_fmt','yuv420p','-tag:v','avc1']
             if self.current_mode==0:
-                self._premiere_args_end+=['-c:a','aac','-b:a','192k','-ar','48000',
-                    '-af','aresample=async=1:first_pts=0']
+                if self._premiere_audio_copy:
+                    self._premiere_args_end+=['-c:a','copy']
+                else:
+                    self._premiere_args_end+=['-c:a','aac','-b:a','192k','-ar','48000',
+                        '-af','aresample=async=1:first_pts=0']
             else:self._premiere_args_end+=['-an']
             self._premiere_args_end+=['-avoid_negative_ts','make_zero','-movflags','+faststart',
                 '-max_muxing_queue_size','4096',str(temp)]
@@ -2423,9 +2567,14 @@ class Main(QMainWindow):
             self.log('ERROR','PREMIERE','Conversion unsuccessful; original download preserved')
             try:self._premiere_temp.unlink(missing_ok=True)
             except OSError:pass
+        if getattr(self,'_premiere_finalizing',False):return
+        self._premiere_finalizing=True
         self._premiere_for_download=False
         self._premiere_busy=False
         self._premiere_proc=None
+        # Finalize the existing task exactly once; don't recursively re-enter a
+        # yt-dlp finished handler while the old QProcess is still attached.
+        self._download_finishing=False
         self.on_finished(0 if good else 1,QProcess.NormalExit)
 
     def cancel(self):
