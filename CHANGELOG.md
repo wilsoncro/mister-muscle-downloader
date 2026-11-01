@@ -1,3 +1,9 @@
+## v5.2.16 - What's New Display Fix
+
+- Fixed the What's New window to show the latest two versions.
+- Updated embedded release notes for packaged Windows installations.
+- Preserved enhanced automatic error diagnostics from v5.2.15.
+
 ## v5.2.15 - Enhanced Automatic Error Diagnostics
 
 - Added redacted Preview process error details to automatic reports, including relevant yt-dlp/FFmpeg failure messages.

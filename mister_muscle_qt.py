@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.15'
+APP_VERSION = '5.2.16'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -1672,32 +1672,48 @@ class Main(QMainWindow):
         cards=QVBoxLayout(content)
         cards.setContentsMargins(0,4,5,4)
         cards.setSpacing(13)
-        if APP_LANGUAGE=='hr':
-            releases=[
-                ('v5.2.13', 'NAJNOVIJE', [
-                    'Animirani What’s New s pregledom posljednje dvije verzije.',
-                    'Nakon uspješnog završetka svih preuzimanja vraća se na Novo preuzimanje za 3,5 sekunde.',
-                    'Izvorni naslov videa bez dodanog ID-a u nazivu datoteke.',
-                    'Zaštita od duplih zadataka i ponovljenih Premiere konverzija.',
-                    '4K rezolucija, brza H.264 obrada i NVIDIA / AMD / Intel GPU podrška.'
-                ]),
-                ('v5.2.12', 'PRETHODNA VERZIJA', [
-                    'Automatsko otvaranje Download Centera i povratak nakon završetka.',
-                    'Izvorni nazivi videa, zaštita od duplikata i 4K GPU podrška.'
-                ])]
-        else:
-            releases=[
-                ('v5.2.13', 'LATEST RELEASE', [
-                    'Animated What’s New showing the latest two releases.',
-                    'Returns to New Download 3.5 seconds after all downloads complete successfully.',
-                    'Original video titles without added IDs in filenames.',
-                    'Protection against duplicate tasks and repeated Premiere conversions.',
-                    'Preserved 4K resolution, fast H.264 processing and NVIDIA / AMD / Intel GPU support.'
-                ]),
-                ('v5.2.12', 'PREVIOUS RELEASE', [
-                    'Automatic Download Center opening and return after completion.',
-                    'Original filenames, duplicate protection and 4K GPU support.'
-                ])]
+        # Prefer the real CHANGELOG.md, while keeping embedded release notes
+        # for frozen installers where the markdown file is not packaged.
+        fallback_notes = """## v5.2.16 - What's New Display Fix
+- Fixed the What's New window to show the two latest release entries.
+- Updated the embedded release notes for packaged Windows installations.
+- Preserved the enhanced automatic error diagnostics from v5.2.15.
+
+## v5.2.15 - Enhanced Automatic Error Diagnostics
+- Added redacted Preview process error details, including relevant yt-dlp/FFmpeg failures.
+- Added recent event categories and error occurrence counts.
+- Included basic application environment and sanitized diagnostic summaries.
+- Kept user-controlled automatic reporting, retry queue and duplicate protection.
+- No automatic screenshots, complete logs, download URLs or local filenames.
+
+## v5.2.14 - Automatic Error Reporting
+- Enabled automatic error reporting by default for new installations.
+- Added a Settings switch to disable automatic reports.
+- Added sanitized reports to Mister Muscle Bug Center.
+- Added offline retry and duplicate-report protection.
+- No automatic screenshots or full diagnostic logs.
+"""
+        notes = fallback_notes
+        for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):
+            try:
+                if candidate.is_file():
+                    candidate_text = candidate.read_text(encoding='utf-8-sig')
+                    if re.search(r'(?m)^\s{0,3}#{1,3}\s*\[?v?\d+\.\d+', candidate_text):
+                        notes = candidate_text
+                        break
+            except OSError:
+                pass
+        heading_re = re.compile(r'(?m)^\s{0,3}#{1,3}\s*\[?v?(\d+\.\d+(?:\.\d+)?)\]?\b[^\r\n]*$')
+        headings = list(heading_re.finditer(notes))
+        releases = []
+        for i, match in enumerate(headings[:2]):
+            next_pos = headings[i+1].start() if i+1 < len(headings) else len(notes)
+            section = notes[match.end():next_pos]
+            entries = [line.strip()[2:].strip() for line in section.splitlines()
+                       if line.strip().startswith(('- ', '* '))]
+            if entries:
+                label = ('NAJNOVIJE' if i == 0 else 'PRETHODNA VERZIJA') if APP_LANGUAGE == 'hr' else ('LATEST RELEASE' if i == 0 else 'PREVIOUS RELEASE')
+                releases.append(('v' + match.group(1), label, entries))
         animated=[]
         for index,(version,caption,entries) in enumerate(releases):
             card=QFrame()
