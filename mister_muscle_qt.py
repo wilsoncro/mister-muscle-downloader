@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.14'
+APP_VERSION = '5.2.15'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -377,6 +377,9 @@ def scrub_bug_log(value):
         line = re.sub(r'(?i)(authorization|cookie|token|password|secret|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]', line)
         line = re.sub(r'(?i)\b[A-Z]:\\[^\s]+', '[PATH REDACTED]', line)
         line = re.sub(r'(?i)\b[\w.+-]+@[\w.-]+\.[A-Z]{2,}\b', '[EMAIL REDACTED]', line)
+        line = re.sub(r'(?i)(?:--(?:cookies|config-location|paths|output)\s+)\S+', '[ARG REDACTED]', line)
+        line = re.sub(r'(?i)(?:/Users/|/home/|/tmp/)[^\s,;]+', '[PATH REDACTED]', line)
+        line = re.sub(r'(?i)\b(?:bearer\s+)[A-Za-z0-9._~+/-]+', 'Bearer [REDACTED]', line)
         lines.append(line[:400])
     return '\n'.join(lines)[-15000:]
 
@@ -499,6 +502,8 @@ class Main(QMainWindow):
             pending=json.loads(AUTO_REPORT_QUEUE.read_text(encoding='utf-8'))
             if isinstance(pending,list):self._auto_reports=pending[:20]
         except (OSError,ValueError):pass
+        self._diagnostic_events=[]
+        self._error_frequency={}
         self._log_count=0
         self._log_lines=[]
         self._log_max_lines=2500
@@ -717,6 +722,12 @@ class Main(QMainWindow):
                 with self._log_path.open('a',encoding='utf-8') as f:f.write(entry+'\n')
             except OSError:
                 self._log_file_error=True
+        if level in ('INFO','WARN','ERROR'):
+            # Record only event metadata; raw log lines can contain personal data.
+            event_source=re.sub(r'[^A-Za-z0-9 _-]', '', str(source))[:32]
+            if event_source not in ('AUTO REPORT','BUG REPORT','PLAYER JS'):
+                self._diagnostic_events.append(f'{level}: {event_source}')
+                self._diagnostic_events=self._diagnostic_events[-12:]
         if level=='ERROR':self._queue_auto_error(source,message)
         if level=='ERROR' and hasattr(self,'log_sound_enabled') and self.log_sound_enabled.isChecked():
             if not self._error_sound_cooldown.isValid() or self._error_sound_cooldown.elapsed()>=8000:
@@ -757,11 +768,20 @@ class Main(QMainWindow):
         self._auto_last_sent[fingerprint]=now
         if len(self._auto_last_sent)>500:
             self._auto_last_sent={k:v for k,v in self._auto_last_sent.items() if now-v<3600}
+        # Counts are session-local and do not identify users.
+        self._error_frequency[fingerprint]=self._error_frequency.get(fingerprint,0)+1
+        category=('Preview' if source.upper()=='PREVIEW' else
+                  'Download' if source.upper() in ('DOWNLOAD','YT-DLP') else
+                  'Cutting' if source.upper() in ('FFMPEG','CUT','CLIP') else
+                  'Player' if source.upper().startswith('PLAYER') else 'Application')
+        context='\nRecent event types: '+', '.join(self._diagnostic_events[-8:])
+        context+='\nError occurrences in session: '+str(self._error_frequency[fingerprint])
+        context+='\nEnvironment: '+platform.system()+' '+platform.release()
         # Do not send full logs, screenshots, filenames, download URLs or machine identifiers.
-        desc='Automatic error report (enabled by default; user-controlled).\nSource: '+scrub_bug_log(source)[:70]+'\nError: '+clean
+        desc='Automatic error report (enabled by default; user-controlled).\nSource: '+scrub_bug_log(source)[:70]+'\nError: '+clean+'\nCategory: '+category+context
         payload={'category':'Other','description':desc[:1800],
             'app_version':APP_VERSION,'system_info':platform.system()+' '+platform.release(),
-            'diagnostic_log':'','images':[]}
+            'diagnostic_log':scrub_bug_log(desc)[:2500],'images':[]}
         self._auto_reports.append(payload)
         self._auto_reports=self._auto_reports[-20:]
         self._save_auto_reports()
@@ -965,6 +985,11 @@ class Main(QMainWindow):
             text=raw.decode('utf-8',errors='replace')
             for line in re.split(r'[\r\n]+',text):
                 if line.strip():
+                    if name=='PREVIEW':
+                        clean_line=scrub_bug_log(line)[:250]
+                        if ('error' in line.lower() or 'warning' in line.lower() or 'failed' in line.lower()):
+                            self._preview_diagnostics.append(clean_line)
+                            self._preview_diagnostics=self._preview_diagnostics[-8:]
                     self.log('ERROR' if 'ERROR:' in line or 'Error:' in line else 'WARN' if 'WARNING:' in line else 'INFO',name,line)
 
     def make_download(self):
@@ -2948,6 +2973,7 @@ class Main(QMainWindow):
         self.preview_dir=tempfile.TemporaryDirectory(prefix='mm_preview_')
         self._preview_dirs.append(self.preview_dir)
         self.preview_file=str(Path(self.preview_dir.name)/'preview.mp4')
+        self._preview_diagnostics=[]
         self.preview_proc=QProcess(self)
         self.preview_proc.setProcessChannelMode(QProcess.MergedChannels)
         self.preview_proc.setProgram(YTDLP_EXE)
@@ -2978,7 +3004,14 @@ class Main(QMainWindow):
             self.cut_status.setText('Preview opened. Local cutting uses the temporary preview; remote cutting downloads the original quality.')
         else:
             self.link_info.setText('Preview unavailable: '+output[-400:])
-        self.log('INFO' if Path(self.preview_file).is_file() and Path(self.preview_file).stat().st_size > 1024 else 'ERROR','PREVIEW',f'Preview process finished: exit={code}, file={self.preview_file}')
+        preview_ok=Path(self.preview_file).is_file() and Path(self.preview_file).stat().st_size > 1024
+        if not preview_ok:
+            # Process output may have been consumed by readyRead; preserve only redacted error lines.
+            tail=scrub_bug_log(output)[-500:]
+            details=' | '.join(self._preview_diagnostics[-5:]) or tail
+            self.log('ERROR','PREVIEW',f'Preview process finished: exit={code}; details: {details[:1100]}')
+        else:
+            self.log('INFO','PREVIEW',f'Preview process finished: exit={code}')
         self.preview_proc=None
 
     def parse_cut_times(self):
