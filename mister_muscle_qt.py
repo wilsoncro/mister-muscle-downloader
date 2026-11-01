@@ -3,7 +3,7 @@
 Requires: pip install PySide6 yt-dlp
 Optional: ffmpeg on PATH for merging and cutting.
 """
-import os, sys, re, json, subprocess, shutil, tempfile, threading, functools, http.server, traceback, logging, urllib.request, urllib.parse, importlib.metadata, base64, platform, io
+import os, sys, re, json, time, hashlib, subprocess, shutil, tempfile, threading, functools, http.server, traceback, logging, urllib.request, urllib.parse, importlib.metadata, base64, platform, io
 import shiboken6
 from pathlib import Path
 from datetime import datetime
@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.13'
+APP_VERSION = '5.2.14'
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -364,6 +364,9 @@ class UpdateDownloadWorker(QThread):
 
 
 BUG_REPORT_ENDPOINT = 'https://fjxxavinkqhjeqiolwsk.supabase.co/functions/v1/submit-bug-report'
+AUTO_REPORT_SETTINGS=DATA/'auto_error_reporting.json'
+AUTO_REPORT_QUEUE=DATA/'pending_auto_reports.json'
+
 
 
 def scrub_bug_log(value):
@@ -377,6 +380,24 @@ def scrub_bug_log(value):
         lines.append(line[:400])
     return '\n'.join(lines)[-15000:]
 
+
+class AutoReportWorker(QThread):
+    """Send one pending privacy-scrubbed report off the UI thread."""
+    completed=Signal(bool,str)
+    def __init__(self,payload,parent=None):
+        super().__init__(parent);self.payload=payload
+    def run(self):
+        try:
+            body=json.dumps(self.payload,ensure_ascii=False).encode('utf-8')
+            request=urllib.request.Request(BUG_REPORT_ENDPOINT,data=body,method='POST',
+                headers={'Content-Type':'application/json','User-Agent':'MisterMuscleDownloader/'+APP_VERSION})
+            with urllib.request.urlopen(request,timeout=18) as response:
+                result=json.loads(response.read(8192).decode('utf-8'))
+            if not result.get('ok') or not result.get('report_id'):
+                raise ValueError('Server did not confirm report')
+            self.completed.emit(True,str(result['report_id']))
+        except Exception as exc:
+            self.completed.emit(False,str(exc)[:180])
 
 class InstagramLoginDialog(QDialog):
     """Real Instagram login in an isolated, persistent Qt WebEngine profile."""
@@ -466,6 +487,18 @@ class Main(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('Mister Muscle Downloader — v' + APP_VERSION)
         self.resize(1360,850);self.setMinimumSize(990,640)
+        self._auto_reporting_enabled=True
+        self._auto_reports=[]
+        self._auto_worker=None
+        self._auto_last_sent={}
+        self._auto_next_attempt=0
+        try:
+            self._auto_reporting_enabled=bool(json.loads(AUTO_REPORT_SETTINGS.read_text(encoding='utf-8')).get('enabled',True))
+        except (OSError,ValueError,AttributeError):pass
+        try:
+            pending=json.loads(AUTO_REPORT_QUEUE.read_text(encoding='utf-8'))
+            if isinstance(pending,list):self._auto_reports=pending[:20]
+        except (OSError,ValueError):pass
         self._log_count=0
         self._log_lines=[]
         self._log_max_lines=2500
@@ -576,6 +609,11 @@ class Main(QMainWindow):
             self._auto_player_timer.start()
         QTimer.singleShot(1200, self.check_updates)
         QTimer.singleShot(350, self.show_whats_new_if_needed)
+        self._auto_retry_timer=QTimer(self)
+        self._auto_retry_timer.setInterval(60000)
+        self._auto_retry_timer.timeout.connect(self._send_next_auto_report)
+        self._auto_retry_timer.start()
+        QTimer.singleShot(5000,self._send_next_auto_report)
 
     def refresh_language(self):
         # UI text can change while downloading; refresh visible captions without
@@ -679,6 +717,7 @@ class Main(QMainWindow):
                 with self._log_path.open('a',encoding='utf-8') as f:f.write(entry+'\n')
             except OSError:
                 self._log_file_error=True
+        if level=='ERROR':self._queue_auto_error(source,message)
         if level=='ERROR' and hasattr(self,'log_sound_enabled') and self.log_sound_enabled.isChecked():
             if not self._error_sound_cooldown.isValid() or self._error_sound_cooldown.elapsed()>=8000:
                 self._error_sound_cooldown.start()
@@ -686,6 +725,66 @@ class Main(QMainWindow):
                     self._error_sound.play()
         if hasattr(self,'log_count_label'):
             self.log_count_label.setText(f'{self._log_count} events  •  {self._log_path}')
+
+    def set_auto_reporting(self,enabled):
+        self._auto_reporting_enabled=bool(enabled)
+        try:AUTO_REPORT_SETTINGS.write_text(json.dumps({'enabled':self._auto_reporting_enabled}),encoding='utf-8')
+        except OSError:pass
+        if not enabled:
+            self._auto_reports=[]
+            self._save_auto_reports()
+        else:
+            self._send_next_auto_report()
+
+    def _save_auto_reports(self):
+        try:
+            temp=AUTO_REPORT_QUEUE.with_suffix('.tmp')
+            temp.write_text(json.dumps(self._auto_reports[:20],ensure_ascii=False),encoding='utf-8')
+            temp.replace(AUTO_REPORT_QUEUE)
+        except OSError:pass
+
+    def _queue_auto_error(self,source,message):
+        if not self._auto_reporting_enabled:return
+        # Avoid recursive reports, third-party player JS noise, and messages generated by reporting.
+        source=str(source)
+        if source in ('BUG REPORT','AUTO REPORT','PLAYER JS','ALARM'):return
+        clean=scrub_bug_log(str(message))[:900]
+        if not clean:return
+        # Deduplicate repeated errors, even when details such as timestamps vary.
+        fingerprint=hashlib.sha256((source+'|'+re.sub(r'\d+','#',clean[:250])).encode('utf-8')).hexdigest()
+        now=time.time()
+        if now-self._auto_last_sent.get(fingerprint,0)<3600:return
+        self._auto_last_sent[fingerprint]=now
+        if len(self._auto_last_sent)>500:
+            self._auto_last_sent={k:v for k,v in self._auto_last_sent.items() if now-v<3600}
+        # Do not send full logs, screenshots, filenames, download URLs or machine identifiers.
+        desc='Automatic error report (enabled by default; user-controlled).\nSource: '+scrub_bug_log(source)[:70]+'\nError: '+clean
+        payload={'category':'Other','description':desc[:1800],
+            'app_version':APP_VERSION,'system_info':platform.system()+' '+platform.release(),
+            'diagnostic_log':'','images':[]}
+        self._auto_reports.append(payload)
+        self._auto_reports=self._auto_reports[-20:]
+        self._save_auto_reports()
+        self._send_next_auto_report()
+
+    def _send_next_auto_report(self):
+        if not self._auto_reporting_enabled or not self._auto_reports or time.time()<self._auto_next_attempt:return
+        if self._auto_worker is not None and self._auto_worker.isRunning():return
+        worker=AutoReportWorker(self._auto_reports[0],self)
+        self._auto_worker=worker
+        worker.completed.connect(lambda ok,msg,w=worker:self._auto_report_completed(ok,msg,w))
+        worker.start()
+
+    def _auto_report_completed(self,ok,message,worker):
+        if ok:
+            if self._auto_reports:self._auto_reports.pop(0)
+            self._save_auto_reports()
+            self._auto_next_attempt=0
+        else:
+            self._auto_next_attempt=time.time()+300
+        worker.deleteLater()
+        if self._auto_worker is worker:self._auto_worker=None
+        if ok:QTimer.singleShot(500,self._send_next_auto_report)
 
     def _on_alarm_status(self):
         if self._error_sound.status()==QSoundEffect.Status.Error:
@@ -1923,6 +2022,13 @@ class Main(QMainWindow):
         language_row.addWidget(self.language_label)
         language_row.addWidget(self.language_select,1)
         cl.addLayout(language_row)
+        self.auto_reporting_check=QCheckBox('Automatically send error reports to the developer')
+        self.auto_reporting_check.setChecked(self._auto_reporting_enabled)
+        self.auto_reporting_check.setToolTip('Enabled by default. Sends redacted error summaries, app version and OS; no screenshots or full logs. Queues reports offline. You can disable it anytime; pending reports will be cleared.')
+        cl.addWidget(self.auto_reporting_check)
+        auto_note=QLabel('Enabled by default: when an ERROR is logged, a short redacted report is sent to the developer. Includes error summary, app version and OS only; no screenshots or full logs. You can turn this off at any time to clear pending reports.')
+        auto_note.setObjectName('sub');auto_note.setWordWrap(True);cl.addWidget(auto_note)
+        self.auto_reporting_check.toggled.connect(self.set_auto_reporting)
         cl.addWidget(button('View What’s New in v' + APP_VERSION,self.show_whats_new))
         cl.addWidget(button('Change download folder',self.choose_folder))
         cl.addWidget(QLabel('UPDATE CENTER  •  Automatically checks on startup'))
