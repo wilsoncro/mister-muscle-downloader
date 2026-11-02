@@ -96,14 +96,19 @@ class WaveformWorker(QThread):
             if not 0<duration<86400:
                 self.error.emit('Cannot read video duration. Check that the file is playable and ffprobe is installed.')
                 return
-            # 1600 envelope samples maximum, capped to avoid large buffers.
-            rate=2000; seconds=min(duration,900)
+            # Decode the COMPLETE soundtrack, including recordings longer than
+            # 15 minutes. Adaptive sampling keeps the buffer bounded while the
+            # resulting 800 envelope points cover 0..duration without gaps.
+            # For long media, fewer audio samples per second are sufficient for
+            # a visual overview; this does not alter any exported audio.
+            rate=max(80,min(2000,round(180000.0/duration)))
             # Keep the decoding process cancellable when a new source is pasted.
-            command=[ffmpeg,'-v','error','-nostdin','-i',self.source,'-t',str(seconds),'-vn','-ac','1','-ar',str(rate),'-f','s16le','pipe:1']
+            command=[ffmpeg,'-v','error','-nostdin','-i',self.source,
+                     '-vn','-ac','1','-ar',str(rate),'-f','s16le','pipe:1']
             if self._stop_requested.is_set():return
             self.process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,**_NO_CONSOLE)
             try:
-                audio_data,err=self.process.communicate(timeout=120)
+                audio_data,err=self.process.communicate(timeout=360)
             except subprocess.TimeoutExpired:
                 self.process.kill();self.process.communicate()
                 raise
@@ -122,7 +127,10 @@ class WaveformWorker(QThread):
             # Extract only a small bounded set of thumbnail frames. Each frame is
             # generated independently, avoiding an entire-video decode buffer.
             thumbs=[]
-            for i in range(0 if Path(self.source).parent.name.startswith("mm_wave_") else 10):
+            audio_extensions={'.mp3','.m4a','.wav','.flac','.opus','.ogg','.aac','.wma'}
+            audio_only=(Path(self.source).parent.name.startswith('mm_wave_')
+                        or Path(self.source).suffix.lower() in audio_extensions)
+            for i in range(0 if audio_only else 10):
                 if self._stop_requested.is_set():return
                 at=max(0.,(i+.5)*duration/10)
                 try:
@@ -161,7 +169,7 @@ class RemoteAudioWorker(QThread):
                 # explicit writable folders, never the installation directory.
                 # Use a relative template rather than a Windows absolute path.
                 cmd+=['--no-playlist','--no-part','--no-overwrites','--no-progress',
-                      '--socket-timeout','15','--retries','2','--max-filesize','100M',
+                      '--socket-timeout','15','--retries','2','--max-filesize','500M',
                       '-N',('4' if attempt==0 else '1'), '-f','worstaudio/bestaudio/best',
                       '-P',str(folder), '-P','temp:'+str(folder),
                       '-o','audio.%(ext)s', '--',self.url]
@@ -169,10 +177,10 @@ class RemoteAudioWorker(QThread):
                 self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
                                               cwd=str(folder),env=_preview_process_env(str(folder)),**_NO_CONSOLE)
                 if self._stop_requested.is_set():self.stop()
-                try: _,err=self.process.communicate(timeout=180)
+                try: _,err=self.process.communicate(timeout=600)
                 except subprocess.TimeoutExpired:
                     self.process.kill();self.process.communicate()
-                    raise RuntimeError('Audio preview timed out (180 s)')
+                    raise RuntimeError('Audio preview timed out while loading the complete soundtrack')
                 if self._stop_requested.is_set():return
                 if self.process.returncode:
                     detail=err.decode('utf-8','replace')[-600:].strip()
@@ -341,9 +349,14 @@ class ProTimeline(QWidget):
                            else 'Loading video frames…' if cached_thumbs is None else 'Video thumbnails ready')
         if cached_wave is not None:
             self.duration,self.wave=cached_wave
-            self.wave_duration=min(self.duration,900.)
-            self.wave_status='Only the first 15 minutes are analyzed' if self.duration>900 else ''
-            self.end=min(self.end,self.duration)
+            self.wave_duration=self.duration
+            self.wave_status=''
+            # A cached waveform has the same full-length selection semantics.
+            if self.start==0. and self.end==10. and not self.selections:
+                self.end=self.duration
+                self.rangeChanged.emit(self.start,self.end)
+            else:
+                self.end=min(self.end,self.duration)
         if cached_thumbs is not None:
             self.thumbs=[QImage.fromData(frame) for frame in cached_thumbs]
         self.update()
@@ -416,15 +429,22 @@ class ProTimeline(QWidget):
         self.wave_status=message;self.update()
     def _wave_ready(self,worker,duration,peaks,thumbs):
         if worker is not self.worker:return
-        self.duration=duration;self.wave=peaks;self.wave_duration=min(duration,900.)
-        self.wave_status=('No audio samples detected' if not peaks else
-                          'Only the first 15 minutes are analyzed' if duration>900 else '')
+        self.duration=duration;self.wave=peaks;self.wave_duration=duration
+        self.wave_status='No audio samples detected' if not peaks else ''
         if self._remote_active is not None and peaks:
             self._cache_set(self._wave_cache,self._remote_active.url,(duration,peaks))
         # Audio-only online previews must never overwrite independently loaded V1 frames.
         if thumbs and any(thumbs) and self._remote_active is None:
             self.thumbs=[QImage.fromData(b) for b in thumbs]
-        self.end=min(self.end,duration);self.update()
+        # For a newly loaded source the initial 00:00:10 is just a placeholder.
+        # Make the full media range selectable once duration is known, unless
+        # the user has already changed the markers or saved selections.
+        if self.start==0. and self.end==10. and not self.selections:
+            self.end=duration
+            self.rangeChanged.emit(self.start,self.end)
+        else:
+            self.end=min(self.end,duration)
+        self.update()
     def set_range(self,start,end):
         self.start=max(0.,min(float(start),self.duration));self.end=max(self.start,min(float(end),self.duration));self.update()
     def set_zoom(self,zoom):
@@ -445,10 +465,18 @@ class ProTimeline(QWidget):
     def _remember(self):
         self._undo.append((self.start,self.end));self._undo=self._undo[-50:];self._redo.clear()
     def split_at_playhead(self):
-        # Ctrl+X cuts the active selection at the playhead (non-destructive trim).
-        if self.start < self.playhead < self.end:
-            self._remember();self.end=self.playhead
-            self.rangeChanged.emit(self.start,self.end);self.update()
+        # Preserve BOTH halves as saved clips; the original media is untouched.
+        # The left half remains selected, and Export all clips writes both halves.
+        if self.start + .03 < self.playhead < self.end - .03:
+            self._remember()
+            a,t,b=self.start,self.playhead,self.end
+            for item in ((a,t),(t,b)):
+                if not any(abs(item[0]-x)<.03 and abs(item[1]-y)<.03 for x,y in self.selections):
+                    self.selections.append(item)
+            self.end=t
+            self.selectionsChanged.emit(list(self.selections))
+            self.rangeChanged.emit(self.start,self.end)
+            self.update()
     def copy_range(self):
         self._clipboard_range=(self.start,self.end)
     def paste_range(self):
@@ -540,8 +568,8 @@ class ProTimeline(QWidget):
             p.drawText(QRectF(r.left()+8,65,r.width()-12,22),Qt.AlignLeft,self.video_status[:85])
         p.drawText(QRectF(r.left()+8,40,r.width()-12,20),Qt.AlignLeft,self.source_label[:65])
         if self.wave:
-            # Map samples to their actual analyzed timestamps, especially for
-            # long videos where decoding is capped at the first 15 minutes.
+            # Map envelope samples evenly over the complete soundtrack.
+            # The entire A1 track stays populated even for multi-hour sources.
             p.save();p.setClipRect(QRectF(r.left(),104,r.width(),62))
             p.setPen(QPen(QColor('#6ce2d1'),1.5))
             count=len(self.wave)

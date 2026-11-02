@@ -7,6 +7,7 @@ on:
         description: 'Also publish a GitHub Release'
         default: false
   push:
+    branches: ['main']
     tags: ['v[0-9]*']
 permissions:
   contents: write
@@ -115,7 +116,7 @@ jobs:
           compression-level: 0
           if-no-files-found: error
       - name: Publish release
-        if: github.event_name == 'push' || inputs.publish == true
+        if: github.ref_type == 'tag' || inputs.publish == true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

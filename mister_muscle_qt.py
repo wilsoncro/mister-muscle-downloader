@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.4'
+APP_VERSION = '5.3.5'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -1226,7 +1226,7 @@ class Main(QMainWindow):
         clear_clips_btn.setToolTip('Remove all saved clip selections (Ctrl+Backspace)')
         clip_toolbar.addWidget(clear_clips_btn)
         export_all_btn=button('✂ Export all clips',self.export_all_timeline_clips,True)
-        export_all_btn.setToolTip('Export every saved selection as a separate MP4 in one operation')
+        export_all_btn.setToolTip('Export every saved selection with the chosen audio/video track option')
         clip_toolbar.addWidget(export_all_btn)
         self.pro_timeline.selectionsChanged.connect(
             lambda selections:self.clip_selection_count.setText(
@@ -1259,6 +1259,18 @@ class Main(QMainWindow):
         else:
             pc.addWidget(QLabel('Install PySide6 QtWebEngine to use the original embedded player.'))
         pc.addWidget(self.pro_timeline)
+        # Audio and video use the same IN/OUT markers, but can be exported
+        # together or independently. This toolbar stays visible in Media Studio.
+        cut_row=QHBoxLayout()
+        cut_row.addWidget(QLabel('EXPORT SELECTION'))
+        self.clip_media_selector=NoWheelComboBox()
+        self.clip_media_selector.addItems(['Video + Audio','Video Only','Audio Only'])
+        self.clip_media_selector.setToolTip('Export the marked time range with both tracks, only the picture, or only the soundtrack')
+        cut_row.addWidget(self.clip_media_selector)
+        cut_row.addWidget(button('✂ Split at playhead',self.pro_timeline.split_at_playhead))
+        cut_row.addStretch()
+        cut_row.addWidget(button('✂ Export marked section',self.export_studio_clip,True))
+        pc.addLayout(cut_row)
         self._embedded_sync_timer=QTimer(self)
         self._embedded_sync_timer.setInterval(500)
         self._embedded_sync_timer.timeout.connect(self._sync_embedded_player_timeline)
@@ -1358,20 +1370,25 @@ class Main(QMainWindow):
         return f'{hours:02d}:{minutes:02d}:{secs:06.3f}'
 
     def open_local_in_studio(self):
-        path,_=QFileDialog.getOpenFileName(self,'Open local video',self.folder,
-            'Videos (*.mp4 *.mkv *.mov *.webm *.avi *.m4v);;All files (*)')
+        path,_=QFileDialog.getOpenFileName(self,'Open local audio or video',self.folder,
+            'Media (*.mp4 *.mkv *.mov *.webm *.avi *.m4v *.mp3 *.m4a *.wav *.flac *.opus *.ogg *.aac);;Videos (*.mp4 *.mkv *.mov *.webm *.avi *.m4v);;Audio (*.mp3 *.m4a *.wav *.flac *.opus *.ogg *.aac);;All files (*)')
         if path:self.open_local_path_in_studio(path)
 
     def open_local_path_in_studio(self,path):
         self.local_path=path
         self._studio_local=path
+        # Audio-only local files should default to a valid export mode rather
+        # than presenting a video encoding failure for a non-video source.
+        audio_exts={'.mp3','.m4a','.wav','.flac','.opus','.ogg','.aac','.wma'}
+        if Path(path).suffix.lower() in audio_exts and hasattr(self,'clip_media_selector'):
+            self.clip_media_selector.setCurrentText('Audio Only')
         self._original_preview_url=''  # permit a later URL to replace local source
         self.player.setSource(QUrl.fromLocalFile(path))
         if WEB_ENGINE_AVAILABLE:
             # Serve the actual local file from the same origin as player.html.
             html=_player_html('generic',video_src='/local-video',jezik=APP_LANGUAGE)
             self.serve_original_player_html(html)
-        self.original_player_note.setText('Local video: '+Path(path).name)
+        self.original_player_note.setText('Local media: '+Path(path).name)
         self.pro_timeline.set_source(Path(path).name,path)
         self.pro_timeline.show()
         self.log('INFO','PLAYER','Local file loaded: '+path)
@@ -1434,9 +1451,13 @@ class Main(QMainWindow):
             timeline=self.pro_timeline
             if abs(timeline.duration-d)>0.2:
                 old_duration=timeline.duration
+                default_range=(timeline.start==0. and timeline.end==10. and not timeline.selections)
                 timeline.duration=d
-                if timeline.end>=old_duration-0.01:timeline.end=d
-                else:timeline.end=min(timeline.end,d)
+                if default_range or timeline.end>=old_duration-0.01:
+                    timeline.end=d
+                    timeline.rangeChanged.emit(timeline.start,timeline.end)
+                else:
+                    timeline.end=min(timeline.end,d)
             timeline.set_playhead(t)
         except (TypeError,ValueError,AttributeError):pass
 
@@ -1454,6 +1475,15 @@ class Main(QMainWindow):
         else:
             self.export_multiple_selections([(self.format_seconds(a),self.format_seconds(b)) for a,b in ranges])
 
+    def _selected_clip_mode(self):
+        return self.clip_media_selector.currentText() if hasattr(self,'clip_media_selector') else 'Video + Audio'
+
+    def _clip_extension(self):
+        return '.m4a' if getattr(self,'_clip_job_media_mode',self._selected_clip_mode())=='Audio Only' else '.mp4'
+
+    def _clip_file_filter(self):
+        return 'M4A audio (*.m4a)' if self._clip_extension()=='.m4a' else 'MP4 video (*.mp4)'
+
     def export_local_selections(self,ranges):
         """Use existing FFmpeg batch export without downloading a local source again."""
         source=Path(self._studio_local)
@@ -1464,6 +1494,9 @@ class Main(QMainWindow):
             QMessageBox.warning(self,'FFmpeg missing','FFmpeg is required for clip export.');return
         folder=QFileDialog.getExistingDirectory(self,'Choose folder for all exported clips',self.folder)
         if not folder:return
+        self._clip_job_media_mode=self._selected_clip_mode()
+        if source.suffix.lower() in {'.mp3','.m4a','.wav','.flac','.opus','.ogg','.aac','.wma'} and self._clip_job_media_mode!='Audio Only':
+            QMessageBox.warning(self,'Audio-only source','Choose Audio Only for an audio file.');return
         self._multi_ranges=list(ranges)
         self._multi_folder=folder
         self._multi_index=0
@@ -1472,7 +1505,7 @@ class Main(QMainWindow):
         self.remote_source=source
         self.remote_tmp=None
         self.remote_start,self.remote_end=self._multi_ranges[0]
-        self.remote_output=self.available_clip_filename(str(Path(folder)/(self.safe_clip_title(source.stem)+'_clip_001.mp4')))
+        self.remote_output=self.available_clip_filename(str(Path(folder)/(self.safe_clip_title(source.stem)+'_clip_001'+self._clip_extension())))
         self._start_next_batch_export()
 
     def export_studio_clip(self):
@@ -1487,8 +1520,12 @@ class Main(QMainWindow):
         try:self.remote_start,self.remote_end=self.parse_cut_times()
         except ValueError:
             QMessageBox.warning(self,'Invalid range','Mark a valid start and end in the timeline.');return
+        self._clip_job_media_mode=self._selected_clip_mode()
+        if Path(self._studio_local).suffix.lower() in {'.mp3','.m4a','.wav','.flac','.opus','.ogg','.aac','.wma'} and self._clip_job_media_mode!='Audio Only':
+            QMessageBox.warning(self,'Audio-only source','Choose Audio Only for an audio file.');return
+        ext=self._clip_extension()
         output,_=QFileDialog.getSaveFileName(self,'Export local clip',
-            str(Path(self._studio_local).with_name(Path(self._studio_local).stem+'_cut.mp4')),'MP4 (*.mp4)')
+            str(Path(self._studio_local).with_name(Path(self._studio_local).stem+'_cut'+ext)),self._clip_file_filter())
         if not output:return
         if Path(output).resolve()==Path(self._studio_local).resolve():
             QMessageBox.warning(self,'Unsafe output','Do not overwrite the source video.');return
@@ -1509,18 +1546,32 @@ class Main(QMainWindow):
         self.remote_proc.start()
 
     def clip_ffmpeg_args(self,source,output,start,end):
+        """Frame-accurate export with independent audio/video track options.
+
+        Video+Audio: MP4; Video Only: silent MP4; Audio Only: M4A.
+        Crop/aspect rules apply only when an actual video stream is exported.
+        """
+        mode=getattr(self,'_clip_job_media_mode','Video + Audio')
+        args=['-hide_banner','-loglevel','warning','-nostats','-progress','pipe:1',
+              '-y','-ss',str(start),'-i',str(source),'-t',str(end-start)]
+        if mode=='Audio Only':
+            return args+['-map','0:a:0','-vn','-c:a','aac','-b:a','192k',str(output)]
+        args+=['-map','0:v:0']
+        if mode=='Video Only':
+            args+=['-an']
+        else:
+            args+=['-map','0:a?']
         ratios={'16:9 (YouTube)':(16,9),'9:16 (TikTok / Reels / Shorts)':(9,16),
                 '1:1 (Square)':(1,1),'4:5 (Instagram)':(4,5),'3:4 (Portrait)':(3,4),
                 '21:9 (Ultrawide)':(21,9),'4:3 (Classic)':(4,3)}
-        args=['-hide_banner','-loglevel','warning','-nostats','-progress','pipe:1','-y','-ss',str(start),'-i',str(source),
-              '-t',str(end-start),'-map','0:v:0','-map','0:a?']
         ratio=ratios.get(self.aspect.currentText())
         if ratio:
             w,h=ratio
-            # Center crop with even dimensions for H.264 compatibility.
             args+=['-vf',rf'crop=trunc(min(iw\,ih*{w}/{h})/2)*2:trunc(min(ih\,iw*{h}/{w})/2)*2']
-        return args+['-c:v','libx264','-preset','medium','-crf','19',
-                     '-c:a','aac','-movflags','+faststart',str(output)]
+        args+=['-c:v','libx264','-preset','medium','-crf','19']
+        if mode!='Video Only':
+            args+=['-c:a','aac']
+        return args+['-movflags','+faststart',str(output)]
 
     def auto_load_original_player(self):
         """Debounced auto-load, following the original Tkinter app's behavior."""
@@ -1934,17 +1985,18 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.4 - Reliable Audio Preview and Scroll Fix
-- Fixed missing-file audio preview errors after rapid source or timeline mode changes.
-- Kept yt-dlp's helper temporary files in a persistent user-writable location and added a retry for transient missing-file errors.
-- Prevented mouse-wheel scrolling from changing download format, resolution and other dropdown selections.
-- Preserved silent background tools, fast previews, cache and the extra-window fix.
+        fallback_notes = """## v5.3.5 - Complete Audio Waveform and Direct Track Cutting
+- Audio waveform now covers the full duration instead of stopping after the first 15 minutes.
+- Adaptive waveform analysis limits memory use for long recordings while retaining the entire timeline.
+- Added direct Video + Audio, Video Only, and Audio Only export options under the Media Studio timeline.
+- Audio Only exports selectable clips as M4A; video-only clips contain no audio.
+- Local audio files can be opened for waveform previews and audio clip export.
+- Preserved safe temporary paths, hidden CMD windows, scroll protection and preview performance fixes.
 
-## v5.3.3 - Audio Preview Permission Fix
-- Fixed Permission denied errors in the Windows Program Files installation.
-- Used writable user-local folders for online waveform and video thumbnail previews.
-- Preserved the Light / Smart / Full preview speed optimizations.
-"""
+## v5.3.4 - Reliable Audio Preview and Scroll Fix
+- Fixed transient missing-file audio preview errors with writable temporary folders.
+- Prevented normal scrolling from changing format and timeline options.
+- Preserved previous hotfixes."""
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):
             try:
@@ -3394,11 +3446,13 @@ class Main(QMainWindow):
             QMessageBox.warning(self,'FFmpeg missing','Install FFmpeg before cutting.');return
         self._clip_source_title=self.media_info.get(links[0],{}).get('title','')
         suggested=self.safe_clip_title(self._clip_source_title) if self._clip_source_title else 'MisterMuscle_original_cut'
+        self._clip_job_media_mode=self._selected_clip_mode()
+        ext=self._clip_extension()
         if batch:
-            output=str(Path(self._multi_folder)/(suggested+'_clip_001.mp4'))
+            output=str(Path(self._multi_folder)/(suggested+'_clip_001'+ext))
         else:
             output,_=QFileDialog.getSaveFileName(self,'Save original-quality clip',
-                        self.available_clip_filename(Path(self.folder)/(suggested+'_clip.mp4')),'MP4 video (*.mp4)')
+                        self.available_clip_filename(Path(self.folder)/(suggested+'_clip'+ext)),self._clip_file_filter())
             if not output:return
         # Resolve output conflicts before downloading the entire source.
         if Path(output).exists():
@@ -3414,15 +3468,19 @@ class Main(QMainWindow):
         self.remote_output=output
         self.remote_url=links[0]
         self.remote_format=self.quality.currentText()
-        mode=self.mode.currentIndex()
-        if mode>=2:
-            QMessageBox.warning(self,'Video required','Select Video + audio or Video only.');return
+        # Clip output is independent of the main Download mode. For an
+        # audio-only export fetch an audio stream, not a whole video file.
         self.remote_tmp=tempfile.TemporaryDirectory(prefix='mm_source_cut_')
         source_dir=Path(self.remote_tmp.name)
         max_height={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,
                     '720p':720,'480p':480,'360p':360}[self.remote_format]
         height=f'[height<={max_height}]' if max_height else ''
-        fmt=f'bestvideo{height}+bestaudio/best{height}' if mode==0 else f'bestvideo{height}/best{height}'
+        if self._clip_job_media_mode=='Audio Only':
+            fmt='bestaudio/best'
+        elif self._clip_job_media_mode=='Video Only':
+            fmt=f'bestvideo{height}/best{height}'
+        else:
+            fmt=f'bestvideo{height}+bestaudio/best{height}'
         args=['-m','yt_dlp','--no-playlist','--newline','-f',fmt,
               '--merge-output-format','mkv','--print','before_dl:MM_CLIP_TITLE=%(title)s','-P',str(source_dir),
               '-o','source.%(ext)s',self.remote_url]
@@ -3434,7 +3492,7 @@ class Main(QMainWindow):
         self.watch_process(self.remote_proc,'REMOTE CUT',stderr=False,stdout=False)
         self.remote_proc.finished.connect(self.remote_download_finished)
         self.remote_cut_button.setEnabled(False)
-        self.cut_status.setText('Downloading source at '+self.remote_format+' for accurate cutting…')
+        self.cut_status.setText('Downloading source for '+self._clip_job_media_mode+' export…')
         self.clip_begin_stage('download','Downloading source for clip')
         self.remote_proc.start()
 
@@ -3462,18 +3520,18 @@ class Main(QMainWindow):
             self.remote_fail('Source download failed or was canceled.')
             return
         files=[f for f in Path(self.remote_tmp.name).iterdir()
-               if f.is_file() and f.suffix.lower() in ('.mkv','.mp4','.webm','.mov')]
+               if f.is_file() and f.suffix.lower() in ('.mkv','.mp4','.webm','.mov','.m4a','.mp3','.opus','.ogg','.flac','.aac')]
         if not files:
-            self.remote_fail('Source video was not found after download.')
+            self.remote_fail('Source media was not found after download.')
             return
         self.remote_source=max(files,key=lambda f:f.stat().st_size)
         # Name clips after the actual source title, without changing manually chosen names.
         if self._clip_source_title:
             title=self.safe_clip_title(self._clip_source_title)
             if getattr(self,'_multi_active',False):
-                self.remote_output=self.available_clip_filename(str(Path(self._multi_folder)/(title+'_clip_001.mp4')))
+                self.remote_output=self.available_clip_filename(str(Path(self._multi_folder)/(title+'_clip_001'+self._clip_extension())))
             elif getattr(self,'_clip_auto_filename',False):
-                self.remote_output=self.available_clip_filename(str(Path(self.remote_output).with_name(title+'_clip.mp4')))
+                self.remote_output=self.available_clip_filename(str(Path(self.remote_output).with_name(title+'_clip'+self._clip_extension())))
         if Path(self.remote_output).resolve()==self.remote_source.resolve():
             self.remote_fail('Output cannot overwrite source.');return
         # The initial output was checked before downloading; never ask again
@@ -3514,7 +3572,7 @@ class Main(QMainWindow):
                 self._multi_index+=1
                 if self._multi_index<len(self._multi_ranges):
                     self.remote_start,self.remote_end=self._multi_ranges[self._multi_index]
-                    self.remote_output=str(Path(self._multi_folder)/f'{self.safe_clip_title(self._clip_source_title)}_clip_{self._multi_index+1:03d}.mp4')
+                    self.remote_output=str(Path(self._multi_folder)/f'{self.safe_clip_title(self._clip_source_title)}_clip_{self._multi_index+1:03d}{self._clip_extension()}')
                     self.remote_output=self.available_clip_filename(self.remote_output)
                     self._start_next_batch_export()
                     return
@@ -3562,16 +3620,15 @@ class Main(QMainWindow):
             if self.player.duration() and end>self.player.duration()/1000+0.2:raise ValueError()
         except ValueError:
             QMessageBox.warning(self,'Invalid time','Use HH:MM:SS.mmm, with end later than start and within the video.');return
-        out,_=QFileDialog.getSaveFileName(self,'Save clip',str(Path(self.local_path).with_name(Path(self.local_path).stem+'_cut.mp4')),'MP4 video (*.mp4)')
+        self._clip_job_media_mode=self._selected_clip_mode()
+        out,_=QFileDialog.getSaveFileName(self,'Save clip',str(Path(self.local_path).with_name(Path(self.local_path).stem+'_cut'+self._clip_extension())),self._clip_file_filter())
         if not out:return
         if Path(out).resolve()==Path(self.local_path).resolve():
             QMessageBox.warning(self,'Unsafe output','Output must be different from the source video.');return
         if Path(out).exists() and QMessageBox.question(self,'Overwrite?','Replace existing output file?')!=QMessageBox.Yes:return
         self.cut_proc=QProcess(self)
         self.cut_proc.setProgram(ffmpeg)
-        self.cut_proc.setArguments(['-hide_banner','-loglevel','error','-y','-ss',str(start),'-i',self.local_path,
-                                   '-t',str(end-start),'-map','0:v:0','-map','0:a?','-c:v','libx264','-preset','medium',
-                                   '-crf','19','-c:a','aac','-movflags','+faststart',out])
+        self.cut_proc.setArguments(self.clip_ffmpeg_args(self.local_path,out,start,end))
         self.cut_button.setEnabled(False)
         self.cut_status.setText('Exporting clip…')
         self.cut_proc.finished.connect(lambda code,status:self.cut_finished(code,status,out))

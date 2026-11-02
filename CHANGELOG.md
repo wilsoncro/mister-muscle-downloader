@@ -1,3 +1,14 @@
+## v5.3.5 - Complete Audio Waveform and Direct Audio / Video Cutting
+
+- Removed the 15-minute audio waveform limit: the A1 audio track now shows the entire soundtrack, including longer recordings.
+- Adaptively downsampled waveform analysis to keep memory bounded for multi-hour videos; full audio is still decoded for correct coverage. This changes the preview only, never the downloaded or exported quality.
+- Made the initial IN/OUT range cover the full media duration when duration becomes available (if the user has not already moved the handles).
+- Added a visible Export Selection control below the Media Studio timeline with Video + Audio (MP4), Video Only (silent MP4), and Audio Only (M4A).
+- Export marked ranges and multiple saved selections with the chosen track option, for both local media and online links.
+- Allow local audio sources (MP3, M4A, WAV, FLAC, OGG, OPUS, AAC) in the Media Studio; skip unnecessary thumbnail extraction for audio-only inputs.
+- Remote audio-only cutting fetches an audio stream rather than the full video. Original input files remain unchanged.
+- Preserved v5.3.4 scroll behavior, writable preview scratch directory, hidden CMD windows, cache and previous hotfixes.
+
 ## v5.3.4 - Reliable Audio Preview and Scroll Fix
 
 - Fixed missing-file (`[Errno 2]`) errors when generating the online audio waveform after the v5.3.3 permission fix.
