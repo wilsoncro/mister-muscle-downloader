@@ -1,0 +1,126 @@
+name: Build Mister Muscle on Windows
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        type: boolean
+        description: 'Also publish a GitHub Release'
+        default: false
+  push:
+    tags: ['v[0-9]*']
+permissions:
+  contents: write
+concurrency:
+  group: mister-muscle-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - name: Validate release source
+        env:
+          REQUEST_PUBLISH: ${{ inputs.publish }}
+        run: |
+          $code = Get-Content 'mister_muscle_qt.py' -Raw
+          $iss = Get-Content 'MisterMuscle_Setup.iss' -Raw
+          $log = Get-Content 'CHANGELOG.md' -Raw
+          $a = [regex]::Match($code, "(?m)^APP_VERSION\s*=\s*'(\d+\.\d+\.\d+)'")
+          $b = [regex]::Match($iss, '(?m)^#define MyAppVersion "(\d+\.\d+\.\d+)"')
+          $c = [regex]::Match($log, '(?m)^## v(\d+\.\d+\.\d+)')
+          if (-not ($a.Success -and $b.Success -and $c.Success)) { throw 'Missing version number.' }
+          $v = $a.Groups[1].Value
+          if ($v -ne $b.Groups[1].Value -or $v -ne $c.Groups[1].Value) { throw 'Version mismatch between app, installer and changelog.' }
+          if ($code -notmatch '(?m)^APP_IS_BETA\s*=\s*False\s*$') { throw 'Refusing beta release.' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") { throw 'Tag does not match code version.' }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:REQUEST_PUBLISH -eq 'true' -and $env:GITHUB_REF -ne 'refs/heads/main') { throw 'Manual releases must use main.' }
+          "RELEASE_VERSION=$v" >> $env:GITHUB_ENV
+          $notes = $log.Substring($c.Index)
+          $next = [regex]::Match($notes.Substring($c.Length), '(?m)^## v\d+\.\d+\.\d+')
+          if ($next.Success) { $notes = $notes.Substring(0,$c.Length+$next.Index) }
+          Set-Content '.release-notes-current.md' $notes.Trim() -Encoding utf8
+      - name: Install Python tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PySide6 pyinstaller yt-dlp packaging psutil pywin32
+          if ($LASTEXITCODE -ne 0) { throw 'pip install failed.' }
+          python -c "import PySide6.QtWebEngineWidgets, PyInstaller"
+          if ($LASTEXITCODE -ne 0) { throw 'PySide6 install failed.' }
+      - name: Install Inno Setup
+        run: |
+          $paths = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files (x86)\Inno Setup 7\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 7\ISCC.exe')
+          if (-not ($paths | Where-Object { Test-Path $_ })) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed.' }
+          }
+          if (-not ($paths | Where-Object { Test-Path $_ })) { throw 'ISCC.exe not found.' }
+      - name: Download bundled Windows media binaries
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force tools | Out-Null
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+          $expanded = Join-Path $env:RUNNER_TEMP 'ffmpeg'
+          Invoke-WebRequest 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $archive
+          if ((Get-Item $archive).Length -lt 10000000) { throw 'Bad FFmpeg archive.' }
+          Expand-Archive $archive -DestinationPath $expanded -Force
+          $bin = Get-ChildItem $expanded -Recurse -File -Filter ffmpeg.exe | Where-Object { $_.DirectoryName -match '[\\/]bin$' } | Select-Object -First 1
+          if (-not $bin) { throw 'FFmpeg.exe missing.' }
+          Copy-Item $bin.FullName tools/ffmpeg.exe
+          Copy-Item (Join-Path $bin.DirectoryName ffprobe.exe) tools/ffprobe.exe
+          Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile tools/yt-dlp.exe
+          if ((Get-Item tools/yt-dlp.exe).Length -lt 1000000) { throw 'yt-dlp.exe missing.' }
+          $dz = Join-Path $env:RUNNER_TEMP 'deno.zip'
+          $dd = Join-Path $env:RUNNER_TEMP 'deno'
+          Invoke-WebRequest 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip' -OutFile $dz
+          Expand-Archive $dz -DestinationPath $dd -Force
+          Copy-Item (Join-Path $dd deno.exe) tools/deno.exe
+      - name: Run syntax and regression checks
+        run: |
+          python -m compileall -q mister_muscle_qt.py pro_timeline.py mister_muscle_original_player.py phase3_engine.py phase4_lab.py beta_studio.py build_qt.py
+          if ($LASTEXITCODE -ne 0) { throw 'Syntax checks failed.' }
+          if ($env:RELEASE_VERSION -eq '5.3.5' -and (Test-Path test_full_waveform_and_cuts_535.py)) {
+            $env:PATH = "$PWD\tools;$env:PATH"
+            python test_full_waveform_and_cuts_535.py
+            if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed.' }
+          }
+      - name: Build Windows EXE and installer
+        run: |
+          python build_qt.py
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          if (-not (Test-Path Output/MisterMuscle_Setup.exe)) { throw 'Installer missing.' }
+          if (-not (Test-Path dist/MisterMuscle/MisterMuscle.exe)) { throw 'EXE missing.' }
+          foreach ($name in @('yt-dlp.exe','ffmpeg.exe','ffprobe.exe','gallery-dl.exe','deno.exe')) {
+            if (-not (Test-Path "dist/MisterMuscle/tools/$name")) { throw "Missing bundled $name." }
+          }
+      - name: Package portable ZIP
+        run: |
+          Compress-Archive -Path dist/MisterMuscle -DestinationPath "Output/MisterMuscle_Portable_v$env:RELEASE_VERSION.zip" -CompressionLevel Optimal -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MisterMuscle-v${{ env.RELEASE_VERSION }}-Windows
+          path: |
+            Output/MisterMuscle_Setup.exe
+            Output/MisterMuscle_Portable_v${{ env.RELEASE_VERSION }}.zip
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+      - name: Publish release
+        if: github.event_name == 'push' || inputs.publish == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:RELEASE_VERSION"
+          gh release view $tag --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists." }
+          gh release create $tag 'Output/MisterMuscle_Setup.exe' "Output/MisterMuscle_Portable_$tag.zip" --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "Mister Muscle Downloader $tag" --notes-file '.release-notes-current.md' --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release failed.' }
