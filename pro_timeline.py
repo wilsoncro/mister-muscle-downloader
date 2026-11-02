@@ -287,25 +287,32 @@ class ProTimeline(QWidget):
     seekRequested=Signal(float)
     togglePlaybackRequested=Signal()
     selectionsChanged=Signal(object)
+    audioRangeChanged=Signal(float,float)
+    audioSelectionsChanged=Signal(object)
+    trackLinkChanged=Signal(bool)
     def __init__(self,parent=None):
         super().__init__(parent);self.setMinimumHeight(192);self.setMaximumHeight(230)
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
-        self.duration=60.;self.start=0.;self.end=10.;self.playhead=0.;self.zoom=1.
+        self.duration=60.;self.start=0.;self.end=10.;self.audio_start=0.;self.audio_end=10.;self.audio_linked=True;self.playhead=0.;self.zoom=1.
         self.wave=[];self.thumbs=[];self.wave_status='Waveform requires decoded audio; online YouTube playback alone does not provide audio samples';self.source_label='No source loaded';self.worker=None;self._workers=[];self._remote_workers=[];self._remote_active=None;self._drag=None;self.offset=0.
         self._clipboard_range=None;self._undo=[];self._redo=[]
-        self.selections=[];self._select_anchor=None
+        self.selections=[];self.audio_selections=[];self._select_anchor=None;self._audio_drag_anchor=None
         self.mode=QSettings('MisterMuscle','Downloader').value('timeline_mode','Smart');self._thumbnail_workers=[];self._thumbnail_active=None;self.video_status='Video thumbnails not loaded';self._remote_duration=None
         if self.mode not in ('Light','Smart','Full'):self.mode='Smart'
         self._current_remote_url=None
         self.wave_duration=0.0
         self._wave_cache={};self._thumb_cache={}
-        self.setFocusPolicy(Qt.StrongFocus);self.setToolTip('Drag purple handles to trim • Click to seek • Ctrl+wheel zoom • Wheel scroll • Left/Right step frames')
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setToolTip('V1 purple markers = video • A1 turquoise markers = audio • Drag A1 independently • Shift+drag to save clips')
+        self.rangeChanged.connect(self._video_changed)
     def set_mode(self, mode):
         if mode not in ('Light','Smart','Full') or mode==self.mode:return
         self.mode=mode
         QSettings('MisterMuscle','Downloader').setValue('timeline_mode',mode)
         # Apply a changed loading profile immediately, not only to the next URL.
         if self._current_remote_url:
+            # Keep both track ranges and audio clip marks on preview-mode changes.
+            audio_state=(self.audio_start,self.audio_end,self.audio_linked,list(self.audio_selections))
             # Keep all user clip marks when only the preview quality changes.
             state=(self.duration,self.start,self.end,self.playhead,self.zoom,
                    self.offset,list(self.selections))
@@ -313,6 +320,10 @@ class ProTimeline(QWidget):
             self.duration,self.start,self.end,self.playhead,self.zoom,self.offset,_=state
             self.selections=state[-1]
             self.selectionsChanged.emit(list(self.selections))
+            self.audio_start,self.audio_end,self.audio_linked,self.audio_selections=audio_state
+            self.audioRangeChanged.emit(self.audio_start,self.audio_end)
+            self.audioSelectionsChanged.emit(list(self.audio_selections))
+            self.trackLinkChanged.emit(self.audio_linked)
             self.update()
 
     @staticmethod
@@ -357,6 +368,7 @@ class ProTimeline(QWidget):
                 self.rangeChanged.emit(self.start,self.end)
             else:
                 self.end=min(self.end,self.duration)
+            self._video_changed(self.start,self.end)
         if cached_thumbs is not None:
             self.thumbs=[QImage.fromData(frame) for frame in cached_thumbs]
         self.update()
@@ -414,6 +426,9 @@ class ProTimeline(QWidget):
     def set_source(self,label,local_path=None):
         self.stop_background_tasks()
         self.selections=[];self.selectionsChanged.emit([])
+        self.audio_selections=[];self.audioSelectionsChanged.emit([])
+        self.audio_linked=True;self.trackLinkChanged.emit(True)
+        self.audio_start=0.;self.audio_end=10.;self.audioRangeChanged.emit(0.,10.)
         self._current_remote_url=None
         self._remote_active=None;self._thumbnail_active=None
         self.worker=None;self.source_label=label;self.wave=[];self.wave_duration=0.;self.thumbs=[];self.video_status='Analyzing video frames…' if local_path else 'No video frames';self.wave_status='Waveform requires decoded audio; online YouTube playback alone does not provide audio samples';self.offset=0.;self.duration=60.;self.start=0.;self.end=10.;self.playhead=0.;self.update()
@@ -444,9 +459,32 @@ class ProTimeline(QWidget):
             self.rangeChanged.emit(self.start,self.end)
         else:
             self.end=min(self.end,duration)
+        self._video_changed(self.start,self.end)
+        self.update()
+    def _video_changed(self,start,end):
+        if self.audio_linked:
+            self.audio_start=float(start)
+            self.audio_end=float(end)
+            self.audioRangeChanged.emit(self.audio_start,self.audio_end)
+            self.update()
+    def set_tracks_linked(self,linked):
+        linked=bool(linked)
+        if self.audio_linked==linked:return
+        self.audio_linked=linked
+        if linked:self._video_changed(self.start,self.end)
+        self.trackLinkChanged.emit(linked)
+        self.update()
+    def set_audio_range(self,start,end,unlink=True):
+        if unlink and self.audio_linked:self.set_tracks_linked(False)
+        self.audio_start=max(0.,min(float(start),self.duration))
+        self.audio_end=max(self.audio_start,min(float(end),self.duration))
+        self.audioRangeChanged.emit(self.audio_start,self.audio_end)
         self.update()
     def set_range(self,start,end):
-        self.start=max(0.,min(float(start),self.duration));self.end=max(self.start,min(float(end),self.duration));self.update()
+        self.start=max(0.,min(float(start),self.duration))
+        self.end=max(self.start,min(float(end),self.duration))
+        self._video_changed(self.start,self.end)
+        self.update()
     def set_zoom(self,zoom):
         self.zoom=max(1.,min(16.,float(zoom)))
         self.offset=min(self.offset,max(0.,self.duration-self.duration/self.zoom))
@@ -477,6 +515,32 @@ class ProTimeline(QWidget):
             self.selectionsChanged.emit(list(self.selections))
             self.rangeChanged.emit(self.start,self.end)
             self.update()
+    def split_audio_at_playhead(self):
+        if self.audio_start+.03<self.playhead<self.audio_end-.03:
+            a,t,b=self.audio_start,self.playhead,self.audio_end
+            for item in ((a,t),(t,b)):
+                if not any(abs(item[0]-x)<.03 and abs(item[1]-y)<.03 for x,y in self.audio_selections):
+                    self.audio_selections.append(item)
+            self.set_audio_range(a,t)
+            self.audioSelectionsChanged.emit(list(self.audio_selections))
+            self.update()
+    def add_audio_selection(self):
+        a,b=self.audio_start,self.audio_end
+        if b-a<.03:return
+        if not any(abs(a-x)<.03 and abs(b-y)<.03 for x,y in self.audio_selections):
+            self.audio_selections.append((a,b))
+            self.audioSelectionsChanged.emit(list(self.audio_selections))
+            self.update()
+    def remove_last_audio_selection(self):
+        if self.audio_selections:
+            self.audio_selections.pop()
+            self.audioSelectionsChanged.emit(list(self.audio_selections))
+            self.update()
+    def clear_audio_selections(self):
+        self.audio_selections.clear()
+        self.audioSelectionsChanged.emit([])
+        self.update()
+
     def copy_range(self):
         self._clipboard_range=(self.start,self.end)
     def paste_range(self):
@@ -583,21 +647,43 @@ class ProTimeline(QWidget):
             p.restore()
         else:
             p.setPen(QColor('#9abbbf'));p.drawText(QRectF(r.left()+8,118,r.width()-12,28),Qt.AlignLeft,self.wave_status)
-        # Multiple stored ranges are highlighted on both V1 and A1.
-        p.save();p.setClipRect(QRectF(r.left(),34,r.width(),134))
+        # Each track has independent highlighted selections and IN/OUT handles.
+        p.save()
+        p.setClipRect(QRectF(r.left(),34,r.width(),61))
         for i,(a,b) in enumerate(self.selections):
             xa,xb=self._x(a),self._x(b)
             if xb<r.left() or xa>r.right():continue
-            p.fillRect(QRectF(xa,34,max(1,xb-xa),134),QColor(65,220,180,65))
-            p.setPen(QColor('#a5ffe3'))
+            p.fillRect(QRectF(xa,34,max(1,xb-xa),61),QColor(170,139,250,70))
+            p.setPen(QColor('#ebddff'))
             p.drawText(QRectF(xa+3,73,max(15,xb-xa-5),18),Qt.AlignLeft,str(i+1))
         p.restore()
-        x1=self._x(self.start);x2=self._x(self.end)
-        p.fillRect(QRectF(x1,34,max(1,x2-x1),134),QColor(130,110,255,36))
-        for x in (x1,x2):
+        p.save()
+        p.setClipRect(QRectF(r.left(),103,r.width(),65))
+        for i,(a,b) in enumerate(self.audio_selections):
+            xa,xb=self._x(a),self._x(b)
+            if xb<r.left() or xa>r.right():continue
+            p.fillRect(QRectF(xa,103,max(1,xb-xa),65),QColor(55,235,215,66))
+            p.setPen(QColor('#e0fff9'))
+            p.drawText(QRectF(xa+3,145,max(15,xb-xa-5),18),Qt.AlignLeft,str(i+1))
+        p.restore()
+        vx1,vx2=self._x(self.start),self._x(self.end)
+        ax1,ax2=self._x(self.audio_start),self._x(self.audio_end)
+        p.save();p.setClipRect(QRectF(r.left(),34,r.width(),61))
+        p.fillRect(QRectF(vx1,34,max(1,vx2-vx1),61),QColor(170,139,250,35))
+        for x,label in ((vx1,'IN'),(vx2,'OUT')):
             if not r.left()<=x<=r.right():continue
-            p.setPen(QPen(QColor('#a78bfa'),2));p.drawLine(QPointF(x,30),QPointF(x,170))
-            p.setBrush(QColor('#a78bfa'));p.drawRoundedRect(QRectF(x-5,28,10,13),2,2)
+            p.setPen(QPen(QColor('#ba9bff'),2));p.drawLine(QPointF(x,34),QPointF(x,95))
+            p.setBrush(QColor('#ba9bff'));p.drawRoundedRect(QRectF(x-5,34,10,12),2,2)
+            p.drawText(QRectF(x+6,47,40,16),Qt.AlignLeft,label)
+        p.restore()
+        p.save();p.setClipRect(QRectF(r.left(),103,r.width(),65))
+        p.fillRect(QRectF(ax1,103,max(1,ax2-ax1),65),QColor(55,235,215,34))
+        for x,label in ((ax1,'A IN'),(ax2,'A OUT')):
+            if not r.left()<=x<=r.right():continue
+            p.setPen(QPen(QColor('#4beddc'),2));p.drawLine(QPointF(x,103),QPointF(x,168))
+            p.setBrush(QColor('#4beddc'));p.drawRoundedRect(QRectF(x-5,103,10,12),2,2)
+            p.drawText(QRectF(x+6,111,48,17),Qt.AlignLeft,label)
+        p.restore()
         p.setPen(QPen(QColor('#f5c66b'),2));px=self._x(self.playhead)
         if r.left()<=px<=r.right():
             p.drawLine(QPointF(px,28),QPointF(px,173))
@@ -605,7 +691,21 @@ class ProTimeline(QWidget):
         p.end()
     def mousePressEvent(self,event):
         if event.button()!=Qt.LeftButton:return
-        x=event.position().x()
+        x=event.position().x();y=event.position().y()
+        if 103<=y<=168:
+            # A1 edits are independent even when the Link A/V toggle was on.
+            self.set_tracks_linked(False)
+            self._audio_drag_anchor=self._time(x)
+            if event.modifiers() & Qt.ShiftModifier:
+                self._drag='audio_multi'
+            elif abs(x-self._x(self.audio_start))<11:
+                self._drag='audio_start'
+            elif abs(x-self._x(self.audio_end))<11:
+                self._drag='audio_end'
+            else:
+                self._drag='audio_span'
+            if self._drag in ('audio_start','audio_end'):self._apply(x)
+            return
         if event.modifiers() & Qt.ShiftModifier:
             self._select_anchor=self._time(x);self._drag='multi';return
         self._drag='start' if abs(x-self._x(self.start))<11 else 'end' if abs(x-self._x(self.end))<11 else 'seek'
@@ -617,12 +717,22 @@ class ProTimeline(QWidget):
             a,b=sorted((self._select_anchor,self._time(event.position().x())))
             if b-a>=.03:
                 self.set_range(a,b);self.add_selection();self.rangeChanged.emit(self.start,self.end)
-        self._select_anchor=None;self._drag=None
+        elif self._drag=='audio_multi' and self._audio_drag_anchor is not None:
+            a,b=sorted((self._audio_drag_anchor,self._time(event.position().x())))
+            if b-a>=.03:
+                self.set_audio_range(a,b)
+                self.add_audio_selection()
+        self._select_anchor=None;self._audio_drag_anchor=None;self._drag=None
     def _apply(self,x):
         t=self._time(x)
         if self._drag=='multi':
             self.set_range(min(self._select_anchor,t),max(self._select_anchor,t));self.rangeChanged.emit(self.start,self.end)
         elif self._drag=='start':self.start=min(t,self.end);self.rangeChanged.emit(self.start,self.end)
         elif self._drag=='end':self.end=max(t,self.start);self.rangeChanged.emit(self.start,self.end)
+        elif self._drag=='audio_start':self.set_audio_range(min(t,self.audio_end),self.audio_end)
+        elif self._drag=='audio_end':self.set_audio_range(self.audio_start,max(t,self.audio_start))
+        elif self._drag in ('audio_span','audio_multi'):
+            if self._audio_drag_anchor is not None:
+                self.set_audio_range(*sorted((self._audio_drag_anchor,t)))
         else:self.playhead=t;self.seekRequested.emit(t)
         self.update()

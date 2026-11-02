@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.5'
+APP_VERSION = '5.3.6'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -1259,13 +1259,43 @@ class Main(QMainWindow):
         else:
             pc.addWidget(QLabel('Install PySide6 QtWebEngine to use the original embedded player.'))
         pc.addWidget(self.pro_timeline)
-        # Audio and video use the same IN/OUT markers, but can be exported
-        # together or independently. This toolbar stays visible in Media Studio.
+        # Separate A1 markers are editable directly on the audio waveform.
+        # Linked by default for backwards-compatible synced video/audio trimming.
+        audio_marks=QHBoxLayout()
+        audio_marks.addWidget(QLabel('A1 AUDIO MARKERS'))
+        audio_marks.addWidget(button('A IN',self._pro_mark_audio_in))
+        audio_marks.addWidget(button('A OUT',self._pro_mark_audio_out))
+        self.link_av_markers=QPushButton('Link A/V')
+        self.link_av_markers.setCheckable(True)
+        self.link_av_markers.setChecked(True)
+        self.link_av_markers.setToolTip('Linked: video edits also move audio markers. Drag an A1 marker to unlink and trim audio independently.')
+        self.link_av_markers.toggled.connect(self.pro_timeline.set_tracks_linked)
+        self.pro_timeline.trackLinkChanged.connect(self.link_av_markers.setChecked)
+        audio_marks.addWidget(self.link_av_markers)
+        self.audio_marker_status=QLabel('A1 00:00 - 00:10')
+        self.audio_marker_status.setObjectName('sub')
+        self.pro_timeline.audioRangeChanged.connect(self._pro_audio_range)
+        audio_marks.addWidget(self.audio_marker_status)
+        audio_marks.addStretch()
+        pc.addLayout(audio_marks)
+        audio_clips=QHBoxLayout()
+        audio_clips.addWidget(button('+ Save A1 clip',self.pro_timeline.add_audio_selection))
+        audio_clips.addWidget(button('✂ Split A1',self.pro_timeline.split_audio_at_playhead))
+        audio_clips.addWidget(button('Remove last A1',self.pro_timeline.remove_last_audio_selection))
+        audio_clips.addWidget(button('Clear A1',self.pro_timeline.clear_audio_selections))
+        self.audio_selection_count=QLabel('0 audio clips')
+        self.audio_selection_count.setObjectName('sub')
+        audio_clips.addWidget(self.audio_selection_count)
+        self.pro_timeline.audioSelectionsChanged.connect(
+            lambda clips:self.audio_selection_count.setText(f'{len(clips)} audio clips'))
+        audio_clips.addStretch()
+        pc.addLayout(audio_clips)
+        # Video and audio now have independent IN/OUT marks when A/V is unlinked.
         cut_row=QHBoxLayout()
         cut_row.addWidget(QLabel('EXPORT SELECTION'))
         self.clip_media_selector=NoWheelComboBox()
         self.clip_media_selector.addItems(['Video + Audio','Video Only','Audio Only'])
-        self.clip_media_selector.setToolTip('Export the marked time range with both tracks, only the picture, or only the soundtrack')
+        self.clip_media_selector.setToolTip('Video + Audio uses V1 and A1 marks (independently when unlinked). Video Only uses V1. Audio Only uses A1.')
         cut_row.addWidget(self.clip_media_selector)
         cut_row.addWidget(button('✂ Split at playhead',self.pro_timeline.split_at_playhead))
         cut_row.addStretch()
@@ -1402,6 +1432,19 @@ class Main(QMainWindow):
         self.cut_from.setText(self.format_seconds(start))
         self.cut_to.setText(self.format_seconds(end))
 
+    def _pro_audio_range(self,start,end):
+        if hasattr(self,'audio_marker_status'):
+            self.audio_marker_status.setText(
+                f'A1 {self.format_seconds(start)} - {self.format_seconds(end)}')
+
+    def _pro_mark_audio_in(self):
+        t=self.pro_timeline
+        t.set_audio_range(min(t.playhead,t.audio_end),t.audio_end)
+
+    def _pro_mark_audio_out(self):
+        t=self.pro_timeline
+        t.set_audio_range(t.audio_start,max(t.playhead,t.audio_start))
+
     def _pro_mark_in(self):
         timeline=self.pro_timeline
         timeline.set_range(min(timeline.playhead,timeline.end),timeline.end)
@@ -1465,9 +1508,11 @@ class Main(QMainWindow):
         """Export every saved timeline selection in one batch, online or local."""
         if self.remote_proc and self.remote_proc.state()!=QProcess.NotRunning:
             QMessageBox.information(self,'Busy','Wait for the current export.');return
-        ranges=list(self.pro_timeline.selections)
+        audio_mode=self._selected_clip_mode()=='Audio Only'
+        ranges=list(self.pro_timeline.audio_selections if audio_mode else self.pro_timeline.selections)
         if not ranges:
-            QMessageBox.information(self,'No clips selected','Mark IN/OUT and click + Add clip for each clip first.');return
+            detail='Use the A1 handles and + Save A1 clip first.' if audio_mode else 'Use the V1 handles and + Add clip first.'
+            QMessageBox.information(self,'No clips selected',detail);return
         if any(a<0 or b<=a or (self.pro_timeline.duration>0 and b>self.pro_timeline.duration+0.25) for a,b in ranges):
             QMessageBox.warning(self,'Invalid clips','Some clip selections are outside the video duration.');return
         if getattr(self,'_studio_local',None):
@@ -1484,6 +1529,26 @@ class Main(QMainWindow):
     def _clip_file_filter(self):
         return 'M4A audio (*.m4a)' if self._clip_extension()=='.m4a' else 'MP4 video (*.mp4)'
 
+    def studio_cut_range(self):
+        """Single audio-only exports use A1 range, not V1 text fields."""
+        if (self._selected_clip_mode()=='Audio Only'
+                and self.pro_timeline.isVisible()
+                and (getattr(self,'_studio_local',None) or self.pro_timeline._current_remote_url)):
+            a,b=self.pro_timeline.audio_start,self.pro_timeline.audio_end
+            if b-a<0.03:raise ValueError('Audio IN/OUT range is empty.')
+            return a,b
+        return self.parse_cut_times()
+
+    def _capture_clip_audio_range(self,batch=False):
+        """Snapshot an independent A1 range before async FFmpeg jobs start."""
+        self._clip_job_audio_range=None
+        if (not batch and self._clip_job_media_mode=='Video + Audio'
+                and self.pro_timeline.isVisible()
+                and not self.pro_timeline.audio_linked):
+            a,b=self.pro_timeline.audio_start,self.pro_timeline.audio_end
+            if b-a<0.03:raise ValueError('Audio IN/OUT range is empty.')
+            self._clip_job_audio_range=(a,b)
+
     def export_local_selections(self,ranges):
         """Use existing FFmpeg batch export without downloading a local source again."""
         source=Path(self._studio_local)
@@ -1495,6 +1560,7 @@ class Main(QMainWindow):
         folder=QFileDialog.getExistingDirectory(self,'Choose folder for all exported clips',self.folder)
         if not folder:return
         self._clip_job_media_mode=self._selected_clip_mode()
+        self._clip_job_audio_range=None  # Batch exports use each saved selection.
         if source.suffix.lower() in {'.mp3','.m4a','.wav','.flac','.opus','.ogg','.aac','.wma'} and self._clip_job_media_mode!='Audio Only':
             QMessageBox.warning(self,'Audio-only source','Choose Audio Only for an audio file.');return
         self._multi_ranges=list(ranges)
@@ -1517,10 +1583,12 @@ class Main(QMainWindow):
             QMessageBox.information(self,'No local video','Open a local video in Media Studio first.');return
         if self.remote_proc and self.remote_proc.state()!=QProcess.NotRunning:
             QMessageBox.information(self,'Busy','Wait for the current export.');return
-        try:self.remote_start,self.remote_end=self.parse_cut_times()
-        except ValueError:
-            QMessageBox.warning(self,'Invalid range','Mark a valid start and end in the timeline.');return
         self._clip_job_media_mode=self._selected_clip_mode()
+        try:
+            self.remote_start,self.remote_end=self.studio_cut_range()
+            self._capture_clip_audio_range()
+        except ValueError:
+            QMessageBox.warning(self,'Invalid range','Mark a valid V1/A1 start and end in the timeline.');return
         if Path(self._studio_local).suffix.lower() in {'.mp3','.m4a','.wav','.flac','.opus','.ogg','.aac','.wma'} and self._clip_job_media_mode!='Audio Only':
             QMessageBox.warning(self,'Audio-only source','Choose Audio Only for an audio file.');return
         ext=self._clip_extension()
@@ -1545,22 +1613,39 @@ class Main(QMainWindow):
         self.watch_process(self.remote_proc,'FFMPEG',stderr=True,stdout=False)
         self.remote_proc.start()
 
-    def clip_ffmpeg_args(self,source,output,start,end):
+    def clip_ffmpeg_args(self,source,output,start,end,audio_range=None):
         """Frame-accurate export with independent audio/video track options.
 
         Video+Audio: MP4; Video Only: silent MP4; Audio Only: M4A.
         Crop/aspect rules apply only when an actual video stream is exported.
         """
         mode=getattr(self,'_clip_job_media_mode','Video + Audio')
-        args=['-hide_banner','-loglevel','warning','-nostats','-progress','pipe:1',
-              '-y','-ss',str(start),'-i',str(source),'-t',str(end-start)]
-        if mode=='Audio Only':
-            return args+['-map','0:a:0','-vn','-c:a','aac','-b:a','192k',str(output)]
-        args+=['-map','0:v:0']
-        if mode=='Video Only':
-            args+=['-an']
+        if audio_range is None:
+            audio_range=getattr(self,'_clip_job_audio_range',None)
+        prefix=['-hide_banner','-loglevel','warning','-nostats','-progress','pipe:1','-y']
+        duration=float(end)-float(start)
+        if duration<=0:raise ValueError('Invalid video/audio export duration.')
+        separate=(mode=='Video + Audio' and audio_range is not None
+                  and (abs(float(audio_range[0])-float(start))>.015
+                       or abs(float(audio_range[1])-float(end))>.015))
+        if separate:
+            a,b=map(float,audio_range)
+            if b<=a:raise ValueError('Invalid separate audio range.')
+            # FFmpeg gets two independently seeked inputs of the same source.
+            # apad fills a shorter selected audio range with silence; output
+            # is capped to V1 duration. Longer A1 selections are trimmed.
+            args=prefix+['-ss',str(start),'-i',str(source),
+                         '-ss',str(a),'-t',str(b-a),'-i',str(source),
+                         '-t',str(duration),'-map','0:v:0','-map','1:a:0','-af','apad']
         else:
-            args+=['-map','0:a?']
+            args=prefix+['-ss',str(start),'-i',str(source),'-t',str(duration)]
+            if mode=='Audio Only':
+                return args+['-map','0:a:0','-vn','-c:a','aac','-b:a','192k',str(output)]
+            args+=['-map','0:v:0']
+            if mode=='Video Only':
+                args+=['-an']
+            else:
+                args+=['-map','0:a?']
         ratios={'16:9 (YouTube)':(16,9),'9:16 (TikTok / Reels / Shorts)':(9,16),
                 '1:1 (Square)':(1,1),'4:5 (Instagram)':(4,5),'3:4 (Portrait)':(3,4),
                 '21:9 (Ultrawide)':(21,9),'4:3 (Classic)':(4,3)}
@@ -1985,18 +2070,19 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.5 - Complete Audio Waveform and Direct Track Cutting
-- Audio waveform now covers the full duration instead of stopping after the first 15 minutes.
-- Adaptive waveform analysis limits memory use for long recordings while retaining the entire timeline.
-- Added direct Video + Audio, Video Only, and Audio Only export options under the Media Studio timeline.
-- Audio Only exports selectable clips as M4A; video-only clips contain no audio.
-- Local audio files can be opened for waveform previews and audio clip export.
-- Preserved safe temporary paths, hidden CMD windows, scroll protection and preview performance fixes.
+        fallback_notes = """## v5.3.6 - Independent Audio and Video Markers
+- A1 audio has its own turquoise IN and OUT handles; V1 video keeps purple markers.
+- Drag A1 markers or use A IN / A OUT to trim audio separately.
+- Link A/V keeps both tracks synced when wanted; touching A1 automatically unlinks them.
+- Export Audio Only from the A1 range, Video Only from V1, or Video + Audio with independent ranges.
+- Save, split, remove and export multiple A1-only selections without changing V1.
+- Original source files are never modified.
 
-## v5.3.4 - Reliable Audio Preview and Scroll Fix
-- Fixed transient missing-file audio preview errors with writable temporary folders.
-- Prevented normal scrolling from changing format and timeline options.
-- Preserved previous hotfixes."""
+## v5.3.5 - Complete Audio Waveform and Direct Track Cutting
+- Audio waveform covers the entire recording, including long videos.
+- Added Video + Audio, Video Only and Audio Only export options.
+- Added direct IN/OUT video cutting and local audio clip export.
+- Retained hidden background CMD windows and Windows preview fixes."""
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):
             try:
@@ -3437,16 +3523,18 @@ class Main(QMainWindow):
         links=[line.strip() for line in self.urls.toPlainText().splitlines() if line.strip()]
         if not links:
             QMessageBox.information(self,'Missing link','Paste the source link in New Download first.');return
+        self._clip_job_media_mode=self._selected_clip_mode()
         try:
-            self.remote_start,self.remote_end=self.parse_cut_times()
+            self.remote_start,self.remote_end=(
+                self.parse_cut_times() if batch else self.studio_cut_range())
+            self._capture_clip_audio_range(batch=batch)
         except ValueError:
-            QMessageBox.warning(self,'Invalid time','Enter valid start and end times, with end after start.');return
+            QMessageBox.warning(self,'Invalid time','Set valid V1/A1 IN and OUT markers.');return
         ffmpeg=find_media_tool('ffmpeg')
         if not ffmpeg:
             QMessageBox.warning(self,'FFmpeg missing','Install FFmpeg before cutting.');return
         self._clip_source_title=self.media_info.get(links[0],{}).get('title','')
         suggested=self.safe_clip_title(self._clip_source_title) if self._clip_source_title else 'MisterMuscle_original_cut'
-        self._clip_job_media_mode=self._selected_clip_mode()
         ext=self._clip_extension()
         if batch:
             output=str(Path(self._multi_folder)/(suggested+'_clip_001'+ext))
@@ -3586,6 +3674,7 @@ class Main(QMainWindow):
             self.remote_fail('Clip export failed: '+errors[-250:])
 
     def remote_cleanup(self):
+        self._clip_job_audio_range=None
         self.remote_proc=None
         self.remote_cut_button.setEnabled(True)
         if self.remote_tmp:

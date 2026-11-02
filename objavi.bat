@@ -6,14 +6,14 @@ if not exist "release.ps1" (
   pause
   exit /b 1
 )
-rem Verify v5.3.5 source before any build, git commit, or GitHub upload.
-if exist "test_full_waveform_and_cuts_535.py" (
+rem Verify v5.3.6 source before any build, git commit, or GitHub upload.
+if exist "test_separate_audio_markers_536.py" (
   set "PATH=%~dp0tools;%PATH%"
-  echo Checking v5.3.5 waveform and clip exports...
+  echo Checking v5.3.6 waveform and clip exports...
   py -3 "test_full_waveform_and_cuts_535.py"
   if errorlevel 1 (
     echo.
-    echo ERROR: v5.3.5 checks failed. Nothing published.
+    echo ERROR: v5.3.6 checks failed. Nothing published.
     pause
     exit /b 1
   )

@@ -1,3 +1,13 @@
+## v5.3.6 - Independent A1 Audio Markers and Track Cutting
+
+- Added separate turquoise A1 IN/OUT drag handles beneath the purple V1 handles in Media Studio.
+- The Link A/V toggle preserves synchronized cutting by default; moving an A1 handle automatically unlinks audio without disturbing the video range.
+- A IN / A OUT buttons mark independent audio times at the playhead.
+- Audio Only exports use A1 markers, Video Only exports use V1 markers. Video + Audio can export differing A1 and V1 ranges within one MP4.
+- When A1 is shorter than V1, the combined export pads the remaining picture with silence. Longer A1 selections are capped to the selected video duration.
+- Added dedicated A1 clip selections: save, split, remove last, clear, and export all audio clips to M4A.
+- Retained original source files, full-length waveform, silent background processes and existing Windows hotfixes.
+
 ## v5.3.5 - Complete Audio Waveform and Direct Audio / Video Cutting
 
 - Removed the 15-minute audio waveform limit: the A1 audio track now shows the entire soundtrack, including longer recordings.
