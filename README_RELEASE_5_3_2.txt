@@ -2,6 +2,8 @@ MISTER MUSCLE DOWNLOADER v5.3.2 — COMBINED HOTFIX + FAST PREVIEW
 ================================================================
 
 All fixes in this ONE release:
+- Fixed audio waveform permission-denied errors when running from Program Files.
+- Preview workers now use writable per-user scratch folders and child-process temp paths.
 - Hidden Windows CMD windows for timeline background tools in Light/Smart/Full.
 - Faster remote audio waveform and video thumbnail downloads: no artificial
   bandwidth caps, leaner preview formats, up to four fragments where supported.

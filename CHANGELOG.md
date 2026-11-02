@@ -1,3 +1,9 @@
+## v5.3.3 - Audio Preview Permission Fix
+
+- Fixed audio waveform preview errors (`Permission denied`) when the app is installed in `C:\Program Files`.
+- Audio and video preview workers now use a user-writable directory and explicit `TMP`, `TEMP` and `TMPDIR` paths instead of creating temporary files in the protected installation folder.
+- Preserved the previous CMD-window fix, faster preview transfers, cache behavior, and existing downloads and exports.
+
 ## v5.3.2 - Silent Tools and Faster Media Studio Previews
 
 - Fixed command prompt windows flashing during Light / Smart / Full mode changes in packaged Windows builds.

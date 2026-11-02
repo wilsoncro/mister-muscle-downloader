@@ -13,6 +13,25 @@ from PySide6.QtWidgets import QWidget, QSizePolicy
 _NO_CONSOLE = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
 
 
+def _preview_temp_root():
+    """Use a user-writable directory, never Program Files, for online previews."""
+    if sys.platform == 'win32':
+        # Frozen installers normally start in C:\Program Files. Child processes
+        # must not use that protected folder for their scratch files.
+        base = Path(os.environ.get('LOCALAPPDATA') or (Path.home() / 'AppData' / 'Local'))
+        root = base / 'MisterMuscleQt' / 'preview_temp'
+        root.mkdir(parents=True, exist_ok=True)
+        return str(root)
+    return tempfile.gettempdir()
+
+
+def _preview_process_env(directory):
+    """Force yt-dlp and its helpers to create temporary files in our sandbox."""
+    env = os.environ.copy()
+    env.update({'TEMP': str(directory), 'TMP': str(directory), 'TMPDIR': str(directory)})
+    return env
+
+
 def _tools_dir():
     """Locate external tools next to the real executable in PyInstaller builds.
 
@@ -119,8 +138,8 @@ class RemoteAudioWorker(QThread):
         super().__init__(); self.url=url; self.mode=mode; self.temp=None; self.process=None; self._handed_off=False
         self._stop_requested=threading.Event()
     def run(self):
-        self.temp=tempfile.TemporaryDirectory(prefix='mm_wave_')
         try:
+            self.temp=tempfile.TemporaryDirectory(prefix='mm_wave_', dir=_preview_temp_root())
             tools=_tools_dir()
             cmd=_yt_dlp_command()
             ffmpeg=tools/'ffmpeg.exe'
@@ -134,7 +153,8 @@ class RemoteAudioWorker(QThread):
                   '-o',str(Path(self.temp.name)/'audio.%(ext)s'),
                   '--',self.url]
             if self._stop_requested.is_set():return
-            self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,**_NO_CONSOLE)
+            self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                                          cwd=self.temp.name, env=_preview_process_env(self.temp.name),**_NO_CONSOLE)
             if self._stop_requested.is_set():self.stop()
             try: _,err=self.process.communicate(timeout=180)
             except subprocess.TimeoutExpired:
@@ -171,7 +191,7 @@ class RemoteThumbnailWorker(QThread):
             try:self.process.terminate()
             except OSError:pass
     def run(self):
-        with tempfile.TemporaryDirectory(prefix='mm_v1_') as directory:
+        with tempfile.TemporaryDirectory(prefix='mm_v1_', dir=_preview_temp_root()) as directory:
             try:
                 tools=_tools_dir()
                 cmd=_yt_dlp_command()
@@ -197,7 +217,8 @@ class RemoteThumbnailWorker(QThread):
                       '-N','4','-f',preview_format,
                       '-o',str(Path(directory)/'video.%(ext)s'),'--',self.url]
                 if self._stop_requested.is_set():return
-                self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,**_NO_CONSOLE)
+                self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                                              cwd=directory, env=_preview_process_env(directory),**_NO_CONSOLE)
                 if self._stop_requested.is_set():self.stop()
                 try:_,err=self.process.communicate(timeout=300 if self.mode=='Smart' else 360)
                 except subprocess.TimeoutExpired:

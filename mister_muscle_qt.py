@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.2'
+APP_VERSION = '5.3.3'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -1918,18 +1918,16 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.2 - Silent Tools and Faster Media Studio Previews
-- Fixed Windows CMD windows when switching Light, Smart and Full.
-- Removed artificial audio and video preview download speed limits.
-- Preferred compact audio and low-resolution video-only preview streams where available.
-- Added parallel fragment downloading where supported by the source.
-- Reused Full video thumbnails when returning to Smart mode.
-- Kept the fix preventing extra application windows when pasting a link.
+        fallback_notes = """## v5.3.3 - Audio Preview Permission Fix
+- Fixed Permission denied errors for audio waveform previews in Program Files installations.
+- Audio and video preview workers now use user-writable temporary folders and temporary-file environment variables.
+- Preserved quiet background processes, fast Light / Smart / Full previews, and the critical extra-window fix.
 
-## v5.3.1 - Critical Windows Startup Hotfix
-- Fixed additional application windows opening after pasting one video link.
-- Preview workers use bundled yt-dlp.exe rather than relaunching the GUI.
-- Missing yt-dlp.exe now reports an error instead of restarting the app.
+## v5.3.2 - Silent Tools and Faster Media Studio Previews
+- Fixed CMD windows flashing when changing Light, Smart and Full modes.
+- Removed artificial download speed limits for audio and video previews.
+- Preferred small preview streams and enabled parallel fragment transfers where supported.
+- Reused cached Full-mode thumbnails in Smart mode to avoid extra downloads.
 """
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):
