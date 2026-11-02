@@ -1,3 +1,13 @@
+## v5.3.2 - Silent Tools and Faster Media Studio Previews
+
+- Fixed command prompt windows flashing during Light / Smart / Full mode changes in packaged Windows builds.
+- Launches all timeline background yt-dlp, FFmpeg and FFprobe processes with CREATE_NO_WINDOW on Windows, preserving logs, exit codes and cancellation.
+- Removed artificial speed limits for online waveform audio and video thumbnail preview downloads; actual speed still depends on the source and network.
+- Preferred smaller audio and low-resolution video-only streams for previews, with fallback formats to preserve source compatibility.
+- Enabled up to four concurrent yt-dlp fragment transfers where supported; no effect on sources that do not use fragments.
+- Reused Full-mode video preview frames when returning to Smart mode, avoiding repeat downloads when cached frames are available.
+- Preserved the v5.3.1 fix preventing extra app launches when pasting a link, plus existing exports, download quality, Light / Smart / Full behavior and error diagnostics.
+
 ## v5.3.1 - Critical Windows Startup Hotfix
 
 - Fixed a critical issue where pasting one video link could open the app three times in the packaged Windows release.

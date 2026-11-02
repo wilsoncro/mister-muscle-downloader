@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.1'
+APP_VERSION = '5.3.2'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -1918,15 +1918,18 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.1 - Critical Startup Hotfix
-- Fixed three app windows opening when a video link is pasted in the Windows installer.
-- Timeline audio and thumbnail previews now use the bundled yt-dlp.exe.
-- Prevented launching the main app as a fallback if yt-dlp.exe is missing.
+        fallback_notes = """## v5.3.2 - Silent Tools and Faster Media Studio Previews
+- Fixed Windows CMD windows when switching Light, Smart and Full.
+- Removed artificial audio and video preview download speed limits.
+- Preferred compact audio and low-resolution video-only preview streams where available.
+- Added parallel fragment downloading where supported by the source.
+- Reused Full video thumbnails when returning to Smart mode.
+- Kept the fix preventing extra application windows when pasting a link.
 
-## v5.3.0 - Redesigned Downloads and Media Studio
-- Updated format controls and Media Studio timeline features.
-- Added audio waveform, video thumbnails and multi-clip export.
-- Improved downloader tools, queue recovery and Windows installer.
+## v5.3.1 - Critical Windows Startup Hotfix
+- Fixed additional application windows opening after pasting one video link.
+- Preview workers use bundled yt-dlp.exe rather than relaunching the GUI.
+- Missing yt-dlp.exe now reports an error instead of restarting the app.
 """
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):

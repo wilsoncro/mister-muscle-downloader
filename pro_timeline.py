@@ -7,6 +7,11 @@ from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QThread, QSettings
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QImage
 from PySide6.QtWidgets import QWidget, QSizePolicy
 
+# Keep bundled Windows command-line tools invisible while preserving stderr and
+# exit codes for existing timeline error handling. On macOS/Linux do not alter
+# subprocess behavior.
+_NO_CONSOLE = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
+
 
 def _tools_dir():
     """Locate external tools next to the real executable in PyInstaller builds.
@@ -59,7 +64,7 @@ class WaveformWorker(QThread):
         try:
             duration=0.0
             if ffprobe:
-                p=subprocess.run([ffprobe,'-v','error','-show_entries','format=duration','-of','json',self.source],capture_output=True,timeout=20)
+                p=subprocess.run([ffprobe,'-v','error','-show_entries','format=duration','-of','json',self.source],capture_output=True,timeout=20,**_NO_CONSOLE)
                 if p.returncode == 0:
                     duration=float(json.loads(p.stdout)['format']['duration'])
             if not 0<duration<86400:
@@ -70,7 +75,7 @@ class WaveformWorker(QThread):
             # Keep the decoding process cancellable when a new source is pasted.
             command=[ffmpeg,'-v','error','-nostdin','-i',self.source,'-t',str(seconds),'-vn','-ac','1','-ar',str(rate),'-f','s16le','pipe:1']
             if self._stop_requested.is_set():return
-            self.process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            self.process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,**_NO_CONSOLE)
             try:
                 audio_data,err=self.process.communicate(timeout=120)
             except subprocess.TimeoutExpired:
@@ -97,7 +102,7 @@ class WaveformWorker(QThread):
                 try:
                     frame=subprocess.run([ffmpeg,'-v','error','-nostdin','-ss',str(at),'-i',self.source,
                         '-frames:v','1','-vf','scale=128:72:force_original_aspect_ratio=decrease',
-                        '-f','image2pipe','-vcodec','mjpeg','pipe:1'],capture_output=True,timeout=8)
+                        '-f','image2pipe','-vcodec','mjpeg','pipe:1'],capture_output=True,timeout=8,**_NO_CONSOLE)
                     thumbs.append(frame.stdout if frame.returncode==0 else b'')
                 except (OSError,subprocess.TimeoutExpired):thumbs.append(b'')
             if not self._stop_requested.is_set():
@@ -120,12 +125,16 @@ class RemoteAudioWorker(QThread):
             cmd=_yt_dlp_command()
             ffmpeg=tools/'ffmpeg.exe'
             if ffmpeg.is_file(): cmd+=['--ffmpeg-location',str(tools)]
-            cmd+=['--limit-rate',{'Light':'100K','Smart':'250K','Full':'1M'}.get(self.mode,'250K'),'--no-playlist','--no-part','--no-overwrites','--no-progress',
+            # The online waveform is only a visual preview: prefer a smaller
+            # audio stream, never an unnecessarily high bitrate. Do not throttle
+            # the user's connection with artificial --limit-rate values.
+            cmd+=['--no-playlist','--no-part','--no-overwrites','--no-progress',
                   '--socket-timeout','15','--retries','2','--max-filesize','100M',
-                  '-f','bestaudio/best','-o',str(Path(self.temp.name)/'audio.%(ext)s'),
+                  '-N','4','-f','worstaudio/bestaudio/best',
+                  '-o',str(Path(self.temp.name)/'audio.%(ext)s'),
                   '--',self.url]
             if self._stop_requested.is_set():return
-            self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,**_NO_CONSOLE)
             if self._stop_requested.is_set():self.stop()
             try: _,err=self.process.communicate(timeout=180)
             except subprocess.TimeoutExpired:
@@ -174,13 +183,21 @@ class RemoteThumbnailWorker(QThread):
                 deno=next((str(x) for x in (tools/'deno.exe',Path(sys.executable).resolve().parent/'tools'/'deno.exe') if x.is_file()),None) or shutil.which('deno')
                 if deno:
                     cmd+=['--js-runtimes',f'deno:{deno}']
+                # Thumbnail previews do not need an audio stream or HD video.
+                # Prefer low-resolution video-only; fall back to muxed sources
+                # when sites expose no separate video stream. The final user
+                # download format/quality is unaffected by this preview choice.
+                preview_format = (
+                    'bestvideo[height<=240]/best[height<=240]/worst[height<=360]/best'
+                    if self.mode == 'Smart' else
+                    'bestvideo[height<=360]/best[height<=360]/worst[height<=360]/best'
+                )
                 cmd+=['--no-playlist','--no-part','--no-progress','--socket-timeout','12',
                       '--retries','2','--max-filesize',('100M' if self.mode=='Smart' else '200M'),
-                      '--limit-rate',('350K' if self.mode=='Smart' else '1M'),
-                      '-f','best[height<=240][vcodec!=none]/best[height<=360][vcodec!=none]/worst[height<=360]/best',
+                      '-N','4','-f',preview_format,
                       '-o',str(Path(directory)/'video.%(ext)s'),'--',self.url]
                 if self._stop_requested.is_set():return
-                self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+                self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,**_NO_CONSOLE)
                 if self._stop_requested.is_set():self.stop()
                 try:_,err=self.process.communicate(timeout=300 if self.mode=='Smart' else 360)
                 except subprocess.TimeoutExpired:
@@ -197,7 +214,7 @@ class RemoteThumbnailWorker(QThread):
                 ffmpeg=next((str(x) for x in (tools/'ffmpeg.exe',Path(sys.executable).resolve().parent/'tools'/'ffmpeg.exe') if x.is_file()),None) or shutil.which('ffmpeg')
                 ffprobe=next((str(x) for x in (tools/'ffprobe.exe',Path(sys.executable).resolve().parent/'tools'/'ffprobe.exe') if x.is_file()),None) or shutil.which('ffprobe')
                 if not ffmpeg or not ffprobe:self.error.emit('FFmpeg/FFprobe not found for video frames');return
-                probe=subprocess.run([ffprobe,'-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',path],capture_output=True,timeout=15)
+                probe=subprocess.run([ffprobe,'-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',path],capture_output=True,timeout=15,**_NO_CONSOLE)
                 duration=float(probe.stdout.strip())
                 if duration<=0:self.error.emit('Could not determine preview video duration');return
                 count=6 if self.mode=='Smart' else 12
@@ -205,7 +222,7 @@ class RemoteThumbnailWorker(QThread):
                 for i in range(count):
                     if self._stop_requested.is_set():return
                     at=(i+.5)*duration/count
-                    proc=subprocess.run([ffmpeg,'-v','error','-nostdin','-ss',str(at),'-i',path,'-frames:v','1','-vf','scale=128:72:force_original_aspect_ratio=decrease','-f','image2pipe','-vcodec','mjpeg','pipe:1'],capture_output=True,timeout=10)
+                    proc=subprocess.run([ffmpeg,'-v','error','-nostdin','-ss',str(at),'-i',path,'-frames:v','1','-vf','scale=128:72:force_original_aspect_ratio=decrease','-f','image2pipe','-vcodec','mjpeg','pipe:1'],capture_output=True,timeout=10,**_NO_CONSOLE)
                     frames.append(proc.stdout if proc.returncode==0 else b'')
                 if not self._stop_requested.is_set():self.ready.emit(frames)
             except (OSError,ValueError,subprocess.TimeoutExpired) as exc:
@@ -266,6 +283,13 @@ class ProTimeline(QWidget):
         self._current_remote_url=url
         cached_wave=self._wave_cache.get(url)
         cached_thumbs=self._thumb_cache.get((url,self.mode))
+        if self.mode == 'Smart' and cached_thumbs is None:
+            # Full has 12 evenly spaced frames. Every other frame gives a
+            # sufficient 6-frame Smart preview, with zero additional traffic.
+            full_frames=self._thumb_cache.get((url,'Full'))
+            if full_frames and len(full_frames)>=12:
+                cached_thumbs=full_frames[1::2]
+                self._cache_set(self._thumb_cache,(url,'Smart'),cached_thumbs)
         self.wave_status='Loading audio preview…' if cached_wave is None else ''
         self.video_status=('Video thumbnails disabled in Light mode' if self.mode=='Light'
                            else 'Loading video frames…' if cached_thumbs is None else 'Video thumbnails ready')
