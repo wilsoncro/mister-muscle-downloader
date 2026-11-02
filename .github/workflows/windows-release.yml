@@ -22,9 +22,14 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Enable Windows long Git paths
+        run: git config --global core.longpaths true
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          sparse-checkout: |
+            assets
+            tools
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
