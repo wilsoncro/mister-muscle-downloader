@@ -7,6 +7,30 @@ from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QThread, QSettings
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QImage
 from PySide6.QtWidgets import QWidget, QSizePolicy
 
+
+def _tools_dir():
+    """Locate external tools next to the real executable in PyInstaller builds.
+
+    In --onedir packages __file__ points into _internal, while build_qt.py
+    installs yt-dlp.exe/FFmpeg in <install folder>/tools.
+    """
+    root = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    return root / 'tools'
+
+
+def _yt_dlp_command():
+    """Never re-launch the frozen GUI executable to run yt-dlp.
+
+    Previously two timeline preview workers fell back to
+    [sys.executable, '-m', 'yt_dlp'], opening two extra GUI windows.
+    """
+    executable = _tools_dir() / ('yt-dlp.exe' if sys.platform == 'win32' else 'yt-dlp')
+    if executable.is_file():
+        return [str(executable)]
+    if getattr(sys, 'frozen', False):
+        raise FileNotFoundError('Bundled yt-dlp executable not found: ' + str(executable))
+    return [sys.executable, '-m', 'yt_dlp']
+
 class WaveformWorker(QThread):
     ready = Signal(float, object, object)
     error = Signal(str)
@@ -92,10 +116,8 @@ class RemoteAudioWorker(QThread):
     def run(self):
         self.temp=tempfile.TemporaryDirectory(prefix='mm_wave_')
         try:
-            tools=Path(__file__).resolve().parent/'tools'
-            exe=tools/'yt-dlp.exe'
-            if exe.is_file(): cmd=[str(exe)]
-            else: cmd=[sys.executable,'-m','yt_dlp']
+            tools=_tools_dir()
+            cmd=_yt_dlp_command()
             ffmpeg=tools/'ffmpeg.exe'
             if ffmpeg.is_file(): cmd+=['--ffmpeg-location',str(tools)]
             cmd+=['--limit-rate',{'Light':'100K','Smart':'250K','Full':'1M'}.get(self.mode,'250K'),'--no-playlist','--no-part','--no-overwrites','--no-progress',
@@ -142,9 +164,8 @@ class RemoteThumbnailWorker(QThread):
     def run(self):
         with tempfile.TemporaryDirectory(prefix='mm_v1_') as directory:
             try:
-                tools=Path(__file__).resolve().parent/'tools'
-                exe=tools/'yt-dlp.exe'
-                cmd=[str(exe)] if exe.is_file() else [sys.executable,'-m','yt_dlp']
+                tools=_tools_dir()
+                cmd=_yt_dlp_command()
                 # Avoid high-quality full video; cap total transfer and bandwidth.
                 # YouTube's current signature challenge can require yt-dlp's EJS
                 # component. Opt in explicitly; without it some video formats

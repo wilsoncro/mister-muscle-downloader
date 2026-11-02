@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.0'
+APP_VERSION = '5.3.1'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -1918,15 +1918,15 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.0 - New Download and Media Studio
-- File type, output format and resolution are always visible on New Download.
-- Unified video player with V1 thumbnails, A1 waveform and multi-clip export.
-- Faster preview processing, cancellable jobs and more reliable local exports.
-- Queue, session recovery and update functionality remain available.
+        fallback_notes = """## v5.3.1 - Critical Startup Hotfix
+- Fixed three app windows opening when a video link is pasted in the Windows installer.
+- Timeline audio and thumbnail previews now use the bundled yt-dlp.exe.
+- Prevented launching the main app as a fallback if yt-dlp.exe is missing.
 
-## v5.2.16 - What's New Display Fix
-- What's New displays the latest two versions.
-- Improved embedded release notes and preserved diagnostics.
+## v5.3.0 - Redesigned Downloads and Media Studio
+- Updated format controls and Media Studio timeline features.
+- Added audio waveform, video thumbnails and multi-clip export.
+- Improved downloader tools, queue recovery and Windows installer.
 """
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):

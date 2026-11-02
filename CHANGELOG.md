@@ -1,3 +1,10 @@
+## v5.3.1 - Critical Windows Startup Hotfix
+
+- Fixed a critical issue where pasting one video link could open the app three times in the packaged Windows release.
+- Corrected the Media Studio audio preview and thumbnail workers to find bundled `yt-dlp.exe` in the installed application's `tools` folder.
+- Added a fail-safe: if `yt-dlp.exe` is missing in a packaged build, preview workers show an error instead of re-launching `MisterMuscle.exe`.
+- Preserved all v5.3.0 download formats, timeline features, queues, reports and updater behavior.
+
 ## v5.3.0 - Redesigned Downloads and Media Studio
 
 - Redesigned New Download with File type, Output format and Resolution immediately visible; advanced settings stay separate.
