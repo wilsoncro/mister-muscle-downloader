@@ -27,7 +27,7 @@ def _check_exports():
     assert "addItems(['Video + Audio','Video Only','Audio Only'])" in source
     assert "fmt='bestaudio/best'" in source
     assert "NoWheelComboBox" in source
-    assert 'MyAppVersion "5.3.5"' in (HERE / 'MisterMuscle_Setup.iss').read_text()
+    assert 'MyAppVersion "5.3.5"' in (HERE / 'MisterMuscle_Setup.iss').read_text(encoding='utf-8')
     build = _clip_method()
     def fake_self(mode):
         return types.SimpleNamespace(
