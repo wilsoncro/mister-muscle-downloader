@@ -1,0 +1,7418 @@
+# -*- coding: utf-8 -*-
+"""
+Mister Muscle Downloader — v17
+
+Novo u odnosu na v16:
+  * 3 nacina skidanja: video+zvuk / SAMO video (bez zvuka) / SAMO zvuk (mp3, m4a, wav, flac, opus)
+  * izbor rezolucije, H.264 prekidac, ugradnja metapodataka
+  * player za označavanje isječka je UGRAĐEN u glavni prozor (Windows + pywin32) -
+    ne otvara se više zaseban prozor za pregled/rezanje
+  * puni "desktop" raspored: velik prozor koji se moze rastezati i maksimizirati
+  * "Provjeri azuriranja" azurira alate koji su joj potrebni za rad (yt-dlp + ffmpeg)
+  * ffmpeg se automatski preuzima (bez njega spajanje slike i zvuka i rezanje NE RADE)
+  * alati (yt-dlp.exe, ffmpeg.exe) idu u upisiv folder cak i ako je app u Program Files
+"""
+
+import os
+import re
+import sys
+import json
+import time
+import zipfile
+import shutil
+import traceback
+import functools
+import http.server
+import socketserver
+import tempfile
+import subprocess
+import webbrowser
+import threading
+import multiprocessing
+import urllib.request
+import urllib.parse
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, filedialog
+
+try:
+    import webview
+    PYWEBVIEW_DOSTUPAN = True
+except ImportError:
+    PYWEBVIEW_DOSTUPAN = False
+
+try:
+    # Opcionalno - koristi se za PRAVU pauzu (suspend/resume yt-dlp.exe procesa)
+    # i za pouzdano prekidanje cijelog stabla procesa (yt-dlp + njegov ffmpeg).
+    import psutil
+    PSUTIL_DOSTUPAN = True
+except ImportError:
+    PSUTIL_DOSTUPAN = False
+
+try:
+    # Opcionalno (samo Windows) - koristi se da se pywebview prozor za pregled
+    # videa UGRADI unutar glavnog Tkinter prozora umjesto da iskace zasebno.
+    # Bez ovoga player i dalje radi, samo u svom prozoru (kao ranije).
+    import win32gui
+    import win32con
+    WIN32_DOSTUPAN = True
+except ImportError:
+    WIN32_DOSTUPAN = False
+
+
+# ============================================================================
+#  VERZIJA
+# ============================================================================
+APP_VERZIJA = "4.9.4"
+_HISTORY_LOCK = threading.RLock()
+
+
+def _bazni_folder():
+    """Folder gdje stvarno stoji .exe (kad je upakirano PyInstallerom) ili folder
+    skripte. Kod --onefile builda __file__ pokazuje na privremeni raspakirani
+    folder koji nestaje pri zatvaranju, pa se NE smije koristiti za trajne stvari."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _log_pokretanja(poruka):
+    """Biljezi napredak POKRETANJA u trajan log fajl (mister_muscle_pokretanje.txt,
+    pored .exe-a) - NAMJERNO odvojeno od STATUS loga UNUTAR app-a, jer ako se
+    app povremeno uopce ne prikaze (poznat, isprekidan problem - "radi nakon
+    ponovnog pokretanja"), korisnik taj STATUS log nikad ni ne vidi. Ovaj fajl
+    se moze pogledati RUCNO (obican tekst) i nakon neuspjelog pokretanja, i
+    pokazat ce TOCNO do koje faze je stiglo prije nego je zapelo/palo -
+    slobodno se moze obrisati bilo kad, ponovo ce se sam napraviti."""
+    try:
+        putanja = os.path.join(_bazni_folder(), "mister_muscle_pokretanje.txt")
+        vrijeme = time.strftime("%H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
+        with open(putanja, "a", encoding="utf-8") as f:
+            f.write(f"{vrijeme}  {poruka}\n")
+    except Exception:
+        pass
+
+
+def _ikona_putanja():
+    """Nalazi 'ikona.ico' - u razvojnom okruzenju pored ove skripte, a u
+    upakiranom --onefile .exe-u unutar privremenog raspakiranog resurs-foldera
+    (sys._MEIPASS) gdje ga je build_exe.py stavio preko '--add-data'. Vraca
+    None ako ne postoji nigdje (npr. .exe je izgradjen bez ikona.ico) - u tom
+    slucaju se jednostavno koristi Tkinterova zadana ikona, bez greske."""
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            put = os.path.join(meipass, "ikona.ico")
+            if os.path.isfile(put):
+                return put
+    put = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ikona.ico")
+    return put if os.path.isfile(put) else None
+
+
+def _logo_putanja():
+    """Isti obrazac kao _ikona_putanja(), samo za 'logo.png' - manja PNG
+    verzija iste slike, koristi se za prikaz UNUTAR same app (naslovni red),
+    ne za Windows/taskbar ikonicu (za to sluzi ikona.ico)."""
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            put = os.path.join(meipass, "logo.png")
+            if os.path.isfile(put):
+                return put
+    put = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+    return put if os.path.isfile(put) else None
+
+
+def _radni_prostor_ekrana(root):
+    """Vraca (x, y, sirina, visina) RADNOG PROSTORA ekrana (BEZ taskbara) -
+    winfo_screenwidth/height vracaju CIJELI ekran ukljucujuci prostor koji
+    zauzima taskbar, pa bi "maksimiziran" prozor njime prekrio taskbar da
+    umjesto ovoga koristimo njih."""
+    if JE_WINDOWS:
+        try:
+            import ctypes
+            import ctypes.wintypes
+            SPI_GETWORKAREA = 0x0030
+            rect = ctypes.wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0)
+            return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+
+def _boja_u_colorref(hex_boja):
+    """Pretvara '#rrggbb' u Windows COLORREF format (0x00BBGGRR - obrnut
+    redoslijed bajtova od uobicajenog RGB) koji DWM API ocekuje."""
+    hex_boja = hex_boja.lstrip("#")
+    r, g, b = int(hex_boja[0:2], 16), int(hex_boja[2:4], 16), int(hex_boja[4:6], 16)
+    return (b << 16) | (g << 8) | r
+
+
+def _omoguci_tamnu_naslovnu_traku(root):
+    """Na Windows 10/11 prisiljava TAMNU naslovnu traku (regija s minimize/
+    maximize/close dugmadima) umjesto zadane bijele, preko sluzbenog DWM API-ja
+    (isti mehanizam koji koriste npr. Windows Terminal, VS Code...). Na
+    Windows 11 (22H2+) dodatno pokusa postaviti TOCNU boju naslovne trake
+    (DWMWA_CAPTION_COLOR) da odgovara BG boji app-a, umjesto samo generickog
+    tamnog stila - na starijim Windowsima taj dio jednostavno tiho ne uspije
+    i ostane obican tamni stil. Tiho ne radi nista na drugim OS-ovima.
+
+    Ovo je FALLBACK - koristi se samo ako _izgradi_prilagodjenu_naslovnu_traku
+    (potpuno vlastita traka, ne Windows-ova) nije uspjela ili nije Windows."""
+    if not JE_WINDOWS:
+        return
+    try:
+        import ctypes
+        import ctypes.wintypes
+        GetParent = ctypes.windll.user32.GetParent
+        GetParent.restype = ctypes.wintypes.HWND
+        GetParent.argtypes = [ctypes.wintypes.HWND]
+
+        DwmSetWindowAttribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        DwmSetWindowAttribute.restype = ctypes.wintypes.LONG
+        DwmSetWindowAttribute.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.DWORD,
+                                          ctypes.c_void_p, ctypes.wintypes.DWORD]
+
+        SetWindowPos = ctypes.windll.user32.SetWindowPos
+        SetWindowPos.restype = ctypes.wintypes.BOOL
+        SetWindowPos.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.HWND, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.wintypes.UINT]
+
+        # Plain Python int (ne rucno omotan u HWND()) - ctypes ga sam
+        # pretvori u HWND kad poziva funkciju, po deklariranim argtypes.
+        tk_hwnd = root.winfo_id()
+        kandidati = []
+        try:
+            # ctypes SAM "raspakira" proste tipove (HWND je c_void_p) u obican
+            # Python int/None kad ih funkcija VRATI (restype) - to je drugacije
+            # od slanja argumenata, gdje se rucno pretvaraju.
+            roditelj = GetParent(tk_hwnd)
+            kandidati.append(roditelj or 0)
+        except Exception:
+            pass
+        kandidati.append(tk_hwnd)
+
+        for hwnd in kandidati:
+            if not hwnd:
+                continue
+            uspjelo_tamno = False
+            for atribut in (20, 19):
+                vrijednost = ctypes.c_int(1)
+                rezultat = DwmSetWindowAttribute(
+                    hwnd, atribut, ctypes.byref(vrijednost), ctypes.sizeof(vrijednost)
+                )
+                if rezultat == 0:
+                    uspjelo_tamno = True
+                    break
+            if not uspjelo_tamno:
+                continue
+
+            # Windows 11 22H2+ - pokusaj JOS i tocnu boju (ne samo "tamno")
+            # DWMWA_CAPTION_COLOR=35, DWMWA_TEXT_COLOR=36, DWMWA_BORDER_COLOR=34.
+            # Ovo je NEOVISNO o gornjem - ako ne uspije (stariji Windows), i
+            # dalje ostaje generican tamni stil od gore, samo bez tocne boje.
+            try:
+                caption = ctypes.wintypes.DWORD(_boja_u_colorref(BG))
+                DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+                tekst_boja = ctypes.wintypes.DWORD(_boja_u_colorref(TEXT))
+                DwmSetWindowAttribute(hwnd, 36, ctypes.byref(tekst_boja), ctypes.sizeof(tekst_boja))
+                rub = ctypes.wintypes.DWORD(_boja_u_colorref(BORDER))
+                DwmSetWindowAttribute(hwnd, 34, ctypes.byref(rub), ctypes.sizeof(rub))
+            except Exception:
+                pass
+
+            try:
+                SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x27)
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
+
+
+def _je_upisiv(folder):
+    """Pravi test upisa - postojanje foldera ne znaci da u njega smijemo pisati
+    (Program Files, mrezni disk, OneDrive u read-only stanju...)."""
+    try:
+        os.makedirs(folder, exist_ok=True)
+        proba = os.path.join(folder, ".proba_upisa")
+        with open(proba, "w") as f:
+            f.write("ok")
+        os.remove(proba)
+        return True
+    except Exception:
+        return False
+
+
+def _podaci_folder():
+    """%LOCALAPPDATA%\\MisterMuscle (Windows) / ~/.mistermuscle - jedina lokacija
+    koja je garantirano upisiva bez admin prava."""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+    folder = os.path.join(base, "MisterMuscle")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        return _bazni_folder()
+    return folder
+
+
+def _config_folder():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    folder = os.path.join(base, "MisterMuscle")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        return _podaci_folder()
+    return folder
+
+
+def _alati_folder():
+    """Gdje zive yt-dlp.exe i ffmpeg.exe.
+
+    Prvo pored aplikacije (prakticno - sve na jednom mjestu, i tako je radila v16),
+    ali SAMO ako je taj folder stvarno upisiv. Ako nije (app instalirana u
+    Program Files), padamo na %LOCALAPPDATA%\\MisterMuscle\\alati. Ovo je bio
+    tihi bug u v16: yt-dlp.exe se pokusavao spremiti pored .exe-a i update je
+    pucao s permission greskom na svakom racunalu gdje app nije u user folderu."""
+    baza = _bazni_folder()
+    if _je_upisiv(baza):
+        return baza
+    folder = os.path.join(_podaci_folder(), "alati")
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+IZLAZNI_FOLDER = os.path.join(
+    os.path.expanduser("~"), "Videos", "MisterMuscle"
+) if os.name == "nt" else os.path.join(_bazni_folder(), "preuzeto")
+CONFIG_PATH = os.path.join(_config_folder(), "mister_muscle_config.json")
+
+JE_WINDOWS = os.name == "nt"
+
+# v2.3: PRILAGODJENA naslovna traka (vlastita, ne Windows-ova - vidi
+# App._izgradi_prilagodjenu_naslovnu_traku) je NAMJERNO ISKLJUCENA po
+# defaultu - korisnici su prijavili da app zna povremeno nestati iz
+# taskbara dok se sve ostalo ne minimizira, cak i nakon dva razlicita
+# pokusaja popravka (razliciti nacini forsiranja WS_EX_APPWINDOW stila).
+# To je previse rizika za cisto kozmeticku prednost. App i dalje dobiva
+# TAMNU naslovnu traku (i na Windows 11 22H2+ TOCNU boju app-a) preko
+# sluzbenog, puno stabilnijeg DWM API-ja (_omoguci_tamnu_naslovnu_traku) -
+# samo bez potpune zamjene min/maximize/close dugmadi. Ako se u buducnosti
+# nadje pouzdaniji nacin da se taskbar problem rijesi, ovo se moze vratiti
+# na True.
+KORISTI_PRILAGODJENU_NASLOVNU_TRAKU = False
+
+_SUBPROCESS_FLAGS = {}
+if JE_WINDOWS:
+    _SUBPROCESS_FLAGS["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+# Ugradnja pywebview prozora unutar glavnog Tkinter prozora radi preko
+# reparentanja OS prozora (SetParent) i moguca je samo na Windowsima uz
+# pywin32. Ako nesto od toga fali, player i dalje radi - samo u svom
+# zasebnom prozoru, kao u ranijim verzijama.
+EMBED_PLAYERA_DOSTUPAN = JE_WINDOWS and WIN32_DOSTUPAN
+WEBVIEW_NASLOV_PROZORA = "MisterMuscle_EmbeddedPlayer"
+
+
+# ============================================================================
+#  yt-dlp.exe  (samostalni binarnik s ugradenim self-updateom)
+# ============================================================================
+YT_DLP_EXE_NAZIV = "yt-dlp.exe" if JE_WINDOWS else "yt-dlp"
+YT_DLP_EXE_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + YT_DLP_EXE_NAZIV
+
+
+def yt_dlp_exe_putanja():
+    """Trazi yt-dlp.exe prvo pored aplikacije (stare instalacije v16), pa u folderu
+    alata. Vraca prvu koja postoji, inace onu u koju bismo ga skinuli."""
+    kandidati = [
+        os.path.join(_bazni_folder(), YT_DLP_EXE_NAZIV),
+        os.path.join(_alati_folder(), YT_DLP_EXE_NAZIV),
+    ]
+    for p in kandidati:
+        if os.path.isfile(p):
+            return p
+    return os.path.join(_alati_folder(), YT_DLP_EXE_NAZIV)
+
+
+def yt_dlp_dostupan():
+    return os.path.isfile(yt_dlp_exe_putanja())
+
+
+def preuzmi_datoteku(url, cilj, callback_postotak=None, min_velicina=0):
+    """Preuzima fajl uz izvjestavanje o postotku. Skida se pod privremenim imenom
+    pa se tek na kraju atomicno preimenuje - da nikad ne ostane napola preuzet fajl."""
+    privremena = cilj + ".preuzimanje"
+    os.makedirs(os.path.dirname(cilj), exist_ok=True)
+    zahtjev = urllib.request.Request(url, headers={"User-Agent": "MisterMuscle/" + APP_VERZIJA})
+    with urllib.request.urlopen(zahtjev, timeout=60) as odgovor, open(privremena, "wb") as izlaz:
+        ukupno = int(odgovor.headers.get("Content-Length") or 0)
+        preuzeto = 0
+        while True:
+            komad = odgovor.read(262144)
+            if not komad:
+                break
+            izlaz.write(komad)
+            preuzeto += len(komad)
+            if callback_postotak and ukupno:
+                callback_postotak(preuzeto / ukupno * 100.0)
+    if min_velicina and os.path.getsize(privremena) < min_velicina:
+        try:
+            os.remove(privremena)
+        except OSError:
+            pass
+        raise RuntimeError("Preuzeti fajl je premalen — prekinuta veza ili pogrešan link.")
+    os.replace(privremena, cilj)
+    if not JE_WINDOWS:
+        try:
+            os.chmod(cilj, 0o755)
+        except OSError:
+            pass
+    return cilj
+
+
+def preuzmi_yt_dlp_exe(callback_status=None, callback_postotak=None):
+    putanja = os.path.join(_alati_folder(), YT_DLP_EXE_NAZIV)
+    if callback_status:
+        callback_status(f"⏳ Preuzimam {YT_DLP_EXE_NAZIV} s GitHub Releases...")
+    preuzmi_datoteku(YT_DLP_EXE_URL, putanja, callback_postotak, min_velicina=1_000_000)
+    if callback_status:
+        callback_status(f"✅ {YT_DLP_EXE_NAZIV} spreman: {putanja}")
+    return putanja
+
+
+# ============================================================================
+#  gallery-dl (SAMO za Instagram SLIKE - yt-dlp video-alat ne podrzava slike
+#  uopce, sluzbeno zatvoreno kao "nece se raditi" na yt-dlp GitHubu).
+#
+#  v2.9: gallery-dl je od verzije 1.32.0 preselio AKTIVAN RAZVOJ s GitHuba na
+#  Codeberg (https://codeberg.org/mikf/gallery-dl) - GitHub stranice izdanja
+#  I DALJE postoje (s changelogom), ali BEZ prikacenog .exe fajla, pa je nas
+#  stari direktan link na GitHub uvijek vracao "404 Not Found". Codeberg
+#  (Gitea/Forgejo pokretan) ima SVOJ API na drugoj putanji (codeberg.org/api/v1/,
+#  ne api.github.com) - trazimo najnoviji .exe isto kao za samu app (JSON, pa
+#  nadjemo .exe asset), umjesto da nagadjamo tocan URL obrazac.
+# ============================================================================
+GALLERY_DL_EXE_NAZIV = "gallery-dl.exe" if JE_WINDOWS else "gallery-dl"
+GALLERY_DL_CODEBERG_API = "https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases/latest"
+
+
+def gallery_dl_exe_putanja():
+    return os.path.join(_alati_folder(), GALLERY_DL_EXE_NAZIV)
+
+
+def gallery_dl_dostupan():
+    return os.path.isfile(gallery_dl_exe_putanja())
+
+
+def _najnovija_gallery_dl_exe_url():
+    """Vraca (verzija, url) najnovijeg gallery-dl.exe s Codeberga, ili
+    (None, None) ako provjera ne uspije."""
+    try:
+        zahtjev = urllib.request.Request(
+            GALLERY_DL_CODEBERG_API,
+            headers={"User-Agent": "MisterMuscle/" + APP_VERZIJA, "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(zahtjev, timeout=15) as odgovor:
+            podaci = json.loads(odgovor.read().decode("utf-8"))
+        tag = (podaci.get("tag_name") or "").strip()
+        for asset in podaci.get("assets", []):
+            naziv = (asset.get("name") or "").lower()
+            if naziv == GALLERY_DL_EXE_NAZIV.lower():
+                return tag, asset.get("browser_download_url")
+        return None, None
+    except Exception:
+        return None, None
+
+
+def preuzmi_gallery_dl_exe(callback_status=None, callback_postotak=None):
+    putanja = gallery_dl_exe_putanja()
+    if callback_status:
+        callback_status(f"⏳ Tražim najnoviji {GALLERY_DL_EXE_NAZIV} (Codeberg)...")
+    _verzija, url = _najnovija_gallery_dl_exe_url()
+    if not url:
+        raise RuntimeError(
+            f"Nisam pronašao {GALLERY_DL_EXE_NAZIV} privitak na Codeberg izdanjima "
+            "(mikf/gallery-dl) - možda su promijenili gdje objavljuju .exe."
+        )
+    if callback_status:
+        callback_status(f"⏳ Preuzimam {GALLERY_DL_EXE_NAZIV}...")
+    preuzmi_datoteku(url, putanja, callback_postotak, min_velicina=1_000_000)
+    if callback_status:
+        callback_status(f"✅ {GALLERY_DL_EXE_NAZIV} spreman: {putanja}")
+    return putanja
+
+
+def pokreni_gallery_dl(argumenti, **kwargs):
+    return subprocess.run(
+        [gallery_dl_exe_putanja(), *argumenti],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        **_SUBPROCESS_FLAGS, **kwargs
+    )
+
+
+def pokreni_gallery_dl_popen(argumenti, **kwargs):
+    okolina = os.environ.copy()
+    okolina["PYTHONUNBUFFERED"] = "1"
+    return subprocess.Popen(
+        [gallery_dl_exe_putanja(), *argumenti],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+        env=okolina,
+        **_SUBPROCESS_FLAGS, **kwargs
+    )
+
+
+def je_instagram_link(url):
+    return "instagram.com" in url.lower()
+
+
+def _najnovija_verzija_yt_dlp():
+    """Provjerava (GitHub API, BEZ preuzimanja ičega) koja je najnovija objavljena
+    verzija yt-dlp-a - koristi se za TIHU provjeru pri pokretanju (vidi
+    App._tiha_provjera_azuriranja_pri_pokretanju). Vraca None ako provjera ne
+    uspije (npr. nema interneta ili je GitHub trenutno nedostupan) - u tom
+    slucaju se jednostavno ne prijavljuje nikakvo azuriranje, ne remeti
+    pokretanje app-a."""
+    try:
+        zahtjev = urllib.request.Request(
+            "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+            headers={"User-Agent": "MisterMuscle/" + APP_VERZIJA, "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(zahtjev, timeout=10) as odgovor:
+            podaci = json.loads(odgovor.read().decode("utf-8"))
+        return (podaci.get("tag_name") or "").strip() or None
+    except Exception:
+        return None
+
+
+# Repo iz kojeg SAMA APLIKACIJA (ne yt-dlp) provjerava svoje nove verzije -
+# promijeni ovo ako ikad presalis repo na drugi GitHub racun/naziv.
+APP_GITHUB_REPO = "wilsoncro/mister-muscle-downloader"
+DONATE_URL = "https://paypal.me/MrMuscle1995"
+
+
+def _usporedi_verzije(v1, v2):
+    """Usporedjuje dva broja verzije sastavljena od brojeva odvojenih tockama
+    (npr. '1.10' i '1.2') NUMERICKI, ne kao obican tekst - obican tekst bi
+    krivo rekao da je '1.10' < '1.2' (jer '1' < '2' na drugom znaku). Vraca
+    1 ako je v1 noviji, -1 ako je v1 stariji, 0 ako su isti."""
+    def dijelovi(v):
+        return [int(x) for x in re.findall(r"\d+", v)] or [0]
+    a, b = dijelovi(v1), dijelovi(v2)
+    duljina = max(len(a), len(b))
+    a += [0] * (duljina - len(a))
+    b += [0] * (duljina - len(b))
+    if a > b:
+        return 1
+    if a < b:
+        return -1
+    return 0
+
+
+def _najnovija_verzija_app():
+    """Provjerava (GitHub API, BEZ preuzimanja ičega) postoji li novija verzija
+    SAME APLIKACIJE objavljena kao GitHub Release - i ako postoji, nalazi
+    direktan link na .exe instalater prikacen uz taj release (prvi .exe asset
+    koji nadje). Vraca (verzija, url) ili (None, None) ako provjera ne uspije
+    ili release nema prikacen .exe."""
+    try:
+        zahtjev = urllib.request.Request(
+            f"https://api.github.com/repos/{APP_GITHUB_REPO}/releases/latest",
+            headers={"User-Agent": "MisterMuscle/" + APP_VERZIJA, "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(zahtjev, timeout=10) as odgovor:
+            podaci = json.loads(odgovor.read().decode("utf-8"))
+        tag = (podaci.get("tag_name") or "").strip()
+        if not tag:
+            return None, None
+        url_setup = None
+        for asset in podaci.get("assets", []):
+            naziv = (asset.get("name") or "").lower()
+            if naziv.endswith(".exe"):
+                url_setup = asset.get("browser_download_url")
+                break
+        if not url_setup:
+            return None, None
+        return tag, url_setup
+    except Exception:
+        return None, None
+
+
+# ============================================================================
+#  Deno - JavaScript runtime koji yt-dlp TREBA za YouTube (v3.7)
+#
+#  yt-dlp od kraja 2025. za YouTube koristi vanjski JS runtime (tzv. "EJS")
+#  da rijesi YouTubeove izazove (n-challenge/potpis). BEZ njega YouTube
+#  ekstrakcija radi u "ogranicenom" nacinu - dio formata nedostaje, tipicno
+#  sve iznad 1080p (4K/1440p, VP9/AV1) - tocno ono sto se dogadjalo
+#  ("ne skida u 4K", log pokazuje samo 137+251 = 1080p). Sluzbeni yt-dlp.exe
+#  vec ima ugradjene EJS skripte; fali samo runtime. Deno je preporucen i
+#  ukljucen po defaultu; yt-dlp ga nalazi u PATH-u ili u istom folderu kao
+#  yt-dlp.exe (a mi mu uz to PATH dopunimo, vidi _okolina_s_alatima).
+# ============================================================================
+DENO_EXE_NAZIV = "deno.exe" if JE_WINDOWS else "deno"
+DENO_ZIP_URL = ("https://github.com/denoland/deno/releases/latest/download/"
+                "deno-x86_64-pc-windows-msvc.zip")
+
+
+def deno_exe_putanja():
+    return os.path.join(_alati_folder(), DENO_EXE_NAZIV)
+
+
+def deno_dostupan():
+    """True ako je Deno vec tu - bilo nas preuzeti u folderu alata, bilo vec
+    instaliran na korisnikovom PATH-u (onda ga yt-dlp svejedno nalazi)."""
+    return os.path.isfile(deno_exe_putanja()) or shutil.which("deno") is not None
+
+
+def preuzmi_deno(callback_status=None, callback_postotak=None):
+    if not JE_WINDOWS:
+        raise RuntimeError("Automatsko preuzimanje Deno-a podrzano je samo na Windowsima.")
+    cilj = deno_exe_putanja()
+    zip_putanja = os.path.join(tempfile.gettempdir(), "mister_muscle_deno.zip")
+    if callback_status:
+        callback_status(f"⏳ Preuzimam {DENO_EXE_NAZIV} (JavaScript runtime za YouTube)...")
+    try:
+        preuzmi_datoteku(DENO_ZIP_URL, zip_putanja, callback_postotak, min_velicina=10_000_000)
+        privremeni = cilj + ".novi"
+        with zipfile.ZipFile(zip_putanja) as zf:
+            clan = next((n for n in zf.namelist()
+                         if os.path.basename(n).lower() == DENO_EXE_NAZIV.lower()), None)
+            if not clan:
+                raise RuntimeError(f"{DENO_EXE_NAZIV} nije pronadjen u preuzetom zip-u.")
+            with zf.open(clan) as izvor, open(privremeni, "wb") as odrediste:
+                shutil.copyfileobj(izvor, odrediste)
+        os.replace(privremeni, cilj)
+    finally:
+        try:
+            os.remove(zip_putanja)
+        except Exception:
+            pass
+    if callback_status:
+        callback_status(f"✅ {DENO_EXE_NAZIV} spreman: {cilj}")
+    return cilj
+
+
+def azuriraj_deno(timeout=120):
+    """Pokrece 'deno upgrade' (Denoov ugradjeni self-update) - SAMO za nas
+    vlastiti preuzeti deno.exe. Ako korisnik ima svoj Deno na PATH-u, njega
+    ne diramo. Vraca CompletedProcess, ili None ako nemamo svoju kopiju."""
+    putanja = deno_exe_putanja()
+    if not os.path.isfile(putanja):
+        return None
+    return subprocess.run(
+        [putanja, "upgrade"], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=timeout, **_SUBPROCESS_FLAGS
+    )
+
+
+def deno_verzija():
+    """Prvi redak 'deno --version' (npr. 'deno 2.5.0 (...)') ili None ako Deno
+    ne postoji / ne moze se pokrenuti - za dijagnostiku u STATUS logu."""
+    exe = deno_exe_putanja() if os.path.isfile(deno_exe_putanja()) else shutil.which("deno")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=15, **_SUBPROCESS_FLAGS)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().splitlines()[0]
+    except Exception:
+        pass
+    return None
+
+
+def _okolina_s_alatima():
+    """Okolina za yt-dlp podprocese: PATH dopunjen folderom naseg alata, da
+    yt-dlp SIGURNO nade Deno (i ostale alate) koji smo sami preuzeli, bez
+    oslanjanja na to da je korisnik sto instalirao u sustav."""
+    okolina = os.environ.copy()
+    okolina["PATH"] = _alati_folder() + os.pathsep + okolina.get("PATH", "")
+    return okolina
+
+
+def pokreni_yt_dlp(argumenti, **kwargs):
+    kwargs.setdefault("env", _okolina_s_alatima())
+    return subprocess.run(
+        [yt_dlp_exe_putanja(), *_po_token_yt_dlp_args(), *argumenti],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        **_SUBPROCESS_FLAGS, **kwargs
+    )
+
+
+# ============================================================================
+#  YouTube PO Token provider (bgutil-ytdlp-pot-provider)
+#
+#  yt-dlp moze trebati PO token za pojedine YouTube klijente/formate. Ovdje
+#  automatski postavljamo provider kao dodatni plugin, koristeci Deno koji app
+#  vec preuzima. Koristimo verziju 2.0.2 (ukljucuje sigurnosne popravke).
+#  Provider je opcionalan: ako instalacija ne uspije, preuzimanje nastavlja
+#  raditi bez njega, kao i prije.
+# ============================================================================
+PO_TOKEN_PROVIDER_VERZIJA = "2.0.2"
+PO_TOKEN_PLUGIN_URL = (
+    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/"
+    + PO_TOKEN_PROVIDER_VERZIJA + "/bgutil-ytdlp-pot-provider.zip"
+)
+PO_TOKEN_SOURCE_URL = (
+    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/"
+    + PO_TOKEN_PROVIDER_VERZIJA + ".zip"
+)
+_PO_TOKEN_READY = False
+_PO_TOKEN_ATTEMPTED = False
+_PO_TOKEN_LOCK = threading.Lock()
+
+
+def _po_token_plugin_folder():
+    return os.path.join(_alati_folder(), "yt-dlp-plugins")
+
+
+def _po_token_server_folder():
+    return os.path.join(_alati_folder(), "bgutil-ytdlp-pot-provider", "server")
+
+
+def _po_token_yt_dlp_args():
+    """Argumenti se dodaju samo nakon uspjesne instalacije providera."""
+    if not _PO_TOKEN_READY:
+        return []
+    return [
+        "--plugin-dirs", _po_token_plugin_folder(),
+        # Usmjeri bgutil script provider na njegov server folder.
+        "--extractor-args",
+        "youtubepot-bgutilscript:server_home=" + _po_token_server_folder(),
+        # Ne forsiramo mweb: bez funkcionalnog GVS PO tokena yt-dlp
+        # preskace njegove HTTPS formate. Prepustamo yt-dlp-u izbor
+        # podrazumijevanih klijenata, uz opcionalni provider.
+    ]
+
+
+def _osiguraj_po_token_provider(callback_status=None):
+    """Jednokratno instalira PO-token plugin i njegov Deno provider.
+    Ne blokira trajno aplikaciju ako GitHub/Deno instalacija nije dostupna."""
+    global _PO_TOKEN_READY, _PO_TOKEN_ATTEMPTED
+    if not JE_WINDOWS:
+        return False
+    with _PO_TOKEN_LOCK:
+        if _PO_TOKEN_READY:
+            return True
+        if _PO_TOKEN_ATTEMPTED:
+            return False
+        _PO_TOKEN_ATTEMPTED = True
+
+        def status(tekst):
+            if callback_status:
+                callback_status(tekst)
+
+        try:
+            plugin_folder = _po_token_plugin_folder()
+            os.makedirs(plugin_folder, exist_ok=True)
+            plugin_zip = os.path.join(plugin_folder, "bgutil-ytdlp-pot-provider.zip")
+            if not os.path.isfile(plugin_zip) or os.path.getsize(plugin_zip) < 1000:
+                status("⏳ Preuzimam YouTube PO Token provider...")
+                preuzmi_datoteku(PO_TOKEN_PLUGIN_URL, plugin_zip, min_velicina=1000)
+
+            server_folder = _po_token_server_folder()
+            if not (os.path.isfile(os.path.join(server_folder, "package.json"))
+                    and os.path.isfile(os.path.join(server_folder, "src", "main.ts"))):
+                status("⏳ Preuzimam komponente PO Token providera...")
+                source_zip = os.path.join(tempfile.gettempdir(), "bgutil-ytdlp-pot-provider.zip")
+                try:
+                    preuzmi_datoteku(PO_TOKEN_SOURCE_URL, source_zip, min_velicina=100_000)
+                    os.makedirs(server_folder, exist_ok=True)
+                    with zipfile.ZipFile(source_zip) as arhiva:
+                        imena = arhiva.namelist()
+                        marker = next((n for n in imena
+                                       if n.endswith("/server/package.json")), None)
+                        if not marker:
+                            raise RuntimeError("U arhivi providera nedostaje server/package.json.")
+                        server_prefix = marker[:-len("package.json")]
+                        # Izdvajamo samo server/; odbijamo putanje izvan ciljnog foldera.
+                        for clan in imena:
+                            if not clan.startswith(server_prefix):
+                                continue
+                            relativna = clan[len(server_prefix):]
+                            if not relativna or clan.endswith("/"):
+                                continue
+                            relativna_path = os.path.normpath(relativna)
+                            if os.path.isabs(relativna_path) or relativna_path == ".." or relativna_path.startswith(".." + os.sep):
+                                continue
+                            odrediste = os.path.join(server_folder, relativna_path)
+                            os.makedirs(os.path.dirname(odrediste), exist_ok=True)
+                            with arhiva.open(clan) as ulaz, open(odrediste, "wb") as izlaz:
+                                shutil.copyfileobj(ulaz, izlaz)
+                finally:
+                    try:
+                        os.remove(source_zip)
+                    except OSError:
+                        pass
+
+            deno = deno_exe_putanja() if os.path.isfile(deno_exe_putanja()) else shutil.which("deno")
+            if not deno:
+                status("⏳ Deno nedostaje — preuzimam ga za PO Token provider...")
+                deno = preuzmi_deno(callback_status=callback_status)
+            status("⏳ Pripremam PO Token provider (ovo može potrajati prvi put)...")
+            rezultat = subprocess.run(
+                [deno, "install", "--allow-scripts=npm:canvas", "--frozen"],
+                cwd=server_folder, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=600,
+                env=_okolina_s_alatima(), **_SUBPROCESS_FLAGS
+            )
+            if rezultat.returncode != 0:
+                detalji = (rezultat.stderr or rezultat.stdout or "").strip()
+                raise RuntimeError(detalji[-1800:] or f"Deno install kod {rezultat.returncode}")
+            if not os.path.isdir(os.path.join(server_folder, "node_modules")):
+                raise RuntimeError("Deno nije napravio node_modules za PO Token provider.")
+            # Instalacija zavisnosti nije dokaz da provider uspjesno generira
+            # tokene za konkretan YouTube video.
+            _PO_TOKEN_READY = True
+            status("ℹ PO Token provider je instaliran (rad s YouTubeom nije potvrđen).")
+            return True
+        except Exception as err:
+            status("⚠ PO Token provider nije postavljen; pokušavam nastaviti bez njega.")
+            status(f"Detalji PO Token providera: {err}")
+            return False
+
+
+def pokreni_yt_dlp_popen(argumenti, **kwargs):
+    # PYTHONUNBUFFERED=1: yt-dlp.exe je i sam (upakiran) Python program - kad
+    # mu se stdout preusmjeri u cijev (kao ovdje, da mi citamo progress), C
+    # runtime po defaultu prelazi s "red-po-red" na "blok" bafiranje (poznato
+    # ponasanje kad izlaz nije pravi terminal) - izgleda kao da se skidanje
+    # "zaledeno" jer se hrpa redaka isprazni odjednom (cesto tek na kraju)
+    # umjesto postupno. Ova varijabla okoline prisiljava yt-dlp da ispisuje
+    # red-po-red ODMAH, pa se postotak/brzina azuriraju uzivo, ne skokovito.
+    okolina = _okolina_s_alatima()
+    okolina["PYTHONUNBUFFERED"] = "1"
+    return subprocess.Popen(
+        [yt_dlp_exe_putanja(), *_po_token_yt_dlp_args(), *argumenti],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+        env=okolina,
+        **_SUBPROCESS_FLAGS, **kwargs
+    )
+
+
+# ============================================================================
+#  ffmpeg  (OBAVEZAN, ne opcionalan!)
+# ============================================================================
+# Bez ffmpega NE RADI: spajanje slike i zvuka (bestvideo+bestaudio), rezanje
+# isjecka (--download-sections), pretvorba u mp3 i provjera/pretvorba kodeka.
+# v16 je racunala da ffmpeg vec postoji na PATH-u - na cistom racunalu ne postoji,
+# pa je skidanje "uspjelo" ali je zavrsilo s dva odvojena fajla ili greskom.
+FFMPEG_ZIP_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+FFMPEG_NAZIV = "ffmpeg.exe" if JE_WINDOWS else "ffmpeg"
+FFPROBE_NAZIV = "ffprobe.exe" if JE_WINDOWS else "ffprobe"
+
+
+def _nadi_alat(naziv):
+    """Nas vlastiti primjerak ima prednost pred sistemskim, da svi rade s istom
+    poznatom verzijom; ako naseg nema, uzimamo onaj s PATH-a (ako postoji)."""
+    for folder in (_alati_folder(), _bazni_folder()):
+        p = os.path.join(folder, naziv)
+        if os.path.isfile(p):
+            return p
+    sistemski = shutil.which(naziv)
+    return sistemski
+
+
+def ffmpeg_putanja():
+    return _nadi_alat(FFMPEG_NAZIV)
+
+
+def ffprobe_putanja():
+    return _nadi_alat(FFPROBE_NAZIV)
+
+
+def ffmpeg_dostupan():
+    return ffmpeg_putanja() is not None
+
+
+def preuzmi_ffmpeg(callback_status=None, callback_postotak=None):
+    """Skida sluzbeni statican Windows build i vadi SAMO ffmpeg.exe i ffprobe.exe
+    (ostatak zipa nam ne treba - stedimo ~200 MB na disku)."""
+    if not JE_WINDOWS:
+        raise RuntimeError(
+            "Automatsko preuzimanje ffmpega podržano je samo na Windowsima.\n"
+            "Na Linuxu/macOS-u instaliraj ga ručno (npr. 'sudo apt install ffmpeg' ili 'brew install ffmpeg')."
+        )
+    cilj_folder = _alati_folder()
+    zip_putanja = os.path.join(cilj_folder, "_ffmpeg_privremeno.zip")
+    if callback_status:
+        callback_status("⏳ Preuzimam ffmpeg (~80 MB, samo prvi put)...")
+    preuzmi_datoteku(FFMPEG_ZIP_URL, zip_putanja, callback_postotak, min_velicina=5_000_000)
+
+    if callback_status:
+        callback_status("📦 Raspakiravam ffmpeg...")
+    izvuceno = 0
+    with zipfile.ZipFile(zip_putanja) as z:
+        for clan in z.namelist():
+            osnovno = os.path.basename(clan)
+            if osnovno.lower() in (FFMPEG_NAZIV.lower(), FFPROBE_NAZIV.lower()):
+                with z.open(clan) as izvor, open(os.path.join(cilj_folder, osnovno), "wb") as odrediste:
+                    shutil.copyfileobj(izvor, odrediste)
+                izvuceno += 1
+    try:
+        os.remove(zip_putanja)
+    except OSError:
+        pass
+    if izvuceno < 2:
+        raise RuntimeError("U preuzetom arhivu nisu pronađeni ffmpeg.exe i ffprobe.exe.")
+    if callback_status:
+        callback_status(f"✅ ffmpeg spreman: {cilj_folder}")
+    return cilj_folder
+
+
+def ffmpeg_argumenti():
+    """yt-dlp sam ne zna gdje je nas ffmpeg ako nije na PATH-u - moramo mu reci."""
+    put = ffmpeg_putanja()
+    if put:
+        return ["--ffmpeg-location", os.path.dirname(os.path.abspath(put))]
+    return []
+
+
+# ============================================================================
+#  WebView2 Runtime  (OBAVEZAN na Windowsima za player - sistemska komponenta)
+# ============================================================================
+# Za razliku od yt-dlp.exe/ffmpeg.exe (koje SAMI skidamo kao obicne datoteke),
+# WebView2 Runtime je Microsoftova komponenta koju instalira pravi Windows
+# instalater (dijele je SVE app na racunalu, ne samo nasa) - bez nje pywebview
+# na Windowsima ne moze prikazati NIJEDAN player (ni ugradjeni ni zaseban
+# prozor). Na modernim Windows 10/11 racunalima je gotovo uvijek vec tu (sam
+# Windows Update je instalira/azurira), ali na starijim/"ocisceniim" sustavima
+# zna nedostajati - a bez ove provjere korisnik samo vidi da player ne radi,
+# bez ikakvog objasnjenja zasto.
+WEBVIEW2_CLIENT_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+# Sluzbeni, trajni Microsoftov link ("Get the Link") za "Evergreen Bootstrapper" -
+# mali (~2 MB) instalater koji sam povuce i instalira najnoviju verziju runtime-a
+# za arhitekturu tog racunala. Dokumentirano u Microsoftovim WebView2 uputama
+# za distribuciju ("Distribute your app and the WebView2 Runtime").
+WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+
+
+def webview2_dostupan():
+    """Provjerava (preko registrija - sluzbeno dokumentirana Microsoftova metoda)
+    je li WebView2 Runtime vec instaliran. Provjeravaju se SVA tri moguca mjesta
+    (HKLM 64-bit, HKLM 32-bit, HKCU per-user) jer je dovoljno da bilo koje od
+    njih ima ispravnu (ne "0.0.0.0") verziju."""
+    if not JE_WINDOWS:
+        return True  # provjera je Windows-specificna, na drugim OS-ima ne blokiramo nista
+    try:
+        import winreg
+    except ImportError:
+        return True
+    mjesta = [
+        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\" + WEBVIEW2_CLIENT_GUID),
+        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\" + WEBVIEW2_CLIENT_GUID),
+        (winreg.HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\" + WEBVIEW2_CLIENT_GUID),
+    ]
+    for koren, put in mjesta:
+        try:
+            with winreg.OpenKey(koren, put) as kljuc:
+                verzija, _ = winreg.QueryValueEx(kljuc, "pv")
+                if verzija and verzija != "0.0.0.0":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def preuzmi_i_instaliraj_webview2(callback_status=None):
+    """Skida sluzbeni Evergreen Bootstrapper i pokrece ga. Instalacija moze
+    zatraziti Windows UAC potvrdu (to je normalno i ocekivano - WebView2 je
+    sistemska komponenta, ne nasa datoteka, pa joj treba prava razina prava
+    da bi je Windows stvarno instalirao)."""
+    if not JE_WINDOWS:
+        raise RuntimeError("WebView2 Runtime instalacija je moguca samo na Windowsima.")
+    cilj = os.path.join(_alati_folder(), "MicrosoftEdgeWebView2Setup.exe")
+    if callback_status:
+        callback_status("⏳ Preuzimam Microsoft Edge WebView2 Runtime instalater (malen, ~2 MB)...")
+    preuzmi_datoteku(WEBVIEW2_BOOTSTRAPPER_URL, cilj, min_velicina=500_000)
+    if callback_status:
+        callback_status("⏳ Pokrećem WebView2 instalaciju — Windows može zatražiti potvrdu (UAC)...")
+    rezultat = subprocess.run([cilj, "/silent", "/install"], timeout=180)
+    if rezultat.returncode != 0:
+        raise RuntimeError(
+            f"WebView2 instalater je završio s kodom {rezultat.returncode} "
+            "(korisnik je možda odbio UAC potvrdu, ili je instalacija otkazana)."
+        )
+    if callback_status:
+        callback_status("✅ WebView2 Runtime uspješno instaliran.")
+
+
+# ============================================================================
+#  CONFIG (pamti sve postavke izmedu pokretanja)
+# ============================================================================
+ZADANI_CONFIG = {
+    "izlazni_folder": IZLAZNI_FOLDER,
+    "nacin": "video_zvuk",          # video_zvuk | samo_video | samo_zvuk | slika_instagram
+    "kvaliteta": "Najbolja",
+    "video_format": "mp4",
+    "audio_format": "mp3",
+    "omjer_slike": "Original",      # Original | 16:9 | 9:16 (TikTok/Reels/Shorts) | 1:1 (Square) | 4:5 (Instagram)
+    "cookies_browser": "Chrome",    # odakle gallery-dl vuce Instagram login kolacice
+    "cookies_izvor": "browser",     # browser | fajl
+    "cookies_fajl": "",             # putanja do cookies.txt (ako je izvor "fajl")
+    "h264": False,
+    "metapodaci": False,
+    "prozor": "1240x820",
+    "jezik": "en",                  # hr | en
+    "zadnja_prikazana_verzija": "", # koja je verzija zadnja pokazala "Novosti" dijalog
+}
+
+
+# ============================================================================
+#  JEZIK (hrvatski / english)
+# ============================================================================
+# Prijevodi pokrivaju stalne dijelove sucelja (naslovi, gumbi, izbornici,
+# glavne poruke) - dublje dijagnosticke poruke u STATUS logu (tijekom
+# skidanja i sl.) ostaju za sada na hrvatskom, da opseg ostane pouzdan i
+# provjerljiv. Nedostajuci kljuc se automatski vraca na hrvatski tekst.
+PRIJEVODI = {
+    "hr": {
+        "naslov_prozora": "Mister Muscle Downloader",
+        "naslov_app": "Mister Muscle Downloader",
+        "podnaslov_app": "YouTube · TikTok · Instagram — video, isječci i zvuk u najboljoj kvaliteti",
+        "meni_alati": "Alati",
+        "meni_provjeri_azuriranja": "🔄 Provjeri ažuriranja",
+        "meni_azuriraj_ytdlp": "Ažuriraj samo yt-dlp",
+        "meni_reinstaliraj_ffmpeg": "Ponovno instaliraj ffmpeg",
+        "meni_azuriraj_gallerydl": "Ažuriraj gallery-dl (Instagram slike)",
+        "meni_webview2": "Provjeri/instaliraj WebView2 Runtime",
+        "meni_folder_alati": "📂 Otvori folder s alatima",
+        "meni_config": "⚙ Otvori config",
+        "meni_reset_prozor": "🗔 Resetiraj veličinu prozora",
+        "meni_pomoc": "Pomoć",
+        "meni_doniraj": "❤️ Doniraj",
+        "meni_o_aplikaciji": "O aplikaciji",
+        "meni_jezik": "Jezik",
+        "meni_jezik_hr": "Hrvatski",
+        "meni_jezik_en": "English",
+        "gumb_azuriranja": "🔄 Provjeri ažuriranja",
+        "kartica_1": "LINKOVI (jedan po retku)",
+        "kartica_2": "TIP FAJLA",
+        "kartica_3": "LOKACIJA SKIDANJA",
+        "kartica_4": "POKRENI",
+        "placeholder_linkovi": "Zalijepi YouTube / TikTok / Instagram link ovdje...",
+        "gumb_pregledaj": "🔄 Ponovno učitaj player",
+        "gumb_zalijepi": "📋 Zalijepi",
+        "gumb_ocisti": "🗑 Očisti",
+        "gumb_ponisti_isjecak": "✕ Poništi",
+        "nacin_video_zvuk": "🎬  Video + zvuk",
+        "nacin_video_zvuk_opis": "spojen mp4 — standardno",
+        "nacin_samo_video": "🎞  Samo video",
+        "nacin_samo_video_opis": "nijemi zapis za montažu / B-roll",
+        "nacin_samo_zvuk": "🎵  Samo zvuk",
+        "nacin_slika_instagram": "📷  Slika (Instagram)",
+        "nacin_samo_zvuk_opis": "mp3 / m4a / wav — bez slike",
+        "oznaka_kvaliteta": "Kvaliteta",
+        "oznaka_format_videa": "Format videa",
+        "oznaka_format_zvuka": "Format zvuka",
+        "oznaka_omjer_slike": "Omjer slike",
+        "oznaka_cookies_browser": "Kolačići iz browsera",
+        "cb_h264": "Premiere-ready (H.264/avc1)",
+        "cb_h264_opis": "traži avc1 i po potrebi pretvori — Premiere ga uvijek čita",
+        "cb_metapodaci": "Ugradi naslovnicu i metapodatke",
+        "cb_metapodaci_opis": "naslov, izvođač i cover u fajl",
+        "gumb_odaberi_folder": "📂 Odaberi",
+        "gumb_otvori_folder": "👁 Otvori",
+        "skini_video": "⬇   SKINI VIDEO",
+        "skini_video_bez_zvuka": "⬇   SKINI VIDEO BEZ ZVUKA",
+        "skini_zvuk": "⬇   SKINI ZVUK",
+        "skini_slike": "⬇   SKINI SLIKE",
+        "ig_slika_naslov": "Slike s Instagrama trebaju prijavu",
+        "ig_slika_objasnjenje": "Instagram od 2023. traži prijavu za skoro sav sadržaj. "
+                                 "Posudimo tvoje podatke za prijavu (kolačiće) — ne tražimo "
+                                 "tvoju lozinku niti je vidimo. Biraš odakle:",
+        "cookies_izvor_browser": "🌐 Iz browsera (mora biti zatvoren)",
+        "cookies_izvor_fajl": "📄 Iz cookies.txt fajla (bez zatvaranja)",
+        "cookies_browser_napomena": "Savjet: potpuno ZATVORI taj browser prije skidanja — "
+                                     "dok je otvoren, Chromium (Chrome/Edge/Brave...) često "
+                                     "zaključa svoje kolačiće pa ih ne možemo pročitati.",
+        "oznaka_cookies_fajl": "cookies.txt fajl",
+        "cookies_fajl_napomena": "Izvezi Instagram kolačiće preko besplatne ekstenzije poput "
+                                  "'Get cookies.txt LOCALLY' (dok si normalno prijavljen na "
+                                  "instagram.com), pa ovdje odaberi taj fajl — browser ne "
+                                  "treba zatvarati.",
+        "dijalog_odaberi_cookies_naslov": "Odaberi cookies.txt fajl",
+        "dijalog_svi_fajlovi": "Svi fajlovi",
+        "gumb_ig_prijava": "🔑 Prijavi se na Instagram unutar app-a (preporučeno)",
+        "ig_ili_rucno": "— ili ručno —",
+        "ig_prijava_naslov": "Prijava na Instagram",
+        "ig_prijava_info": "Otvorit će se prozor sa STVARNOM Instagram prijavom (unutar "
+                            "ove app, ne u tvom browseru). Prijavi se normalno — prozor će "
+                            "se SAM zatvoriti čim prepozna uspješnu prijavu, i kolačići će "
+                            "se automatski spremiti i odabrati. Ne moraš ga ručno zatvarati.",
+        "ig_prijava_u_tijeku": "⏳ Čekam da se prijaviš (prozor se sam zatvara nakon prijave)...",
+        "ig_prijava_uspjeh": "✅ Prijava spremljena i odabrana kao izvor kolačića.",
+        "ig_prijava_neuspjeh": "⚠ Nije uspjelo (prozor je možda zatvoren prije prijave). Probaj ponovno ili koristi jednu od opcija ispod.",
+        "link_ig_odjava": "🚪 Odjavi se",
+        "ig_odjava_naslov": "Odjava s Instagrama",
+        "ig_odjava_potvrda": "Obrisati spremljenu Instagram prijavu s ovog računala? Sljedeći put ćeš se morati ponovno prijaviti.",
+        "ig_odjava_gotovo": "🚪 Odjavljen/a — spremljena prijava obrisana.",
+        "ig_odjava_nema_sto": "Nema spremljene prijave za brisanje.",
+        "gumb_pauziraj": "⏸ Pauziraj",
+        "gumb_nastavi": "▶ Nastavi",
+        "gumb_prekini": "✕ Prekini",
+        "status_naslov": "STATUS",
+        "player_naslov": "PLAYER",
+        "status_sakrij": "▾ sakrij",
+        "status_prikazi": "▸ prikaži",
+        "link_prikazi_log": "📋 Prikaži log",
+        "link_prikazi_player": "🎬 Prikaži player",
+        "gumb_ocisti_log": "🗑 očisti log",
+        "player_placeholder": "🎬\n\nPlayer za označavanje isječka\nprikazat će se ovdje čim zalijepiš link\n(ili klikni '🔄 Ponovno učitaj player')",
+        "player_zaseban_prozor": "🎬\n\nPlayer je otvoren u zasebnom prozoru\n(ugradnja u ovaj prozor zahtijeva Windows + pywin32)",
+        "o_aplikaciji_naslov": "O aplikaciji",
+        "o_aplikaciji_autor": "Razvio: Mr_muscle",
+        "o_aplikaciji_prava": "Sva prava pridržana.",
+        "o_aplikaciji_auto_update": "Pri svakom pokretanju app tiho provjeri ima li nova verzija yt-dlp-a "
+                                    "(mehanizam za skidanje) i ponudi ažuriranje ako je nađe — a ffmpeg i "
+                                    "yt-dlp se preuzimaju sami ako uopće nedostaju.",
+        "o_aplikaciji_alati": "Alati",
+        "o_aplikaciji_postavke": "Postavke",
+        "nije_pronadjen": "nije pronađen",
+        "provjeravam_alate": "Provjeravam alate...",
+        "provjeravam": "🔄 Provjeravam...",
+        "skidam": "Skini klip",
+        # --- dijaloski okviri i STATUS log poruke (dodano naknadno) ---
+        "err_naslov": "Greška",
+        "msg_need_pywebview": "ℹ Za pregled/označavanje isječka treba biblioteka 'pywebview' (pip install pywebview).",
+        "msg_need_pywin32": "ℹ Za player UGRAĐEN u prozor treba 'pywin32' (pip install pywin32) — za sad će se otvarati u zasebnom prozoru.",
+        "msg_black_player_hint": "ℹ Ako ugrađeni player ostane crn nakon otvaranja, pričekaj sekundu-dvije (automatski se pokušava 'probuditi') ili malo rastegni prozor aplikacije.",
+        "msg_window_reset": "🗔 Veličina prozora resetirana na 1240×820.",
+        "msg_cannot_open": "Ne mogu otvoriti: {0}\n\n{1}",
+        "msg_folder_session_only": "⚠ Folder vrijedi za ovu sesiju, ali ga ne mogu zapamtiti: {0}",
+        "msg_folder_saved": "📁 Folder: {0} (zapamćen)",
+        "msg_start_marked": "📍 Početak: {0}",
+        "msg_end_marked": "📍 Kraj: {0}",
+        "msg_clipboard_auto_zalijepljen": "📋 Link iz clipboarda automatski zalijepljen.",
+        "webview2_naslov": "WebView2 Runtime",
+        "webview2_ok_text": "Sve u redu — WebView2 Runtime je već instaliran.",
+        "msg_webview2_missing": "⚠ Microsoft Edge WebView2 Runtime nije pronađen — bez njega player (pregled/rezanje) neće raditi.",
+        "webview2_confirm_naslov": "Nedostaje WebView2 Runtime",
+        "webview2_confirm_text": "Za prikaz playera (pregled i označavanje isječka) potrebna je Microsoft Edge "
+                                 "WebView2 komponenta, a nije pronađena na ovom računalu.\n\n"
+                                 "To je jednokratna, službena Microsoftova instalacija (dijele je sve aplikacije "
+                                 "na računalu, ne samo ova) - može zatražiti Windows potvrdu (UAC).\n\n"
+                                 "Preuzeti i instalirati je sada automatski?",
+        "msg_webview2_skipped": "ℹ Preskočeno — player neće raditi dok se WebView2 Runtime ručno ne instalira "
+                                "(https://developer.microsoft.com/microsoft-edge/webview2/).",
+        "msg_webview2_ready": "ℹ Sad probaj ponovno zalijepiti link (ili klikni '🔄 Ponovno učitaj player').",
+        "msg_webview2_install_failed": "❌ WebView2 instalacija nije uspjela: {0}",
+        "webview2_error_text": "Ne mogu instalirati WebView2 Runtime: {0}\n\nProbaj ručno preuzeti s https://developer.microsoft.com/microsoft-edge/webview2/",
+        "msg_tool_missing_downloading": "⚠ {0} nedostaje — preuzimam...",
+        "msg_ytdlp_download_failed": "❌ Preuzimanje yt-dlp nije uspjelo: {0}",
+        "msg_ffmpeg_missing_note": "⚠ ffmpeg nedostaje — bez njega ne rade spajanje slike i zvuka, "
+                                   "rezanje isječka ni pretvorba u mp3. Preuzimam...",
+        "msg_ffmpeg_download_failed": "❌ Preuzimanje ffmpega nije uspjelo: {0}",
+        "update_available_naslov": "Dostupno ažuriranje",
+        "update_available_text": "Dostupna je nova verzija yt-dlp-a: {0}\n(trenutno imaš: {1})\n\n"
+                                 "yt-dlp se često ažurira da prati promjene na YouTube/TikTok/Instagram — "
+                                 "redovito ažuriranje smanjuje šansu za greške pri skidanju.\n\n"
+                                 "Preuzeti i instalirati novu verziju sada?",
+        "msg_updating_ytdlp": "🔄 Preuzimam noviju verziju yt-dlp-a...",
+        "msg_tools_summary": "📦 yt-dlp {0} · {1}",
+        "status_tools_unavailable": "nedostupan",
+        "status_ffmpeg_missing": "❌ ffmpeg NEDOSTAJE",
+        "update_in_progress_naslov": "Skidanje u tijeku",
+        "update_in_progress_text": "Ažuriranje se ne smije raditi dok traje skidanje.\nPričekaj da završi ili klikni '✕ Prekini'.",
+        "updates_naslov": "Ažuriranja",
+        "msg_ytdlp_output": "🔄 yt-dlp: {0}",
+        "msg_ytdlp_running_update": "🔄 Pokrećem yt-dlp -U ...",
+        "msg_ytdlp_downloaded_first": "✅ yt-dlp: preuzet (prvi put)",
+        "msg_ytdlp_download_failed_short": "❌ yt-dlp: preuzimanje nije uspjelo ({0})",
+        "msg_ytdlp_update_failed": "❌ yt-dlp: ažuriranje nije uspjelo (detalji u STATUS logu)",
+        "msg_ytdlp_already_latest": "✅ yt-dlp: već najnoviji",
+        "msg_ytdlp_updated": "🆕 yt-dlp: nadograđen na najnoviju verziju",
+        "msg_ytdlp_check_done": "✅ yt-dlp: provjera završena",
+        "msg_ytdlp_update_timeout": "❌ yt-dlp: ažuriranje je isteklo (spora veza) — pokušaj ponovno",
+        "msg_ytdlp_update_error": "❌ yt-dlp: {0}",
+        "msg_gallerydl_output": "🔄 gallery-dl: {0}",
+        "msg_gallerydl_running_update": "🔄 Pokrećem gallery-dl -U ...",
+        "msg_gallerydl_downloaded_first": "✅ gallery-dl: preuzet (prvi put)",
+        "msg_gallerydl_download_failed_short": "❌ gallery-dl: preuzimanje nije uspjelo ({0})",
+        "msg_gallerydl_update_failed": "❌ gallery-dl: ažuriranje nije uspjelo (detalji u STATUS logu)",
+        "msg_gallerydl_already_latest": "✅ gallery-dl: već najnoviji",
+        "msg_gallerydl_updated": "🆕 gallery-dl: nadograđen na najnoviju verziju",
+        "msg_gallerydl_check_done": "✅ gallery-dl: provjera završena",
+        "msg_gallerydl_update_timeout": "❌ gallery-dl: ažuriranje je isteklo (spora veza) — pokušaj ponovno",
+        "msg_gallerydl_update_error": "❌ gallery-dl: {0}",
+        "msg_deno_needed_downloading": "⏳ Preuzimam Deno (JavaScript runtime koji YouTube treba za 4K i sve formate) — jednokratno, ~40 MB...",
+        "msg_deno_download_failed": "⚠ Deno nije preuzet: {0} — YouTube videi možda neće ići u 4K/1440p. Pokušat ćemo ponovno pri sljedećem pokretanju.",
+        "msg_deno_present": "✅ Deno (YouTube 4K podrška): prisutan",
+        "msg_deno_installed": "🆕 Deno (YouTube 4K podrška): preuzet i instaliran",
+        "msg_deno_failed_short": "❌ Deno: preuzimanje nije uspjelo ({0})",
+        "msg_deno_updated": "🆕 Deno (YouTube 4K podrška): nadograđen na najnoviju verziju",
+        "msg_deno_update_failed": "❌ Deno: ažuriranje nije uspjelo (detalji u STATUS logu)",
+        "msg_js_runtime_ok": "🧩 JavaScript runtime za YouTube: {0}",
+        "msg_js_runtime_missing": "⚠ JavaScript runtime (Deno) NIJE dostupan — YouTube će dati samo ograničene formate (~1080p), 4K neće raditi. Pokušaj Alati → Provjeri ažuriranja da se Deno preuzme.",
+        "msg_format_chosen": "🎞 yt-dlp je odabrao format: {0}",
+        "msg_resolution_downloaded": "📐 Skinuta rezolucija: {0}×{1}",
+        "msg_resolution_hint": "ℹ Tražena kvaliteta je {0}p, a dobiveno je {1}p. Ako je gore Deno ispisan kao dostupan, razlog je YouTubeovo ograničenje: 4K/1440p formate daje alatima za skidanje samo uz tzv. PO token (ne radi se o grešci u app-i). Moguće je i da sam video nema taj format.",
+        "msg_aspect_already": "ℹ Video je već u omjeru {0} — rezanje preskočeno.",
+        "msg_deno_not_needed": "ℹ Deno: nije potreban na ovom sustavu",
+        "msg_ffmpeg_present": "✅ ffmpeg: prisutan",
+        "msg_ffmpeg_installed": "🆕 ffmpeg: instaliran",
+        "msg_ffmpeg_error": "❌ ffmpeg: {0}",
+        "err_pywebview_missing_text": "Biblioteka 'pywebview' nije instalirana.\n\nInstaliraj u terminalu:\n    pip install pywebview",
+        "warn_naslov": "Upozorenje",
+        "warn_cookies_fajl_missing": "Odaberi valjan cookies.txt fajl prije skidanja (Odaberi izvor kolačića → Iz cookies.txt fajla).",
+        "warn_paste_link_first": "Prvo zalijepi link.",
+        "err_cant_recognize_youtube": "Ne prepoznajem YouTube video ID iz tog linka.",
+        "msg_opening_player": "⏳ Otvaram player...",
+        "msg_fetching_preview": "⏳ Dohvaćam pregled videa...",
+        "msg_embed_disabled_fallback": "⏳ Embed onemogućen za taj video — preuzimam kraći lokalni pregled...",
+        "msg_tiktok_bug_preview": "TikTok trenutno ima poznat problem u yt-dlp (ne u ovoj aplikaciji) — probaj 'Provjeri ažuriranja'.",
+        "err_cant_fetch_preview": "Ne mogu dohvatiti pregled videa: {0}",
+        "msg_preview_failed_log": "❌ Pregled nije uspio:\n{0}",
+        "err_cant_prepare_player": "Ne mogu pripremiti player: {0}",
+        "msg_embedded_ready": "✅ Player ugrađen i spreman.",
+        "msg_embed_load_failed": "⚠ Ne mogu učitati ugrađeni player: {0} — koristim zaseban prozor.",
+        "msg_need_psutil_pause": "ℹ Prava pauza traži 'psutil' (pip install psutil) — bez njega skidanje nastavlja u pozadini.",
+        "msg_cant_pause_resume": "⚠ Ne mogu {0} proces: {1}",
+        "akcija_pauzirati": "pauzirati",
+        "akcija_nastaviti": "nastaviti",
+        "msg_cancelled_by_user": "✕ Prekinuto na zahtjev korisnika.",
+        "warn_no_link_naslov": "Nema linka",
+        "warn_no_link_text": "Zalijepi barem jedan link.",
+        "ffmpeg_missing_naslov": "Nedostaje ffmpeg",
+        "ffmpeg_missing_confirm_text": "Za spajanje slike i zvuka, rezanje isječka i pretvorbu u mp3 potreban je ffmpeg, "
+                                       "a nije pronađen.\n\nPreuzeti ga sada automatski?",
+        "warn_download_in_progress_text": "Pričekaj da trenutno skidanje završi pa pokušaj ponovno.",
+        "ffmpeg_missing_multi_text": "Za rezanje isječaka potreban je ffmpeg, a nije pronađen.\n\n"
+                                     "Idi na 'Alati → Provjeri ažuriranja' da ga preuzmeš, pa pokušaj ponovno.",
+        "err_cant_download_tool": "Ne mogu preuzeti {0}: {1}",
+        "msg_merging": "🔗 Spajam sliku i zvuk...",
+        "msg_extracting_audio": "🎵 Izvlačim i pretvaram zvuk...",
+        "msg_silent_video_done": "🔇 Skinut nijemi video (bez audio zapisa).",
+        "msg_error_generic": "❌ Greška: {0}",
+        "msg_not_instagram_link": "⚠ Ovo nije Instagram link, preskačem: {0}",
+        "msg_ig_no_images_found": "Nije pronađena nijedna slika na tom linku (možda je post izbrisan, privatan, ili je zapravo video).",
+        "msg_ig_slika_no_preview": "ℹ Pregled/označavanje isječka ne postoji za 'Slika (Instagram)' — samo klikni 'SKINI SLIKE' kad si spreman.",
+        "msg_ig_login_required": "Instagram traži prijavu za ovaj sadržaj — provjeri jesi li ulogiran na Instagram u odabranom browseru, pa probaj ponovno.",
+        "err_cant_start_tool": "Ne mogu pokrenuti {0}: {1}",
+        "msg_no_separate_video_stream": "ℹ Ovaj izvor nema odvojeni video zapis — skidam cijeli pa uklanjam zvuk...",
+        "msg_tiktok_bug_download": "ℹ️ Poznat obrazac greške (TikTok je promijenio JS 'izazov'). Klikni "
+                                   "'🔄 Provjeri ažuriranja' pa pokušaj ponovno.",
+        "msg_retry_attempt": "⏳ Pokušaj {0} nije uspio — pokušavam ponovno...",
+        "msg_full_error_details": "🔍 Puni detalji greške:\n{0}",
+        "msg_no_ffmpeg_kept_audio": "⚠ Nema ffmpega — fajl je ostao sa zvukom.",
+        "msg_audio_removed": "🔇 Zvuk uklonjen.",
+        "msg_duration_fixed": "🩹 Ispravljeno trajanje isječka u zaglavlju fajla.",
+        "msg_codec_check_skipped": "⚠ Preskačem provjeru kodeka (nema ffmpeg/ffprobe).",
+        "msg_converting_codec": "🎞 Video je {0} — pretvaram u H.264 za Premiere...",
+        "msg_codec_converted": "✅ Pretvoreno u H.264.",
+        "msg_codec_convert_failed": "⚠ Pretvorba nije uspjela — fajl je ostao u originalnom kodeku.",
+        "msg_codec_check_failed": "⚠ Provjera kodeka nije uspjela: {0}",
+        "msg_cropping_aspect": "✂️ Rezanje na omjer {0}...",
+        "msg_aspect_done": "✅ Omjer slike prilagođen.",
+        "msg_aspect_failed": "⚠ Rezanje omjera slike nije uspjelo — fajl je ostao u originalnom omjeru.",
+        "msg_aspect_error": "⚠ Greška pri rezanju omjera slike: {0}",
+        "msg_download_cancelled": "\n✕ Skidanje prekinuto.",
+        "done_naslov": "Gotovo",
+        "msg_all_done_log": "\n🎉 Gotovo! Folder: {0}",
+        "msg_all_done_text": "Sve je uspješno preuzeto!",
+        "msg_partial_log": "\n⚠ Djelomično: {0} OK, {1} neuspješno.",
+        "partial_naslov": "Djelomično gotovo",
+        "msg_partial_text": "{0} uspješno, {1} nije uspjelo.\nPogledaj STATUS log.",
+        "msg_all_failed_log": "\n❌ Nijedno skidanje nije uspjelo.",
+        "failed_naslov": "Nije uspjelo",
+        "msg_all_failed_text": "Skidanje nije uspjelo.\nPogledaj crveni ❌ redak u STATUS logu.",
+        "isjecak_label": "✂ Isječak: {0} → {1}",
+        "isjecak_pocetak": "početak",
+        "isjecak_kraj": "kraj",
+        "msg_embed_prep_failed": "⚠ Ugrađeni player se nije uspio pripremiti: {0}",
+        "msg_embed_not_found": "⚠ Ugrađeni player nije pronađen — koristit će se zaseban prozor.",
+        "msg_embed_failed": "⚠ Ugradnja playera nije uspjela: {0}",
+        "app_update_naslov": "Dostupna nova verzija",
+        "msg_app_update_found_short": "🆕 Aplikacija: dostupna nova verzija v{0} (vidi ponudu za instalaciju)",
+        "msg_app_already_latest": "✅ Aplikacija: već najnovija verzija",
+        "app_update_text": "Dostupna je nova verzija aplikacije: v{0}\n(trenutno imaš: v{1})\n\n"
+                           "Preuzeti i pokrenuti instalaciju sada? Aplikacija će se zatvoriti da bi se "
+                           "mogla nadograditi.",
+        "msg_downloading_app_update": "⏳ Preuzimam novu verziju aplikacije...",
+        "msg_launching_installer": "⏳ Pokrećem instalaciju nove verzije — aplikacija se sada zatvara...",
+        "msg_app_update_failed": "❌ Ažuriranje aplikacije nije uspjelo: {0}",
+    },
+    "en": {
+        "naslov_prozora": "Mister Muscle Downloader",
+        "naslov_app": "Mister Muscle Downloader",
+        "podnaslov_app": "YouTube · TikTok · Instagram — video, clips and audio in the best quality",
+        "meni_alati": "Tools",
+        "meni_provjeri_azuriranja": "🔄 Check for updates",
+        "meni_azuriraj_ytdlp": "Update yt-dlp only",
+        "meni_reinstaliraj_ffmpeg": "Reinstall ffmpeg",
+        "meni_azuriraj_gallerydl": "Update gallery-dl (Instagram photos)",
+        "meni_webview2": "Check/install WebView2 Runtime",
+        "meni_folder_alati": "📂 Open tools folder",
+        "meni_config": "⚙ Open config",
+        "meni_reset_prozor": "🗔 Reset window size",
+        "meni_pomoc": "Help",
+        "meni_doniraj": "❤️ Donate",
+        "meni_o_aplikaciji": "About",
+        "meni_jezik": "Language",
+        "meni_jezik_hr": "Hrvatski",
+        "meni_jezik_en": "English",
+        "gumb_azuriranja": "🔄 Check for updates",
+        "kartica_1": "LINKS (one per line)",
+        "kartica_2": "FILE TYPE",
+        "kartica_3": "DOWNLOAD LOCATION",
+        "kartica_4": "START",
+        "placeholder_linkovi": "Paste a YouTube / TikTok / Instagram link here...",
+        "gumb_pregledaj": "🔄 Reload player",
+        "gumb_zalijepi": "📋 Paste",
+        "gumb_ocisti": "🗑 Clear",
+        "gumb_ponisti_isjecak": "✕ Clear",
+        "nacin_video_zvuk": "🎬  Video + audio",
+        "nacin_video_zvuk_opis": "merged mp4 — standard",
+        "nacin_samo_video": "🎞  Video only",
+        "nacin_samo_video_opis": "silent clip for editing / B-roll",
+        "nacin_samo_zvuk": "🎵  Audio only",
+        "nacin_slika_instagram": "📷  Photo (Instagram)",
+        "nacin_samo_zvuk_opis": "mp3 / m4a / wav — no video",
+        "oznaka_kvaliteta": "Quality",
+        "oznaka_format_videa": "Video format",
+        "oznaka_format_zvuka": "Audio format",
+        "oznaka_omjer_slike": "Aspect ratio",
+        "oznaka_cookies_browser": "Cookies from browser",
+        "cb_h264": "Premiere-ready (H.264/avc1)",
+        "cb_h264_opis": "requests avc1 and converts if needed — Premiere always reads it",
+        "cb_metapodaci": "Embed thumbnail and metadata",
+        "cb_metapodaci_opis": "title, artist and cover art in the file",
+        "gumb_odaberi_folder": "📂 Choose",
+        "gumb_otvori_folder": "👁 Open",
+        "skini_video": "⬇   DOWNLOAD VIDEO",
+        "skini_video_bez_zvuka": "⬇   DOWNLOAD VIDEO (NO AUDIO)",
+        "skini_zvuk": "⬇   DOWNLOAD AUDIO",
+        "skini_slike": "⬇   DOWNLOAD PHOTOS",
+        "ig_slika_naslov": "Instagram photos need you to be logged in",
+        "ig_slika_objasnjenje": "Since 2023, Instagram requires login for almost all "
+                                 "content. We'll borrow your login (cookies) — we never ask "
+                                 "for or see your password. Choose where from:",
+        "cookies_izvor_browser": "🌐 From browser (must be closed)",
+        "cookies_izvor_fajl": "📄 From a cookies.txt file (no closing needed)",
+        "cookies_browser_napomena": "Tip: fully CLOSE that browser before downloading — "
+                                     "while it's open, Chromium (Chrome/Edge/Brave...) often "
+                                     "locks its own cookies, so we can't read them.",
+        "oznaka_cookies_fajl": "cookies.txt file",
+        "cookies_fajl_napomena": "Export your Instagram cookies with a free extension like "
+                                  "'Get cookies.txt LOCALLY' (while normally logged into "
+                                  "instagram.com), then pick that file here — no need to "
+                                  "close the browser.",
+        "dijalog_odaberi_cookies_naslov": "Choose a cookies.txt file",
+        "dijalog_svi_fajlovi": "All files",
+        "gumb_ig_prijava": "🔑 Log into Instagram inside the app (recommended)",
+        "ig_ili_rucno": "— or manually —",
+        "ig_prijava_naslov": "Instagram login",
+        "ig_prijava_info": "A window with the REAL Instagram login will open (inside this "
+                            "app, not your browser). Log in normally — the window will "
+                            "CLOSE ITSELF once it detects a successful login, and the "
+                            "cookies will be saved and selected automatically. No need to "
+                            "close it yourself.",
+        "ig_prijava_u_tijeku": "⏳ Waiting for you to log in (window closes itself after)...",
+        "ig_prijava_uspjeh": "✅ Login saved and selected as the cookie source.",
+        "ig_prijava_neuspjeh": "⚠ Didn't work (the window may have been closed before logging in). Try again or use one of the options below.",
+        "link_ig_odjava": "🚪 Log out",
+        "ig_odjava_naslov": "Log out of Instagram",
+        "ig_odjava_potvrda": "Delete the saved Instagram login from this computer? You'll need to log in again next time.",
+        "ig_odjava_gotovo": "🚪 Logged out — saved login deleted.",
+        "ig_odjava_nema_sto": "No saved login to delete.",
+        "gumb_pauziraj": "⏸ Pause",
+        "gumb_nastavi": "▶ Resume",
+        "gumb_prekini": "✕ Cancel",
+        "status_naslov": "STATUS",
+        "player_naslov": "PLAYER",
+        "status_sakrij": "▾ hide",
+        "status_prikazi": "▸ show",
+        "link_prikazi_log": "📋 Show log",
+        "link_prikazi_player": "🎬 Show player",
+        "gumb_ocisti_log": "🗑 clear log",
+        "player_placeholder": "🎬\n\nThe clip-marking player will\nappear here as soon as you paste a link\n(or click '🔄 Reload player')",
+        "player_zaseban_prozor": "🎬\n\nThe player opened in a separate window\n(embedding it here requires Windows + pywin32)",
+        "o_aplikaciji_naslov": "About",
+        "o_aplikaciji_autor": "Developed by Mr_muscle",
+        "o_aplikaciji_prava": "All rights reserved.",
+        "o_aplikaciji_auto_update": "On every launch, the app quietly checks whether a newer version of "
+                                    "yt-dlp (the download engine) is available and offers to update it if "
+                                    "found — ffmpeg and yt-dlp are downloaded automatically if missing.",
+        "o_aplikaciji_alati": "Tools",
+        "o_aplikaciji_postavke": "Settings",
+        "nije_pronadjen": "not found",
+        "provjeravam_alate": "Checking tools...",
+        "provjeravam": "🔄 Checking...",
+        "skidam": "Download clip",
+        # --- dialogs and STATUS log messages (added later) ---
+        "err_naslov": "Error",
+        "msg_need_pywebview": "ℹ️ Previewing/marking a clip needs the 'pywebview' library (pip install pywebview).",
+        "msg_need_pywin32": "ℹ️ An in-window EMBEDDED player needs 'pywin32' (pip install pywin32) — for now it will open in a separate window.",
+        "msg_black_player_hint": "ℹ️ If the embedded player stays black after opening, wait a second or two (it auto-retries) or slightly resize the app window.",
+        "msg_window_reset": "🗔 Window size reset to 1240×820.",
+        "msg_cannot_open": "Can't open: {0}\n\n{1}",
+        "msg_folder_session_only": "⚠️ The folder works for this session, but I can't remember it: {0}",
+        "msg_folder_saved": "📁 Folder: {0} (saved)",
+        "msg_start_marked": "📍 Start: {0}",
+        "msg_end_marked": "📍 End: {0}",
+        "msg_clipboard_auto_zalijepljen": "📋 Link from clipboard pasted automatically.",
+        "webview2_naslov": "WebView2 Runtime",
+        "webview2_ok_text": "All good — WebView2 Runtime is already installed.",
+        "msg_webview2_missing": "⚠️ Microsoft Edge WebView2 Runtime was not found — without it the player (preview/trim) won't work.",
+        "webview2_confirm_naslov": "WebView2 Runtime missing",
+        "webview2_confirm_text": "Displaying the player (previewing and marking a clip) requires the Microsoft "
+                                 "Edge WebView2 component, which wasn't found on this computer.\n\n"
+                                 "This is a one-time, official Microsoft installation (shared by every app on this "
+                                 "computer, not just this one) — it may prompt for Windows confirmation (UAC).\n\n"
+                                 "Download and install it automatically now?",
+        "msg_webview2_skipped": "ℹ️ Skipped — the player won't work until WebView2 Runtime is installed manually "
+                                "(https://developer.microsoft.com/microsoft-edge/webview2/).",
+        "msg_webview2_ready": "ℹ️ Now try pasting the link again (or click '🔄 Reload player').",
+        "msg_webview2_install_failed": "❌ WebView2 installation failed: {0}",
+        "webview2_error_text": "Can't install WebView2 Runtime: {0}\n\nTry downloading it manually from https://developer.microsoft.com/microsoft-edge/webview2/",
+        "msg_tool_missing_downloading": "⚠️ {0} is missing — downloading...",
+        "msg_ytdlp_download_failed": "❌ Downloading yt-dlp failed: {0}",
+        "msg_ffmpeg_missing_note": "⚠️ ffmpeg is missing — without it, merging video+audio, trimming clips, and "
+                                   "converting to mp3 won't work. Downloading...",
+        "msg_ffmpeg_download_failed": "❌ Downloading ffmpeg failed: {0}",
+        "update_available_naslov": "Update available",
+        "update_available_text": "A new version of yt-dlp is available: {0}\n(you currently have: {1})\n\n"
+                                 "yt-dlp updates often to keep up with YouTube/TikTok/Instagram changes — "
+                                 "updating regularly reduces the chance of download errors.\n\n"
+                                 "Download and install the new version now?",
+        "msg_updating_ytdlp": "🔄 Downloading the newer yt-dlp version...",
+        "msg_tools_summary": "📦 yt-dlp {0} · {1}",
+        "status_tools_unavailable": "unavailable",
+        "status_ffmpeg_missing": "❌ ffmpeg MISSING",
+        "update_in_progress_naslov": "Download in progress",
+        "update_in_progress_text": "Updating can't be done while a download is running.\nWait for it to finish or click '✕ Cancel'.",
+        "updates_naslov": "Updates",
+        "msg_ytdlp_output": "🔄 yt-dlp: {0}",
+        "msg_ytdlp_running_update": "🔄 Running yt-dlp -U ...",
+        "msg_ytdlp_downloaded_first": "✅ yt-dlp: downloaded (first time)",
+        "msg_ytdlp_download_failed_short": "❌ yt-dlp: download failed ({0})",
+        "msg_ytdlp_update_failed": "❌ yt-dlp: update failed (see STATUS log for details)",
+        "msg_ytdlp_already_latest": "✅ yt-dlp: already up to date",
+        "msg_ytdlp_updated": "🆕 yt-dlp: updated to the latest version",
+        "msg_ytdlp_check_done": "✅ yt-dlp: check complete",
+        "msg_ytdlp_update_timeout": "❌ yt-dlp: update timed out (slow connection) — try again",
+        "msg_ytdlp_update_error": "❌ yt-dlp: {0}",
+        "msg_gallerydl_output": "🔄 gallery-dl: {0}",
+        "msg_gallerydl_running_update": "🔄 Running gallery-dl -U ...",
+        "msg_gallerydl_downloaded_first": "✅ gallery-dl: downloaded (first time)",
+        "msg_gallerydl_download_failed_short": "❌ gallery-dl: download failed ({0})",
+        "msg_gallerydl_update_failed": "❌ gallery-dl: update failed (see STATUS log for details)",
+        "msg_gallerydl_already_latest": "✅ gallery-dl: already up to date",
+        "msg_gallerydl_updated": "🆕 gallery-dl: updated to the latest version",
+        "msg_gallerydl_check_done": "✅ gallery-dl: check complete",
+        "msg_gallerydl_update_timeout": "❌ gallery-dl: update timed out (slow connection) — try again",
+        "msg_gallerydl_update_error": "❌ gallery-dl: {0}",
+        "msg_deno_needed_downloading": "⏳ Downloading Deno (the JavaScript runtime YouTube needs for 4K and all formats) — one-time, ~40 MB...",
+        "msg_deno_download_failed": "⚠ Deno wasn't downloaded: {0} — YouTube videos may not go up to 4K/1440p. We'll try again next launch.",
+        "msg_deno_present": "✅ Deno (YouTube 4K support): present",
+        "msg_deno_installed": "🆕 Deno (YouTube 4K support): downloaded and installed",
+        "msg_deno_failed_short": "❌ Deno: download failed ({0})",
+        "msg_deno_updated": "🆕 Deno (YouTube 4K support): updated to the latest version",
+        "msg_deno_update_failed": "❌ Deno: update failed (see STATUS log for details)",
+        "msg_js_runtime_ok": "🧩 JavaScript runtime for YouTube: {0}",
+        "msg_js_runtime_missing": "⚠ JavaScript runtime (Deno) is NOT available — YouTube will only give limited formats (~1080p), 4K won't work. Try Tools → Check for updates to download Deno.",
+        "msg_format_chosen": "🎞 yt-dlp chose format: {0}",
+        "msg_resolution_downloaded": "📐 Downloaded resolution: {0}×{1}",
+        "msg_resolution_hint": "ℹ Requested quality was {0}p but got {1}p. If Deno is shown as available above, the cause is a YouTube restriction: it only offers 4K/1440p formats to download tools together with a so-called PO token (not a bug in the app). The video itself may also lack that format.",
+        "msg_aspect_already": "ℹ The video is already in {0} aspect ratio — cropping skipped.",
+        "msg_deno_not_needed": "ℹ Deno: not needed on this system",
+        "msg_ffmpeg_present": "✅ ffmpeg: present",
+        "msg_ffmpeg_installed": "🆕 ffmpeg: installed",
+        "msg_ffmpeg_error": "❌ ffmpeg: {0}",
+        "err_pywebview_missing_text": "The 'pywebview' library isn't installed.\n\nInstall it in a terminal:\n    pip install pywebview",
+        "warn_naslov": "Warning",
+        "warn_cookies_fajl_missing": "Choose a valid cookies.txt file before downloading (cookie source → From a cookies.txt file).",
+        "warn_paste_link_first": "Paste a link first.",
+        "err_cant_recognize_youtube": "I can't recognize a YouTube video ID in that link.",
+        "msg_opening_player": "⏳ Opening player...",
+        "msg_fetching_preview": "⏳ Fetching video preview...",
+        "msg_embed_disabled_fallback": "⏳ Embedding disabled for this video — downloading a shorter local preview...",
+        "msg_tiktok_bug_preview": "TikTok currently has a known issue in yt-dlp (not in this app) — try 'Check for updates'.",
+        "err_cant_fetch_preview": "Can't fetch the video preview: {0}",
+        "msg_preview_failed_log": "❌ Preview failed:\n{0}",
+        "err_cant_prepare_player": "Can't prepare the player: {0}",
+        "msg_embedded_ready": "✅ Player embedded and ready.",
+        "msg_embed_load_failed": "⚠️ Can't load the embedded player: {0} — using a separate window instead.",
+        "msg_need_psutil_pause": "ℹ️ A real pause needs 'psutil' (pip install psutil) — without it, the download continues in the background.",
+        "msg_cant_pause_resume": "⚠️ Can't {0} the process: {1}",
+        "akcija_pauzirati": "pause",
+        "akcija_nastaviti": "resume",
+        "msg_cancelled_by_user": "✕ Cancelled by the user.",
+        "warn_no_link_naslov": "No link",
+        "warn_no_link_text": "Paste at least one link.",
+        "ffmpeg_missing_naslov": "ffmpeg missing",
+        "ffmpeg_missing_confirm_text": "Merging video+audio, trimming a clip, and converting to mp3 all need "
+                                       "ffmpeg, which wasn't found.\n\nDownload it automatically now?",
+        "warn_download_in_progress_text": "Wait for the current download to finish, then try again.",
+        "ffmpeg_missing_multi_text": "Trimming clips needs ffmpeg, which wasn't found.\n\n"
+                                     "Go to 'Tools → Check for updates' to download it, then try again.",
+        "err_cant_download_tool": "Can't download {0}: {1}",
+        "msg_merging": "🔗 Merging video and audio...",
+        "msg_extracting_audio": "🎵 Extracting and converting audio...",
+        "msg_silent_video_done": "🔇 Downloaded a silent video (no audio track).",
+        "msg_error_generic": "❌ Error: {0}",
+        "msg_not_instagram_link": "⚠ Not an Instagram link, skipping: {0}",
+        "msg_ig_no_images_found": "No images found at that link (the post may be deleted, private, or actually a video).",
+        "msg_ig_slika_no_preview": "ℹ There's no preview/clip-marking for 'Photo (Instagram)' — just click 'DOWNLOAD PHOTOS' when ready.",
+        "msg_ig_login_required": "Instagram requires login for this content — make sure you're logged into Instagram in the selected browser, then try again.",
+        "err_cant_start_tool": "Can't start {0}: {1}",
+        "msg_no_separate_video_stream": "ℹ️ This source has no separate video stream — downloading the full file and removing the audio...",
+        "msg_tiktok_bug_download": "ℹ️ Known error pattern (TikTok changed its JS 'challenge'). Click "
+                                   "'🔄 Check for updates' and try again.",
+        "msg_retry_attempt": "⏳ Attempt {0} failed — retrying...",
+        "msg_full_error_details": "🔍 Full error details:\n{0}",
+        "msg_no_ffmpeg_kept_audio": "⚠️ No ffmpeg — the file kept its audio.",
+        "msg_audio_removed": "🔇 Audio removed.",
+        "msg_duration_fixed": "🩹 Fixed the clip's duration in the file header.",
+        "msg_codec_check_skipped": "⚠️ Skipping codec check (no ffmpeg/ffprobe).",
+        "msg_converting_codec": "🎞 Video is {0} — converting to H.264 for Premiere...",
+        "msg_codec_converted": "✅ Converted to H.264.",
+        "msg_codec_convert_failed": "⚠️ Conversion failed — the file stayed in its original codec.",
+        "msg_codec_check_failed": "⚠️ Codec check failed: {0}",
+        "msg_cropping_aspect": "✂️ Cropping to {0} aspect ratio...",
+        "msg_aspect_done": "✅ Aspect ratio adjusted.",
+        "msg_aspect_failed": "⚠️ Aspect ratio crop failed — the file kept its original aspect ratio.",
+        "msg_aspect_error": "⚠️ Error while cropping aspect ratio: {0}",
+        "msg_download_cancelled": "\n✕ Download cancelled.",
+        "done_naslov": "Done",
+        "msg_all_done_log": "\n🎉 Done! Folder: {0}",
+        "msg_all_done_text": "Everything downloaded successfully!",
+        "msg_partial_log": "\n⚠ Partial: {0} OK, {1} failed.",
+        "partial_naslov": "Partially done",
+        "msg_partial_text": "{0} succeeded, {1} failed.\nSee the STATUS log.",
+        "msg_all_failed_log": "\n❌ No downloads succeeded.",
+        "failed_naslov": "Failed",
+        "msg_all_failed_text": "The download failed.\nSee the red ❌ line in the STATUS log.",
+        "isjecak_label": "✂ Clip: {0} → {1}",
+        "isjecak_pocetak": "start",
+        "isjecak_kraj": "end",
+        "msg_embed_prep_failed": "⚠️ Failed to prepare the embedded player: {0}",
+        "msg_embed_not_found": "⚠️ Embedded player not found — using a separate window instead.",
+        "msg_embed_failed": "⚠️ Embedding the player failed: {0}",
+        "app_update_naslov": "New version available",
+        "msg_app_update_found_short": "🆕 App: new version v{0} available (see install prompt)",
+        "msg_app_already_latest": "✅ App: already the latest version",
+        "app_update_text": "A new app version is available: v{0}\n(you currently have: v{1})\n\n"
+                           "Download and run the installer now? The app will close so it can be updated.",
+        "msg_downloading_app_update": "⏳ Downloading the new app version...",
+        "msg_launching_installer": "⏳ Launching the new version's installer — the app is closing now...",
+        "msg_app_update_failed": "❌ App update failed: {0}",
+    },
+}
+
+
+# ============================================================================
+#  NOVOSTI / BUGFIX DIJALOG (prikaze se JEDNOM po verziji, pri prvom
+#  pokretanju te verzije - ne svaki put)
+# ============================================================================
+# ZA SVAKU SLJEDECU VERZIJU: dodaj novi "APP_VERZIJA: {...}" blok ovdje (isti
+# broj kao APP_VERZIJA gore) - sadrzaj je lista kratkih recenica (hr i en) sto
+# je promijenjeno/popravljeno u toj verziji. Ako za trenutnu APP_VERZIJA ne
+# postoji unos ovdje, dijalog se jednostavno ne prikaze (bez greske).
+PROMJENE = {
+    "4.6": {
+        "hr": ["Dodan prikaz napretka reda čekanja i dugme za ponovno preuzimanje samo neuspjelih video linkova."],
+        "en": ["Added queue progress summary and a button to retry only failed video links."],
+    },
+    "4.5": {
+        "hr": ["Dodana tabela detalja YouTube formata: rezolucija, FPS, kodek, format ID, ekstenzija i procijenjena veličina."],
+        "en": ["Added YouTube format inspector: resolution, FPS, codec, format ID, extension and estimated file size."],
+    },
+    "1.1": {
+        "hr": [
+            "Popravljeno: isječci su nakon skidanja ponekad pokazivali pogrešno "
+            "(izvorno, puno duže) trajanje umjesto stvarnog trajanja isječka, pa "
+            "se nije moglo normalno premotavati.",
+            "Popravljeno: VLC je za isječke prikazivao staro trajanje čak i kad "
+            "je Premiere prikazivao točno vrijeme.",
+            "Dodano: HH:MM:SS prikaz vremena (umjesto samo minuta:sekunda) pri "
+            "označavanju isječka u playeru.",
+            "Uklonjeni opisi ispod načina skidanja i checkboxovi 'Premiere-ready' "
+            "/ 'Ugradi naslovnicu i metapodatke' — više se ne prikazuju.",
+        ],
+        "en": [
+            "Fixed: after downloading, clips sometimes showed the wrong "
+            "(original, much longer) duration instead of the actual clip "
+            "length, which broke seeking.",
+            "Fixed: VLC showed the old duration for clips even when Premiere "
+            "displayed the correct time.",
+            "Added: HH:MM:SS time display (instead of just minutes:seconds) "
+            "when marking a clip in the player.",
+            "Removed the descriptions under the download modes and the "
+            "'Premiere-ready' / 'Embed thumbnail and metadata' checkboxes.",
+        ],
+    },
+    "1.2": {
+        "hr": [
+            "Dodano: aplikacija sada sama provjerava GitHub za nove verzije "
+            "SEBE (ne samo yt-dlp-a) i može se sama ažurirati — preuzme i "
+            "pokrene instalaciju nove verzije jednim klikom.",
+        ],
+        "en": [
+            "Added: the app now checks GitHub for new versions of ITSELF "
+            "(not just yt-dlp) and can self-update — download and launch the "
+            "new version's installer with one click.",
+        ],
+    },
+    "1.3": {
+        "hr": [
+            "Popravljeno: greška u kodiranju znakova koja je mogla oštetiti "
+            "emoji/posebne znakove u sučelju nakon nadogradnje verzije.",
+            "Poboljšano: dodatni popravak trajanja isječaka za VLC — vremenske "
+            "oznake unutar isječka se sad ispravno resetiraju na početak, "
+            "umjesto da ostanu na originalnoj poziciji iz izvornog videa.",
+        ],
+        "en": [
+            "Fixed: a character-encoding bug that could corrupt emoji/special "
+            "characters in the interface after a version update.",
+            "Improved: additional clip-duration fix for VLC — timestamps "
+            "inside a clip are now correctly reset to the start, instead of "
+            "staying at their original position from the source video.",
+        ],
+    },
+    "1.5": {
+        "hr": [
+            "Dodano: sad možeš povući (drag) izravno po traci u playeru da "
+            "označiš isječak, umjesto da moraš koristiti samo 'Postavi OD/DO' "
+            "dugmad — dok povlačiš, iznad trake se prikazuje raspon uživo.",
+            "Dodano: postojeći isječak na traci sad ima hvatišta na rubovima — "
+            "povuci lijevo/desno da pomjeriš početak ili kraj bez pravljenja "
+            "nove selekcije, ili povuci sredinu da pomjeriš cijeli isječak.",
+            "Dodano: red u listi isječaka se sad vizualno istakne (plavi okvir) "
+            "kad klikneš na njegovo Od/Do polje.",
+            "Popravljeno: ikona aplikacije (na Desktopu, u Exploreru i na "
+            "instalateru) bila je zamućena — sad je oštra na svim veličinama.",
+        ],
+        "en": [
+            "Added: you can now drag directly on the player's timeline to mark "
+            "a clip, instead of only using the 'Set start/end' buttons — a "
+            "live time range tooltip shows above the timeline while dragging.",
+            "Added: an existing clip on the timeline now has edge handles — "
+            "drag left/right to move the start or end without creating a new "
+            "selection, or drag the middle to move the whole clip.",
+            "Added: a clip's row in the list is now visually highlighted (blue "
+            "border) when you click its Start/End field.",
+            "Fixed: the app icon (on the Desktop, in Explorer, and on the "
+            "installer) was blurry — it's now sharp at every size.",
+        ],
+    },
+    "1.6": {
+        "hr": [
+            "Popravljeno: prazan prostor ispod playera — sad ispunjava sav "
+            "raspoloživi prostor, od vrha do dna.",
+            "Dodano: potpuno prilagođena naslovna traka i traka izbornika u "
+            "bojama aplikacije (tamna tema), umjesto Windows-ovog zadanog "
+            "bijelog stila.",
+            "Uklonjeno dugme 'Provjeri ažuriranja' iz zaglavlja — ista opcija "
+            "postoji u meniju Alati.",
+            "Popravljeno: povremeni bljesak praznog, bijelog prozora playera "
+            "prilikom pokretanja.",
+            "Dodano: trajni dnevnik pokretanja (mister_muscle_pokretanje.txt) "
+            "za lakše rješavanje rijetkih problema s pokretanjem aplikacije.",
+        ],
+        "en": [
+            "Fixed: empty space below the player — it now fills all "
+            "available space, from top to bottom.",
+            "Added: a fully custom title bar and menu bar in the app's own "
+            "colors (dark theme), instead of Windows' default white style.",
+            "Removed the 'Check for updates' button from the header — the "
+            "same option exists in the Tools menu.",
+            "Fixed: an occasional flash of an empty, white player window "
+            "during startup.",
+            "Added: a persistent startup log (mister_muscle_pokretanje.txt) "
+            "to help troubleshoot rare app-launch issues.",
+        ],
+    },
+    "1.7": {
+        "hr": [
+            "Popravljeno: prikaz postotka i brzine skidanja znao je izgledati "
+            "'zaleđeno' i skočiti odjednom na kraju — sad se ažurira uživo, "
+            "red po red, tijekom cijelog skidanja.",
+        ],
+        "en": [
+            "Fixed: the download percentage/speed display could look "
+            "'frozen' and jump all at once at the end — it now updates "
+            "live, line by line, throughout the whole download.",
+        ],
+    },
+    "1.8": {
+        "hr": [
+            "Dodano: kad skidaš više linkova odjednom, sad vidiš popis svakog "
+            "linka s njegovim statusom (čeka/skida se/uspjelo/nije uspjelo) — "
+            "odmah je jasno koji je link eventualno pao.",
+            "Uklonjena zelena crta koja je označavala trenutnu poziciju na "
+            "traci u playeru.",
+            "Manje čišćenje i optimizacije.",
+        ],
+        "en": [
+            "Added: when downloading multiple links at once, you now see a "
+            "list of each link with its status (waiting/downloading/succeeded/"
+            "failed) — instantly clear which link, if any, failed.",
+            "Removed the green line that marked the current position on the "
+            "player's timeline.",
+            "Minor cleanup and optimizations.",
+        ],
+    },
+    "2.0": {
+        "hr": [
+            "Redizajniran gumb za pokretanje skidanja — sad je '4. POKRENI' "
+            "kartica u istom stilu kao koraci 1-2-3 iznad, poravnata s lijevim "
+            "stupcem umjesto rastegnuta preko cijelog prozora.",
+            "Dugme 'Prekini' sad ima crvenkasti hover — jasnije naglašava da "
+            "je to ozbiljnija (nepovratna) akcija nego 'Pauziraj'.",
+            "Preimenovano dugme 'Pregledaj i označi isječak' u 'Ponovno "
+            "učitaj player' — otkako se player sam otvara čim zalijepiš link, "
+            "ovo dugme sad služi za ručno osvježavanje playera ako zatreba.",
+            "Dodano: aplikacija sad automatski prepozna link u clipboardu i "
+            "sama ga zalijepi u polje čim se vratiš na prozor aplikacije — "
+            "ne treba više ručno Ctrl+V (pamti i koristi uvijek samo zadnji "
+            "kopirani link, ne gomila stare).",
+            "Dodano: isječci koje si već dodao u listu sad imaju svoja "
+            "hvatišta direktno na traci — možeš ih povlačiti/rastezati kao i "
+            "trenutni odabir, umjesto da mijenjaš samo tekstualna polja.",
+            "Dodano: mali '+' gumb odmah pored trenutnog odabira na traci — "
+            "klik doda novi isječak spreman za podešavanje, brža prečica od "
+            "ručnog povlačenja nove selekcije od nule.",
+            "Dodano: izbor omjera slike (Original, 16:9, 9:16 za TikTok/"
+            "Reels/Shorts, 1:1, 4:5 za Instagram) — video se automatski "
+            "odreže na sredini da točno popuni odabrani omjer.",
+            "Popravljeno: traka za rezanje isječka (i kontrole ispod nje) "
+            "znala se prikazati jako stisnuto/sitno kod vertikalnih TikTok i "
+            "Instagram videa — sad uvijek zadrži punu, normalnu veličinu.",
+        ],
+        "en": [
+            "Redesigned the download button — it's now a '4. START' card in "
+            "the same style as steps 1-3 above, aligned with the left column "
+            "instead of stretched across the whole window.",
+            "The 'Cancel' button now has a reddish hover — makes it clearer "
+            "it's a more serious (irreversible) action than 'Pause'.",
+            "Renamed the 'Preview & mark clip' button to 'Reload player' — "
+            "since the player now opens itself as soon as you paste a link, "
+            "this button now serves to manually refresh the player if needed.",
+            "Added: the app now detects a link in your clipboard and pastes "
+            "it into the field automatically as soon as you switch back to "
+            "the app window — no more manual Ctrl+V needed (it always keeps "
+            "just the latest copied link, not a growing pile of old ones).",
+            "Added: clips you've already added to the list now have their "
+            "own handles directly on the timeline — drag/resize them just "
+            "like the current selection, instead of only editing the text "
+            "fields.",
+            "Added: a small '+' button next to the current selection on the "
+            "timeline — click it to add another clip ready to adjust, a "
+            "faster shortcut than dragging a whole new selection from "
+            "scratch.",
+            "Added: an aspect ratio picker (Original, 16:9, 9:16 for TikTok/"
+            "Reels/Shorts, 1:1, 4:5 for Instagram) — the video is "
+            "automatically center-cropped to exactly fill the chosen ratio.",
+            "Fixed: the clip-trimming timeline (and the controls below it) "
+            "could render extremely squeezed/tiny for vertical TikTok and "
+            "Instagram videos — it now always keeps its full, normal size.",
+        ],
+    },
+    "2.1": {
+        "hr": [
+            "Popravljeno: rijedak bug gdje bi aplikacija povremeno nestala "
+            "iz taskbara dok se ne minimiziraju svi drugi otvoreni prozori.",
+            "Popravljeno: kad automatski pregled ne uspije (npr. za YouTube "
+            "video s onemogućenim ugrađivanjem), player više ne ostaje "
+            "zaglavljen na tuđoj poruci o grešci — sad se prikaže naša "
+            "jasna poruka unutar samog playera.",
+        ],
+        "en": [
+            "Fixed: a rare bug where the app would occasionally disappear "
+            "from the taskbar until all other open windows were minimized.",
+            "Fixed: when the automatic preview fails (e.g. for a YouTube "
+            "video with embedding disabled), the player no longer gets "
+            "stuck showing someone else's error message — it now shows a "
+            "clear message of our own inside the player.",
+        ],
+    },
+    "2.2": {
+        "hr": [
+            "Popravljeno: video s onemogućenim YouTube ugrađivanjem znao se "
+            "trajno zaglaviti na YouTube-ovoj 'Video unavailable' poruci — "
+            "automatski lokalni pregled sad pouzdano preuzima cijeli lanac "
+            "problema (pogrešan format skidanja, spor/nikad-pozvan YouTube "
+            "signal o grešci, i sam prikaz koji se znao 'zamrznuti' na "
+            "starom sadržaju).",
+            "Popravljeno: rijetka, tiha greška u pozadinskoj obradi poruka "
+            "playera koja je mogla sakriti pravi uzrok problema.",
+        ],
+        "en": [
+            "Fixed: a video with YouTube embedding disabled could get "
+            "permanently stuck on YouTube's own 'Video unavailable' message "
+            "— the automatic local preview now reliably takes over (fixed "
+            "the whole chain: a wrong download format, a slow/never-fired "
+            "YouTube error signal, and the display itself sometimes "
+            "'freezing' on stale content).",
+            "Fixed: a rare, silent bug in background player-message "
+            "handling that could hide the real cause of a problem.",
+        ],
+    },
+    "2.3": {
+        "hr": [
+            "Popravljeno: rijedak slučaj gdje bi VLC (i drugi playeri) "
+            "pokazivali pogrešno (predugo) trajanje isječka kad se koristi "
+            "zajedno s H.264 pretvorbom ili rezanjem omjera slike.",
+            "Popravljeno: aplikacija je povremeno znala nestati iz taskbara "
+            "dok se svi drugi otvoreni prozori ne minimiziraju — riješeno "
+            "pouzdanijom tehnikom (umjesto Windows-a da nagađa, sad ga "
+            "eksplicitno vodimo za ruku).",
+        ],
+        "en": [
+            "Fixed: a rare case where VLC (and other players) would show "
+            "the wrong (too long) clip duration when used together with "
+            "H.264 conversion or aspect ratio cropping.",
+            "Fixed: the app would occasionally disappear from the taskbar "
+            "until all other open windows were minimized — resolved with a "
+            "more reliable technique.",
+        ],
+    },
+    "2.4": {
+        "hr": [
+            "Popravljeno: skidanje s YouTube-a je znalo pući s 'HTTP 403 "
+            "Forbidden' greškom pri prvom pokušaju (radilo tek na ponovnom "
+            "pokušaju) — sad se to automatski, samo od sebe, ponovno "
+            "pokuša, bez potrebe da to sam radiš ručno.",
+            "Popravljeno: video skinut u modu 'Video + zvuk' je znao u "
+            "Premiereu izgledati kao da nema audio traku (zvuk je bio u "
+            "fajlu, ali u formatu koji Premiere ne prepoznaje) — sad se "
+            "bira audio format koji je univerzalno kompatibilan.",
+            "Vraćena standardna Windows naslovna traka (uz tamnu boju) — "
+            "prilagođena traka je povremeno uzrokovala nestajanje ikone "
+            "aplikacije iz taskbara.",
+        ],
+        "en": [
+            "Fixed: downloading from YouTube could fail with an 'HTTP 403 "
+            "Forbidden' error on the first attempt (only working on a "
+            "retry) — this now retries automatically on its own, no need "
+            "to do it manually.",
+            "Fixed: a video downloaded in 'Video + audio' mode could look "
+            "like it had no audio track in Premiere (the sound was in the "
+            "file, just in a format Premiere doesn't recognize) — now uses "
+            "a universally compatible audio format.",
+            "Restored the standard Windows title bar (with dark styling) — "
+            "the custom title bar was occasionally causing the app's "
+            "taskbar icon to disappear.",
+        ],
+    },
+    "2.5": {
+        "hr": [
+            "Poboljšano: kad je odabran 'Samo video', 'Format zvuka' "
+            "izbornik se sad sakrije (ne samo zasivi); kad je odabran "
+            "'Samo zvuk', 'Format videa' se sakrije — manje nereda na "
+            "ekranu za opcije koje ionako ne vrijede.",
+        ],
+        "en": [
+            "Improved: when 'Video only' is selected, the 'Audio format' "
+            "picker is now hidden (not just greyed out); when 'Audio only' "
+            "is selected, 'Video format' is hidden — less clutter for "
+            "options that don't apply anyway.",
+        ],
+    },
+    "2.6": {
+        "hr": [
+            "Poboljšano: kad je odabran 'Samo zvuk', sad se sakrije i "
+            "'Omjer slike' izbornik — rezanje omjera nema smisla bez videa.",
+        ],
+        "en": [
+            "Improved: when 'Audio only' is selected, the 'Aspect ratio' "
+            "picker is now hidden too — cropping doesn't apply without "
+            "video.",
+        ],
+    },
+    "2.7": {
+        "hr": [
+            "Popravljeno: klik na 'Provjeri ažuriranja' sad uvijek iznova "
+            "pita GitHub postoji li nova verzija same aplikacije, ne samo "
+            "yt-dlp/ffmpeg — prije se aplikacija provjeravala samo jednom, "
+            "tiho, pri pokretanju.",
+            "Popravljeno: rijedak slučaj gdje bi aplikacija odmah nakon "
+            "instalacije pukla s greškom 'Failed to load Python DLL' (radilo "
+            "je nakon zatvaranja i ponovnog pokretanja) — promijenjen način "
+            "izrade instalacije da se taj problem u korijenu izbjegne.",
+        ],
+        "en": [
+            "Fixed: clicking 'Check for updates' now always re-checks "
+            "GitHub for a new app version too, not just yt-dlp/ffmpeg — "
+            "previously the app itself was only checked once, silently, at "
+            "startup.",
+            "Fixed: a rare case where the app would fail right after "
+            "installation with a 'Failed to load Python DLL' error (it "
+            "worked after closing and reopening) — changed how the "
+            "installer is built to avoid this issue at the root.",
+        ],
+    },
+    "2.8": {
+        "hr": [
+            "Popravljeno: kad bi se u playeru dodalo više od ~6 isječaka, "
+            "gumb 'Skini sve isječke' je postajao nedohvatljiv (nije bilo "
+            "moguće doskrolati do njega) — lista isječaka sad ima vlastiti "
+            "skrol, a gumb ostaje uvijek vidljiv ispod nje.",
+        ],
+        "en": [
+            "Fixed: adding more than ~6 clips in the player made the "
+            "'Download all clips' button unreachable (no way to scroll to "
+            "it) — the clip list now scrolls on its own, with the button "
+            "always visible below it.",
+        ],
+    },
+    "3.0": {
+        "hr": [
+            "Novo: podrška za skidanje SLIKA s Instagrama! Novi mod "
+            "'📷 Slika (Instagram)' — bira se browser iz kojeg se posude "
+            "kolačići za prijavu (Instagram zahtijeva login za skoro sav "
+            "sadržaj), ne tražimo niti vidimo tvoju lozinku.",
+            "Za ovaj mod se sklanjaju sve opcije koje mu ne trebaju "
+            "(kvaliteta, formati, omjer slike) i preskače se pregled/"
+            "označavanje isječka (nema smisla za slike).",
+            "Popravljeno nekoliko grešaka otkrivenih tijekom testiranja ove "
+            "nove funkcije: pogrešan izvor za preuzimanje alata (gallery-dl "
+            "je preselio na Codeberg), i greške koje su se tiho gutale "
+            "umjesto da se prikažu.",
+        ],
+        "en": [
+            "New: support for downloading Instagram PHOTOS! New "
+            "'📷 Photo (Instagram)' mode — pick the browser to borrow login "
+            "cookies from (Instagram requires login for almost all "
+            "content); we never ask for or see your password.",
+            "For this mode, all irrelevant options (quality, formats, "
+            "aspect ratio) are hidden, and clip preview/marking is skipped "
+            "(doesn't apply to photos).",
+            "Fixed several bugs found while testing this new feature: a "
+            "wrong download source for the tool (gallery-dl moved to "
+            "Codeberg), and errors that were silently swallowed instead of "
+            "shown.",
+        ],
+    },
+    "3.1": {
+        "hr": [
+            "Novo: '🔑 Prijavi se na Instagram unutar app-a' — najjednostavniji "
+            "način za slike s Instagrama. Prijaviš se u ugrađenom prozoru "
+            "(prava Instagram stranica), zatvoriš ga, i kolačići se sami "
+            "spreme i odaberu — bez ekstenzije, bez zatvaranja browsera.",
+            "Dodana i druga opcija: ručno odabran 'cookies.txt' fajl (izvezen "
+            "preko ekstenzije) — za slučaj da automatska prijava iz nekog "
+            "razloga ne odgovara.",
+            "Popravljeno: postavka browsera za kolačiće se nije spremala "
+            "između pokretanja app-a.",
+        ],
+        "en": [
+            "New: '🔑 Log into Instagram inside the app' — the easiest way "
+            "to get Instagram photos. Log in inside the built-in window "
+            "(the real Instagram page), close it, and the cookies save and "
+            "get selected automatically — no extension, no closing your "
+            "browser.",
+            "Added a second option too: manually pick a 'cookies.txt' file "
+            "(exported via an extension) — in case automatic login doesn't "
+            "suit you for some reason.",
+            "Fixed: the cookie browser setting wasn't being saved between "
+            "app launches.",
+        ],
+    },
+    "3.2": {
+        "hr": [
+            "Popravljeno: rijedak pad aplikacije nakon uspješne Instagram "
+            "prijave unutar app-a — sad se kolačići spremaju na sigurniji "
+            "način dok je prozor za prijavu još potpuno stabilan.",
+            "Popravljeno: 'Login with Facebook' je znao zatvoriti prozor za "
+            "prijavu prerano, prije nego se prijava stvarno završi — sad se "
+            "čeka stvaran znak uspješne prijave, ne samo promjenu adrese.",
+            "Prijava se sad sprema odmah čim uspije, ne tek kad pokreneš "
+            "skidanje ili normalno zatvoriš app.",
+            "Novo: '🚪 Odjavi se' poveznica pored statusa prijave — briše "
+            "spremljenu Instagram prijavu s ovog računala.",
+            "Popravljeno: kad je lijevi stupac (opcije, uključujući Instagram "
+            "panel) prevelik za prozor, gumb 'POKRENI' je postajao "
+            "nedohvatljiv bez maksimiziranja — lijevi stupac sad ima "
+            "vlastiti skrol.",
+            "Pojednostavljeno: 'Alati' izbornik sad ima jednu stavku "
+            "'Provjeri ažuriranja' umjesto četiri odvojene — provjerava i "
+            "ažurira yt-dlp, ffmpeg, gallery-dl i samu aplikaciju odjednom.",
+            "gallery-dl (za Instagram slike) se sad automatski skine pri "
+            "prvom pokretanju app-a, isto kao yt-dlp/ffmpeg — ne čeka se "
+            "prvo korištenje te opcije. Kod svakog sljedećeg pokretanja se "
+            "i tiho, u pozadini, ažurira ako postoji nova verzija.",
+        ],
+        "en": [
+            "Fixed: a rare crash right after a successful in-app Instagram "
+            "login — cookies are now saved more safely while the login "
+            "window is still fully stable.",
+            "Fixed: 'Login with Facebook' could close the login window too "
+            "early, before the login actually finished — now it waits for "
+            "a real sign of successful login, not just an address change.",
+            "The login is now saved as soon as it succeeds, not only when "
+            "you start a download or close the app normally.",
+            "New: a '🚪 Log out' link next to the login status — deletes "
+            "the saved Instagram login from this computer.",
+            "Fixed: when the left column (options, including the Instagram "
+            "panel) got too tall for the window, the 'START' button became "
+            "unreachable without maximizing — the left column now scrolls "
+            "on its own.",
+            "Simplified: the 'Tools' menu now has one 'Check for updates' "
+            "item instead of four separate ones — checks and updates "
+            "yt-dlp, ffmpeg, gallery-dl, and the app itself all at once.",
+            "gallery-dl (for Instagram photos) now downloads automatically "
+            "on first app launch, same as yt-dlp/ffmpeg — no more waiting "
+            "for the first use of that option. On every later launch it "
+            "also quietly updates itself in the background if needed.",
+        ],
+    },
+    "3.3": {
+        "hr": [
+            "Popravljeno: 'Omjer slike' (9:16, 1:1, 4:5...) se dosad uopće "
+            "nije primjenjivao — video je uvijek ostajao u izvornom 16:9 "
+            "bez obzira na odabir. Pravi uzrok pronađen i riješen.",
+            "Popravljeno: kad je aplikacija na engleskom, 'Kvaliteta' "
+            "izbornik je znao pokazivati 'Najbolja' umjesto 'Best'.",
+            "Popravljeno: ažuriranje aplikacije je znalo instalirati u novi "
+            "folder umjesto da nadogradi postojeću instalaciju.",
+            "Dugme 'Skidam...' sad piše 'Skini klip'.",
+            "'Trenutni odabir' OD/DO polja sad sama ubacuju ':' dok upisuješ "
+            "vrijeme (npr. upišeš '013433', postane '01:34:33').",
+            "'(bez zvuka)' maknuto iz 'Samo video'.",
+            "Podnaslov ispod naslova aplikacije maknut.",
+            "'ŠTO SKIDAMO' → 'TIP FAJLA', 'GDJE SE SPREMA' → 'LOKACIJA "
+            "SKIDANJA'.",
+            "Novo: '❤️ Doniraj' dugme u traci izbornika, odmah pored "
+            "'Pomoć' — vodi na PayPal.",
+        ],
+        "en": [
+            "Fixed: 'Aspect ratio' (9:16, 1:1, 4:5...) wasn't being applied "
+            "at all — the video always stayed at the original 16:9 "
+            "regardless of the selection. Found and fixed the real cause.",
+            "Fixed: when the app is in English, the 'Quality' picker could "
+            "show 'Najbolja' instead of 'Best'.",
+            "Fixed: updating the app could install into a new folder "
+            "instead of upgrading the existing installation.",
+            "The 'Downloading...' button now says 'Download clip'.",
+            "'Current selection' OD/DO fields now auto-insert ':' as you "
+            "type the time (e.g. type '013433', it becomes '01:34:33').",
+            "'(no audio)' removed from 'Video only'.",
+            "Removed the subtitle under the app title.",
+            "'WHAT TO DOWNLOAD' → 'FILE TYPE', 'WHERE TO SAVE' → "
+            "'DOWNLOAD LOCATION'.",
+            "New: a '❤️ Donate' button in the menu bar, right next to "
+            "'Help' — links to PayPal.",
+        ],
+    },
+    "3.5": {
+        "hr": [
+            "Novi logo i ikona aplikacije (novi dizajn) — i u naslovnom "
+            "retku unutar app-e, i kao Windows/taskbar ikonica.",
+        ],
+        "en": [
+            "New app logo and icon (new design) — both in the in-app title "
+            "row and as the Windows/taskbar icon.",
+        ],
+    },
+    "3.6": {
+        "hr": [
+            "Promijenjena glavna boja aplikacije s plave na tamniju bordo/"
+            "trula-višnja crvenu — brojevi kartica, glavno dugme za "
+            "skidanje i player akcenti.",
+            "Maknute brojčane oznake (1, 2, 3, 4) ispred naslova kartica — "
+            "ostaju samo nazivi.",
+        ],
+        "en": [
+            "Changed the app's main accent color from blue to a deeper "
+            "burgundy/wine red — card badges, the main download button, "
+            "and player accents.",
+            "Removed the numbered badges (1, 2, 3, 4) in front of card "
+            "titles — just the names remain.",
+        ],
+    },
+    "3.7": {
+        "hr": [
+            "App sad sama preuzme i drži ažurnim Deno (JavaScript runtime "
+            "koji yt-dlp treba za YouTube) — jednokratno ~40 MB pri prvom "
+            "pokretanju; 'Provjeri ažuriranja' ga također osigurava.",
+            "STATUS log sad pokazuje Deno status, koji je format yt-dlp "
+            "odabrao i stvarnu skinutu rezoluciju. Ako je dobiveno manje od "
+            "traženog (npr. 4K), objašnjava zašto: YouTube 4K formate daje "
+            "alatima za skidanje samo uz PO token.",
+            "Omjer slike: ako je video već u traženom omjeru, rezanje se "
+            "preskače (prije je tada bespotrebno pokušavalo i javljalo grešku).",
+        ],
+        "en": [
+            "The app now downloads and keeps Deno (the JavaScript runtime "
+            "yt-dlp needs for YouTube) up to date — one-time ~40 MB on first "
+            "launch; 'Check for updates' also makes sure it's there.",
+            "The STATUS log now shows the Deno status, which format yt-dlp "
+            "chose, and the real downloaded resolution. If you got less than "
+            "requested (e.g. 4K) it explains why: YouTube only offers 4K "
+            "formats to download tools together with a PO token.",
+            "Aspect ratio: if the video is already in the requested ratio, "
+            "cropping is skipped (it used to pointlessly try and report an error).",
+        ],
+    },
+}
+
+
+def ucitaj_config():
+    podaci = dict(ZADANI_CONFIG)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            spremljeno = json.load(f)
+        if isinstance(spremljeno, dict):
+            podaci.update({k: v for k, v in spremljeno.items() if k in ZADANI_CONFIG})
+    except Exception:
+        pass
+    if not os.path.isdir(str(podaci.get("izlazni_folder", ""))):
+        podaci["izlazni_folder"] = IZLAZNI_FOLDER
+    return podaci
+
+
+def spremi_config(podaci):
+    """Vraca None ako uspije, inace tekst greske (da se moze prikazati korisniku)."""
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(podaci, f, ensure_ascii=False, indent=2)
+        return None
+    except Exception as err:
+        return str(err)
+
+
+def je_poznati_tiktok_challenge_bug(tekst_greske):
+    """Prepoznaje obrazac greske kod kojeg je TikTok promijenio svoj JS 'izazov'
+    a trenutna verzija yt-dlp.exe ga jos ne zna rijesiti. Ovo NIJE nesto sto se
+    popravlja u ovoj skripti - ceka se popravak u samom yt-dlp projektu."""
+    t = tekst_greske.lower()
+    return "solve_challenge_and_set_cookies" in t or (
+        "unable to extract" in t and ("webpage video data" in t or "rehydration" in t)
+    )
+
+
+# --- DIZAJN: "Liquid Glass" (po uzoru na iOS/iPhone stakleno-prozirne,
+# zaobljene panele). Tkinter nema ugradjenu podrsku ni za pravu prozirnost/
+# blur ni za zaobljene rubove, pa se ovdje taj dojam gradi bez rizicnih
+# custom widgeta - kroz boje, tanke svjetlije "staklene" linije (odsjaj
+# svjetla na vrhu kartica) i generozan razmak. Player prozor (ugradjeni ili
+# fallback zaseban) je zaseban HTML/CSS dokument - TAMO CSS stvarno podrzava
+# backdrop-filter blur i potpuno zaobljene rubove, pa ondje staklo izgleda
+# "pravo" (vidi _player_html nize).
+BG = "#0a0b18"           # duboka indigo pozadina prozora
+CARD = "#1b1d38"         # "staklena" ploha kartica
+CARD_LIGHT = "#242748"   # ugnjezdeni/isticuci paneli (npr. info o isjecku)
+ACCENT = "#9c2d4f"       # duboka bordo/"trula visnja" crvena - glavni akcent
+ACCENT_HOVER = "#b15b75"
+TEXT = "#f5f6fc"
+SUBTEXT = "#9aa0c8"
+LOG_BG = "#0c0d1e"
+LOG_TEXT = "#5ee6c8"
+BORDER = "#3a3d68"       # tanak "stakleni" rub kartica
+TROUGH = "#20223f"
+PAUSE_BG = "#242748"
+PAUSE_HOVER = "#2f335c"
+SUCCESS = "#32d74b"      # iOS-zelena
+DANGER = "#ff453a"       # iOS-crvena
+INPUT_BG = "#12142a"
+
+# "Caacupé One" (besplatan Google Font, SIL OFL licenca) je referenca za
+# veliki naslov aplikacije - gust, "display" font. Ako nije instaliran na
+# racunalu, Tkinter automatski i tiho koristi zamjenski font (bez greske),
+# pa je siguran za koristiti bez instalacije. Za pravi izgled instaliraj ga s
+# https://github.com/googlefonts/caacupe
+FONT_NASLOV = "Caacupé One"
+
+
+def posvijetli(hex_boja, faktor):
+    """Vraca hex boju posvijetljenu prema bijeloj (faktor 0..1). Cista
+    funkcija bez sporednih efekata - koristi se samo za boju tanke 'sjaj'
+    linije na vrhu kartica (staklena_linija)."""
+    hex_boja = hex_boja.lstrip("#")
+    r, g, b = (int(hex_boja[i:i + 2], 16) for i in (0, 2, 4))
+    r = int(r + (255 - r) * faktor)
+    g = int(g + (255 - g) * faktor)
+    b = int(b + (255 - b) * faktor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def staklena_linija(parent, boja, visina=1):
+    """Tanka, svjetlija linija (obican Frame) tik uz gornji rub kartice -
+    simulira odsjaj svjetla na staklenoj povrsini. Sigurna, standardna
+    tk.Frame - bez custom widgeta koji bi mogli remetiti geometriju."""
+    return tk.Frame(parent, bg=boja, height=visina)
+
+# "Najbolja"/"Best" je jedina rijec u ovoj listi koja treba prijevod (ostalo
+# su brojevi/rezolucije, iste u oba jezika) - vidi kvalitete_za_jezik().
+KVALITETE_HR = ["Najbolja", "2160p (4K)", "1440p", "1080p", "720p", "480p", "360p"]
+KVALITETE_EN = ["Best", "2160p (4K)", "1440p", "1080p", "720p", "480p", "360p"]
+
+
+def kvalitete_za_jezik(jezik):
+    return KVALITETE_EN if jezik == "en" else KVALITETE_HR
+VIDEO_FORMATI = ["mp4", "mkv", "webm", "mov", "original (bez pretvorbe)"]
+AUDIO_FORMATI = ["mp3", "m4a", "wav", "flac", "opus", "original (bez pretvorbe)"]
+OMJERI_SLIKE = [
+    "Original",
+    "16:9",
+    "9:16 (TikTok/Reels/Shorts)",
+    "1:1 (Square)",
+    "4:5 (Instagram)",
+]
+
+# Prikazni naziv -> stvarna vrijednost za gallery-dl "--cookies-from-browser".
+# Instagram od 2023. zahtijeva prijavu za skoro sav sadrzaj (cak i javne
+# profile) - gallery-dl to rjesava tako da POSUDI kolacice iz vec ulogiranog
+# browsera na ovom racunalu, umjesto da mi sami trazimo korisnicko/lozinku.
+BROWSERI_COOKIES = ["Chrome", "Edge", "Firefox", "Brave", "Opera", "Vivaldi"]
+
+
+def _omjer_u_wh(naziv):
+    """Izvlaci (sirina, visina) iz naziva omjera (npr. '9:16 (TikTok...)' ->
+    (9, 16)) - vraca None za 'Original' (bez rezanja, zadrzi izvorni omjer)."""
+    m = re.match(r"(\d+):(\d+)", naziv)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def visina_iz_kvalitete(tekst):
+    m = re.match(r"(\d+)p", str(tekst))
+    return int(m.group(1)) if m else None
+
+
+def napravi_folder(putanja):
+    if not os.path.exists(putanja):
+        os.makedirs(putanja)
+
+
+def parse_vrijeme(tekst):
+    tekst = str(tekst).strip()
+    if not tekst:
+        return None
+    if ":" in tekst:
+        dijelovi = tekst.split(":")
+        try:
+            dijelovi = [int(d) for d in dijelovi]
+        except ValueError:
+            return None
+        sekunde = 0
+        for d in dijelovi:
+            sekunde = sekunde * 60 + d
+        return sekunde
+    try:
+        return float(tekst)
+    except ValueError:
+        return None
+
+
+def formatiraj_trajanje(sekunde):
+    if sekunde is None:
+        return "?"
+    sekunde = int(sekunde)
+    h, ostatak = divmod(sekunde, 3600)
+    m, s = divmod(ostatak, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def izvuci_video_id(url):
+    m = re.search(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
+
+
+def prepoznaj_platformu(url):
+    url_l = url.lower()
+    if "youtube.com" in url_l or "youtu.be" in url_l:
+        return "youtube"
+    return "generic"
+
+
+def _sigurni_id_za_url(url):
+    import hashlib
+    return hashlib.md5(url.encode("utf-8")).hexdigest()[:16]
+
+
+def _bez_duplikata(format_izraz):
+    """'best/best' -> 'best'. Kad nema filtera visine neke se grane izraza poklope,
+    a yt-dlp bi ih onda bezveze probavao dvaput."""
+    vidjeno, rezultat = set(), []
+    for dio in format_izraz.split("/"):
+        if dio not in vidjeno:
+            vidjeno.add(dio)
+            rezultat.append(dio)
+    return "/".join(rezultat)
+
+
+def izgradi_format_string(platforma, nacin, visina, h264):
+    """Slaze yt-dlp '-f' izraz. Odvojeno od GUI-ja da se moze testirati sam za sebe.
+
+      nacin = 'samo_zvuk'  -> uzmi samo audio stream (slika se uopce ne skida)
+      nacin = 'samo_video' -> uzmi samo video stream (nijemi fajl, ~30% manji)
+      nacin = 'video_zvuk' -> klasicno, oba pa spoji (treba ffmpeg)
+
+    v2.4: 'video_zvuk' sad preferira 'bestaudio[ext=m4a]' (AAC) PRIJE golog
+    'bestaudio' - YouTube-ov "najbolji" audio je gotovo uvijek Opus (webm),
+    koji ffmpeg TEHNICKI moze ugurati u .mp4 spremnik bez greske, ali ga
+    Premiere Pro (i neki drugi editori) ne prepoznaju kao audio traku -
+    projekt djeluje kao da je fajl "sam video, bez zvuka" iako zvuk fizicki
+    postoji u fajlu. AAC/M4A je univerzalno podrzan u MP4-u. Pada natrag na
+    obican 'bestaudio' samo ako AAC opcija uopce ne postoji za taj video.
+    """
+    hf = f"[height<={visina}]" if visina else ""
+
+    if nacin == "samo_zvuk":
+        return "bestaudio/best"
+
+    if nacin == "samo_video":
+        # Za 1440p/4K rezolucija ima prednost nad H.264: YouTube cesto
+        # nudi AVC samo do 1080p, a 4K u VP9/AV1.
+        if h264 and (visina is None or visina < 1440):
+            return _bez_duplikata(f"bestvideo[vcodec^=avc1]{hf}/bestvideo{hf}/bestvideo")
+        return _bez_duplikata(f"bestvideo{hf}/bestvideo")
+
+    if platforma == "youtube":
+        # Kad je trazena 1440p/2160p, rezolucija ima prednost pred H.264:
+        # YouTube cesto nudi 4K samo u VP9/AV1, dok je avc1 dostupan samo u 1080p.
+        # Stari redoslijed prvo je nalazio 1080p avc1 i nikad nije dosao do 4K fallbacka.
+        if h264 and visina and visina >= 1440:
+            return _bez_duplikata(f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
+        if h264:
+            return _bez_duplikata(f"bestvideo[vcodec^=avc1]{hf}+bestaudio[ext=m4a]/"
+                              f"bestvideo[vcodec^=avc1]{hf}+bestaudio/"
+                              f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
+        return _bez_duplikata(f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
+
+    # TikTok/Instagram/ostalo: cesto dolazi kao jedan gotov (progressive) fajl.
+    if h264:
+        return _bez_duplikata(f"best[vcodec^=avc1]{hf}/bestvideo[vcodec^=avc1]{hf}+bestaudio[ext=m4a]/"
+                          f"bestvideo[vcodec^=avc1]{hf}+bestaudio/"
+                          f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
+    return _bez_duplikata(f"bestvideo{hf}+bestaudio[ext=m4a]/bestvideo{hf}+bestaudio/best{hf}/best")
+
+
+class PlayerAPI:
+    def __init__(self, queue_sanjac):
+        self.queue_sanjac = queue_sanjac
+
+    def oznaci_pocetak(self, sekunde):
+        self.queue_sanjac.put(("od", sekunde))
+
+    def oznaci_kraj(self, sekunde):
+        self.queue_sanjac.put(("do", sekunde))
+
+    def skini_shorts_iz_player(self, od_vr, do_vr):
+        self.queue_sanjac.put(("skini_short", (od_vr, do_vr)))
+
+    def skini_visestruke_isjecke(self, lista):
+        self.queue_sanjac.put(("skini_visestruke", lista))
+
+    def zatrazi_lokalni_pregled(self):
+        self.queue_sanjac.put(("lokalni_pregled", None))
+
+
+_PLAYER_PRIJEVODI = {
+    "hr": {
+        "html_lang": "hr",
+        "cc_title": "Uključi/isključi titlove",
+        "cc_off": "💬 CC: isključeno",
+        "cc_on": "💬 CC: uključeno",
+        "spremno": "Spremno — klikni po traci ili koristi dugmad ispod.",
+        "err_invalid_id": "Neispravan video ID",
+        "err_html5": "Greška HTML5 playera",
+        "err_removed": "Video ne postoji ili je uklonjen",
+        "err_embed_disabled": "Vlasnik je onemogućio embed prikaz ovog videa",
+        "embed_fallback_status": "⏳ Vlasnik je onemogućio YouTube embed za ovaj video — preuzimam kraći lokalni pregled...",
+        "err_code_prefix": "Greška kod ",
+        "err_generic_video": "❌ Ne mogu učitati video (link je istekao, privatan je ili nije podržan).",
+        "trenutno": "Trenutno",
+        "isjecak_prefix": "Isječak",
+        "nije_oznaceno": "nije označeno",
+        "ukupno": "Ukupno",
+        "back5_title": "Nazad 5 sekundi",
+        "playpause_title": "Play / Pauza",
+        "playpause_text": "⏯ Play/Pauza",
+        "fwd5_title": "Naprijed 5 sekundi",
+        "set_start_title": "Označi trenutnu poziciju kao početak isječka",
+        "set_start_text": "📍 Postavi OD",
+        "set_end_title": "Označi trenutnu poziciju kao kraj isječka",
+        "set_end_text": "📍 Postavi DO",
+        "current_selection": "🎬 Trenutni odabir:",
+        "od_label": "Od:",
+        "do_label": "Do:",
+        "od_label_short": "Od",
+        "do_label_short": "Do",
+        "add_selection": "+ Dodaj odabir",
+        "download_all_clips": "⬇ Skini sve isječke",
+        "loading_player": "Učitavam player...",
+        "pause_text": "⏸ Pauziraj",
+        "play_text": "▶ Pusti",
+        "still_loading": "⏳ Video se još učitava, pričekaj trenutak...",
+        "add_selection_warn": "⚠ Prvo označi Od i Do (📍 gumbi iznad ili upiši ručno), pa klikni + Dodaj odabir.",
+        "remove_clip_title": "Ukloni ovaj isječak",
+        "add_clip_warn": "⚠ Dodaj barem jedan isječak prije skidanja.",
+        "download_started": "Preuzimanje {0} isječaka pokrenuto — pogledaj glavni prozor.",
+        "add_another_hint": "Dodaj još jedan isječak (možeš ga povući/rastegnuti nakon)",
+        "drag_hint": "Povuci po traci da označiš isječak, ili klikni za premotavanje",
+    },
+    "en": {
+        "html_lang": "en",
+        "cc_title": "Toggle captions",
+        "cc_off": "💬 CC: off",
+        "cc_on": "💬 CC: on",
+        "spremno": "Ready — click the timeline or use the buttons below.",
+        "err_invalid_id": "Invalid video ID",
+        "err_html5": "HTML5 player error",
+        "err_removed": "Video does not exist or was removed",
+        "err_embed_disabled": "The owner has disabled embedded playback for this video",
+        "embed_fallback_status": "⏳ The owner disabled YouTube embedding for this video — downloading a shorter local preview...",
+        "err_code_prefix": "Error code ",
+        "err_generic_video": "❌ Can not load the video (the link expired, is private, or is not supported).",
+        "trenutno": "Current",
+        "isjecak_prefix": "Clip",
+        "nije_oznaceno": "not marked",
+        "ukupno": "Total",
+        "back5_title": "Back 5 seconds",
+        "playpause_title": "Play / Pause",
+        "playpause_text": "⏯ Play/Pause",
+        "fwd5_title": "Forward 5 seconds",
+        "set_start_title": "Mark the current position as the clip start",
+        "set_start_text": "📍 Set start",
+        "set_end_title": "Mark the current position as the clip end",
+        "set_end_text": "📍 Set end",
+        "current_selection": "🎬 Current selection:",
+        "od_label": "Start:",
+        "do_label": "End:",
+        "od_label_short": "Start",
+        "do_label_short": "End",
+        "add_selection": "+ Add selection",
+        "download_all_clips": "⬇ Download all clips",
+        "loading_player": "Loading player...",
+        "pause_text": "⏸ Pause",
+        "play_text": "▶ Play",
+        "still_loading": "⏳ Video is still loading, please wait...",
+        "add_selection_warn": "⚠️ First mark Start and End (📍 buttons above or type manually), then click + Add selection.",
+        "remove_clip_title": "Remove this clip",
+        "add_clip_warn": "⚠️ Add at least one clip before downloading.",
+        "download_started": "Download of {0} clips started — check the main window.",
+        "add_another_hint": "Add another clip (you can drag/resize it afterward)",
+        "drag_hint": "Drag on the timeline to mark a clip, or click to seek",
+    },
+}
+
+
+def _greska_player_html(poruka, jezik="hr"):
+    """Jednostavna stranica u stilu app-a koja se ucita UMJESTO playera kad
+    dohvat pregleda (fallback za YouTube s onemogucenim embedom, ili TikTok/
+    Instagram) ne uspije - bez ovoga bi player ostao zaglavljen na cemu god
+    je prije bilo prikazano (npr. YouTube-ova vlastita "Video unavailable"
+    poruka), sto je zbunjujuce jer izgleda kao da je YouTube kriv, ne nas
+    fallback."""
+    naslov = "Pregled nije uspio" if jezik == "hr" else "Preview failed"
+    podnaslov = ("Skidanje kraceg lokalnog pregleda nije uspjelo. I dalje "
+                 "možeš pokušati skinuti cijeli video ili isječak preko "
+                 "glavnog obrasca lijevo.") if jezik == "hr" else (
+                 "Downloading a shorter local preview didn't work. You can "
+                 "still try downloading the full video or a clip via the "
+                 "main form on the left.")
+    poruka_sigurna = (poruka or "").replace("<", "&lt;").replace(">", "&gt;")
+    return f"""<!DOCTYPE html>
+<html lang="{jezik}">
+<head><meta charset="utf-8">
+<style>
+  body {{
+    margin:0; height:100vh; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; background:{BG}; color:{TEXT}; font-family:"Segoe UI",sans-serif;
+    text-align:center; padding:24px; box-sizing:border-box;
+  }}
+  .ikona {{ font-size:40px; margin-bottom:14px; }}
+  h1 {{ font-size:17px; margin:0 0 8px; color:{DANGER}; }}
+  p {{ font-size:13px; color:{SUBTEXT}; max-width:480px; line-height:1.5; margin:0 0 14px; }}
+  .detalji {{
+    font-family:Consolas,monospace; font-size:11px; color:{SUBTEXT}; background:{LOG_BG};
+    border:1px solid {BORDER}; border-radius:10px; padding:10px 14px; max-width:560px;
+    max-height:120px; overflow:auto; text-align:left; white-space:pre-wrap;
+  }}
+</style></head>
+<body>
+  <div class="ikona">⚠️</div>
+  <h1>{naslov}</h1>
+  <p>{podnaslov}</p>
+  <div class="detalji">{poruka_sigurna}</div>
+</body></html>"""
+
+
+def _player_html(platform, video_id=None, video_src=None, jezik="hr"):
+    PT = _PLAYER_PRIJEVODI.get(jezik, _PLAYER_PRIJEVODI["hr"])
+    video_id_json = json.dumps(video_id)
+    video_src_json = json.dumps(video_src)
+    je_youtube = (platform == "youtube")
+
+    head_script = '<script src="https://www.youtube.com/iframe_api"></script>' if je_youtube else ""
+    player_element = '<div id="player"></div>' if je_youtube else '<video id="player" playsinline></video>'
+    cc_dugme = (
+        f'<button class="secondary icon-btn" id="btn-cc" onclick="toggleCC()" '
+        f'title="{PT["cc_title"]}">{PT["cc_off"]}</button>'
+        if je_youtube else ""
+    )
+
+    if je_youtube:
+        init_script = f"""
+      function pozovi_lokalni_pregled_fallback() {{
+        // Zajednicka, sigurna verzija poziva prema Pythonu - probamo VISE
+        // puta ako 'window.pywebview.api' jos nije spreman (pywebview most
+        // izmedju JS i Pythona zna zatrebati koji trenutak nakon ucitavanja
+        // stranice da se uspostavi - nasi automatski (bez klika korisnika)
+        // pokusaji mogu stici PRIJE toga), i GRESKU STVARNO PRIKAZEMO u
+        // statusnoj traci playera umjesto da nestane bez traga ako poziv
+        // ipak ne uspije.
+        var pokusaji = 0;
+        function pokusaj() {{
+          pokusaji++;
+          try {{
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.zatrazi_lokalni_pregled) {{
+              window.pywebview.api.zatrazi_lokalni_pregled();
+            }} else if (pokusaji < 20) {{
+              setTimeout(pokusaj, 250);
+            }} else {{
+              document.getElementById('status-bar').innerText =
+                '❌ pywebview API nikad nije postao dostupan (window.pywebview.api ne postoji).';
+            }}
+          }} catch (err) {{
+            document.getElementById('status-bar').innerText =
+              '❌ Greška pri pozivu fallbacka: ' + (err && err.message ? err.message : err);
+          }}
+        }}
+        pokusaj();
+      }}
+
+      function onYouTubeIframeAPIReady() {{
+        player = new YT.Player('player', {{
+          videoId: {video_id_json},
+          playerVars: {{
+            playsinline: 1, controls: 0, disablekb: 1, modestbranding: 1,
+            rel: 0, origin: window.location.origin, cc_load_policy: 0
+          }}
+        }});
+        player.addEventListener('onReady', onPlayerReady);
+        player.addEventListener('onError', onPlayerError);
+      }}
+
+      // SIGURNOSNA MREZA (razina 1, sira od one u onPlayerReady): ako se
+      // YouTube-ova iframe_api skripta uopce ne ucita/pokrene ispravno (npr.
+      // mrezni/firewall problem specifican za WebView2 kontekst, ili YouTube
+      // blokira bas ovaj tip ugradnje), 'onYouTubeIframeAPIReady' se NIKAD
+      // ne pozove - sto znaci da ni 'player' varijabla nikad ne postane
+      // pravi objekt, pa NI onPlayerReady NI onPlayerError nikad nemaju
+      // priliku ni pokusati (oba su vezana UZ player objekt koji ovdje
+      // uopce ne postoji). Bez ove provjere, ostali bismo zaglavljeni
+      // zauvijek na golom "Player ugraden i spreman" bez ikakvog daljnjeg
+      // pomaka - ni greske, ni videa, ni fallbacka.
+      setTimeout(function() {{
+        if (!player && !fallbackPokrenut) {{
+          fallbackPokrenut = true;
+          document.getElementById('status-bar').innerText = '{PT["embed_fallback_status"]}';
+          pozovi_lokalni_pregled_fallback();
+        }}
+      }}, 8000);
+
+      function onPlayerReady(e) {{
+        spreman = true;
+        trajanjeVid = player.getDuration();
+        document.getElementById('vrijeme-ukupno').innerText = formatiraj(trajanjeVid);
+        document.getElementById('status-bar').innerText = "{PT['spremno']}";
+        setInterval(azurirajPlayhead, 250);
+
+        // SIGURNOSNA MREZA: YouTube zna prikazati SVOJU "Video unavailable"
+        // poruku UNUTAR iframea a da onPlayerError uopce ne pozove nas kod
+        // (ne za sve razloge nedostupnosti postoji sluzbeni error-kod koji
+        // YouTube-ova IFrame API stvarno posalje) - u tom slucaju bi ostali
+        // zaglavljeni zauvijek, bez ikakvog fallbacka. Zato provjerimo SAMI,
+        // par sekundi nakon "ready": ako trajanje nije ispravno dohvaceno
+        // (0 ili NaN) ili se stanje playera nikad nije pomaknulo dalje od
+        // "unstarted", tretiramo to kao da je embed propao i sami pokrenemo
+        // isti fallback (lokalni pregled) koji bi inace pokrenuo onPlayerError.
+        setTimeout(function() {{
+          if (fallbackPokrenut) return;
+          var trajanjeOk = trajanjeVid && !isNaN(trajanjeVid) && trajanjeVid > 0;
+          var stanje = player.getPlayerState();
+          if (!trajanjeOk || stanje === -1) {{
+            fallbackPokrenut = true;
+            document.getElementById('status-bar').innerText = '{PT["embed_fallback_status"]}';
+            pozovi_lokalni_pregled_fallback();
+          }}
+        }}, 6000);
+      }}
+
+      function onPlayerError(e) {{
+        var poruke = {{
+          2: '{PT["err_invalid_id"]}',
+          5: '{PT["err_html5"]}',
+          100: '{PT["err_removed"]}',
+          101: '{PT["err_embed_disabled"]}',
+          150: '{PT["err_embed_disabled"]}'
+        }};
+        if (!fallbackPokrenut) {{
+          // v2.2: fallback se sad pokusa za BILO KOJI kod greske, ne samo
+          // 101/150 - neki razlozi nedostupnosti YouTube prijavi drugim
+          // kodovima (ili uopce ne pozove ovaj handler, vidi timeout gore u
+          // onPlayerReady), pa je siri pokusaj pouzdaniji nego uski popis.
+          fallbackPokrenut = true;
+          document.getElementById('status-bar').innerText = '{PT["embed_fallback_status"]}';
+          pozovi_lokalni_pregled_fallback();
+          return;
+        }}
+        document.getElementById('status-bar').innerText =
+          '❌ ' + (poruke[e.data] || ('{PT["err_code_prefix"]}' + e.data));
+      }}
+
+      function toggleCC() {{
+        if (!spreman) return;
+        ccUkljucen = !ccUkljucen;
+        var btn = document.getElementById('btn-cc');
+        if (ccUkljucen) {{
+          player.loadModule('captions');
+          player.setOption('captions', 'track', {{}});
+          btn.innerText = '{PT["cc_on"]}';
+          btn.classList.add('aktivno');
+        }} else {{
+          player.unloadModule('captions');
+          btn.innerText = '{PT["cc_off"]}';
+          btn.classList.remove('aktivno');
+        }}
+      }}
+"""
+    else:
+        init_script = f"""
+      function pokreniGenericPlayer() {{
+        var vid = document.getElementById('player');
+        vid.src = {video_src_json};
+        player = {{
+          getCurrentTime: function() {{ return vid.currentTime || 0; }},
+          getDuration: function() {{ return vid.duration || 0; }},
+          seekTo: function(t) {{ vid.currentTime = t; }},
+          playVideo: function() {{ vid.play(); }},
+          pauseVideo: function() {{ vid.pause(); }},
+          getPlayerState: function() {{ return vid.paused ? 2 : 1; }},
+          mute: function() {{ vid.muted = true; }},
+          unMute: function() {{ vid.muted = false; }},
+          setVolume: function(v) {{ vid.volume = v / 100; }}
+        }};
+        vid.addEventListener('loadedmetadata', function() {{
+          spreman = true;
+          trajanjeVid = player.getDuration();
+          document.getElementById('vrijeme-ukupno').innerText = formatiraj(trajanjeVid);
+          document.getElementById('status-bar').innerText = "{PT['spremno']}";
+          setInterval(azurirajPlayhead, 250);
+        }});
+        vid.addEventListener('error', function() {{
+          document.getElementById('status-bar').innerText = '{PT["err_generic_video"]}';
+        }});
+      }}
+      window.addEventListener('DOMContentLoaded', pokreniGenericPlayer);
+"""
+
+    return f"""<!DOCTYPE html>
+    <html lang="{PT['html_lang']}">
+    <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <style>
+      * {{ box-sizing: border-box; }}
+      html, body {{ height: 100%; }}
+      body {{
+        margin:0;
+        background:
+          radial-gradient(circle at 15% 0%, rgba(94,92,230,0.32), transparent 55%),
+          radial-gradient(circle at 85% 100%, rgba(156,45,79,0.26), transparent 55%),
+          linear-gradient(160deg, #0e1030 0%, #0a0b18 100%);
+        font-family: "Segoe UI", "Segoe UI Emoji", sans-serif;
+        display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start;
+        height:100vh; overflow:hidden; color:{TEXT}; user-select:none; padding: 14px;
+      }}
+      /* v17.0.3: #omot i #player-wrap su sad fleksibilni (flex:1) umjesto fiksne
+         max-sirine/max-visine - player sad ispunjava sav raspoloziv prostor u
+         desnom panelu umjesto da bude mali okvir centriran s praznim prostorom
+         oko sebe. object-fit:contain na #player i dalje cuva omjer slike pa se
+         video ne rasteze/izoblici, samo se crna pozadina prosiri da popuni okvir. */
+      #omot {{
+        display:flex; flex-direction:column; align-items:stretch;
+        width:100%; height:100%; min-height:0; flex:1 1 auto;
+      }}
+      #player-wrap {{
+        width:100%; flex:1 1 auto; min-height:0; background:#000;
+        border-radius:18px; overflow:hidden; border: 1px solid rgba(255,255,255,0.14); position: relative;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+      }}
+      #player {{ width:100%; height:100%; object-fit: contain; background:#000; }}
+
+      /* Pravo "staklo": prava prozirnost + blur pozadine iza - u ovom HTML/CSS
+      okruzenju (za razliku od glavnog Tkinter prozora aplikacije) preglednik
+      stvarno podrzava backdrop-filter, pa je ovo "pravi" iOS-stil glass. */
+      #timeline-container {{
+        width: 100%; height: 38px; background: rgba(255,255,255,0.06); border-radius: 14px;
+        margin-top: 14px; position: relative; cursor: pointer;
+        border: 1px solid rgba(255,255,255,0.14);
+        backdrop-filter: blur(18px) saturate(160%);
+        -webkit-backdrop-filter: blur(18px) saturate(160%);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
+        transition: border-color 0.15s;
+        flex-shrink: 0;
+        /* BEZ ovoga, kad ukupna visina fali (npr. vertikalan TikTok/Instagram
+           video u #player-wrap trazi vise prostora), flexbox po defaultu
+           STISKA i ovaj element ispod njegove zadane 38px visine da nadje
+           mjesta - traka onda ispadne kao tanka crta umjesto prave trake za
+           rezanje. flex-shrink:0 to sprijeci - ova traka ZADRZAVA 38px bez
+           obzira sto se desava s ostatkom rasporeda. */
+      }}
+      #timeline-container:hover {{ border-color: {ACCENT}; }}
+      #timeline-selection {{
+        position: absolute; top: 0; bottom: 0; background: rgba(156, 45, 79, 0.32);
+        border-left: 2px solid {ACCENT}; border-right: 2px solid {ACCENT};
+        pointer-events: auto; display: none; border-radius: 14px; cursor: grab;
+      }}
+      #timeline-selection:active {{ cursor: grabbing; }}
+      .selection-handle {{
+        position: absolute; top: 0; bottom: 0; width: 14px; cursor: ew-resize;
+        z-index: 4; display: flex; align-items: center; justify-content: center;
+      }}
+      .selection-handle::after {{
+        content: ""; width: 4px; height: 60%; border-radius: 3px;
+        background: rgba(255,255,255,0.9); box-shadow: 0 0 4px rgba(0,0,0,0.4);
+      }}
+      #handle-left {{ left: -7px; }}
+      #handle-right {{ right: -7px; }}
+      #dodaj-plus {{
+        position: absolute; top: 50%; right: -26px; transform: translateY(-50%);
+        width: 20px; height: 20px; border-radius: 50%; background: {ACCENT};
+        color: white; font-size: 14px; font-weight: bold; line-height: 1;
+        display: none; align-items: center; justify-content: center; cursor: pointer;
+        z-index: 6; box-shadow: 0 2px 6px rgba(0,0,0,0.5); user-select: none;
+      }}
+      #dodaj-plus:hover {{ background: {ACCENT_HOVER}; transform: translateY(-50%) scale(1.12); }}
+      #drag-tooltip {{
+        position: absolute; bottom: calc(100% + 8px); transform: translateX(-50%);
+        background: {CARD}; color: {TEXT}; border: 1px solid {ACCENT};
+        border-radius: 10px; padding: 5px 10px; font-size: 11px; font-weight: 700;
+        white-space: nowrap; pointer-events: none; display: none; z-index: 5;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+      }}
+      .timeline-hint {{ font-size: 10px; color: {SUBTEXT}; text-align: center; margin-top: 6px; flex-shrink: 0; }}
+
+      .info-red {{ display:flex; justify-content:space-between; width:100%; margin-top:10px; font-size:12px; color:{SUBTEXT}; flex-shrink: 0; }}
+      .info-red span {{ font-weight: 600; color: {TEXT}; }}
+
+      .kontrole {{ margin-top:14px; display:flex; align-items:center; gap:8px; width:100%; justify-content:center; flex-wrap:wrap; flex-shrink: 0; }}
+      button {{
+        background: linear-gradient(135deg, {ACCENT}, #5e5ce6);
+        color:white; border:none; border-radius:999px;
+        padding:10px 18px; font-size:12px; font-weight:600; cursor:pointer;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.35), 0 4px 14px rgba(156,45,79,0.35);
+        transition: filter 0.15s, transform 0.1s;
+      }}
+      button:hover {{ filter: brightness(1.12); }}
+      button:active {{ transform: scale(0.96); }}
+      button.secondary {{
+        background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.15);
+        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      }}
+      button.secondary:hover {{ background: rgba(255,255,255,0.14); }}
+      button.secondary.aktivno {{ background: linear-gradient(135deg, {ACCENT}, #5e5ce6); border-color: transparent; }}
+      button.icon-btn {{ padding: 10px 14px; }}
+
+      .shorts-panel {{
+        margin-top: 16px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
+        border-radius: 18px; padding: 14px 18px; width: 100%; display: flex; align-items: center;
+        justify-content: space-between; gap: 12px; flex-wrap: wrap;
+        backdrop-filter: blur(18px) saturate(160%); -webkit-backdrop-filter: blur(18px) saturate(160%);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
+        flex-shrink: 0;
+      }}
+      .shorts-panel label {{ font-size: 12px; font-weight: bold; color: {SUBTEXT}; }}
+      .shorts-panel input {{
+        background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.16); color: {TEXT};
+        border-radius: 10px; padding: 7px 10px; width: 80px; font-size: 12px; text-align: center; outline: none;
+      }}
+      .shorts-panel input:focus {{ border-color: {ACCENT}; }}
+      .btn-download-short {{ background: linear-gradient(135deg, {SUCCESS}, #28b446); color: #06210c; font-weight: bold; }}
+      .btn-download-short:hover {{ filter: brightness(1.1); }}
+      .btn-dodaj-odabir {{
+        background: rgba(156,45,79,0.16); color: {ACCENT}; border: 1px solid rgba(156,45,79,0.5);
+        box-shadow: none;
+      }}
+      .btn-dodaj-odabir:hover {{ background: rgba(156,45,79,0.28); filter: none; }}
+
+      /* --- lista više isječaka odjednom --- */
+      #multi-panel {{ width: 100%; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }}
+      #lista-selekcija {{
+        display: flex; flex-direction: column; gap: 6px;
+        max-height: 168px; overflow-y: auto; padding-right: 2px;
+        /* BITNO: body ima overflow:hidden (nema skrolanja stranice), a ova
+           lista (flex-shrink:0 na #multi-panel) je znala narasti VISE od
+           dostupnog prostora kod 6+ isjecaka - dugme "Skini sve isjecke"
+           (koje je ISPOD ove liste, ne unutar nje) je time postajalo fizicki
+           nedohvatljivo, bez ikakvog nacina da mu se dođe. Sad se SAMO ova
+           lista skrola interno (max-height + overflow-y), a dugme ostaje
+           uvijek vidljivo ispod nje, koliko god isjecaka bilo dodano. */
+      }}
+      #lista-selekcija::-webkit-scrollbar {{ width: 6px; }}
+      #lista-selekcija::-webkit-scrollbar-thumb {{ background: {BORDER}; border-radius: 3px; }}
+      .selekcija-red {{
+        background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
+        border-radius: 14px; padding: 10px 14px; display: flex; align-items: center; gap: 14px;
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+        transition: border-color 0.2s, background 0.2s;
+      }}
+      .selekcija-red.aktivna {{
+        border-color: {ACCENT}; background: rgba(156,45,79,0.10);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 0 0 1px rgba(156,45,79,0.35);
+      }}
+      .selekcija-broj {{ font-weight: 700; font-size: 13px; color: {SUBTEXT}; min-width: 16px; }}
+      .selekcija-polja {{ flex: 1; display: flex; gap: 18px; flex-wrap: wrap; }}
+      .selekcija-polje {{ display: flex; flex-direction: column; gap: 4px; }}
+      .selekcija-polje label {{
+        font-size: 9px; font-weight: 700; color: {SUBTEXT}; text-transform: uppercase; letter-spacing: .05em;
+      }}
+      .selekcija-polje input {{
+        background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.16); color: {TEXT};
+        border-radius: 8px; padding: 6px 10px; font-size: 12px; width: 110px; outline: none;
+      }}
+      .selekcija-polje input:focus {{ border-color: {ACCENT}; }}
+      .sel-obrisi {{
+        background: rgba(255,69,58,0.15); color: {DANGER}; border: 1px solid rgba(255,69,58,0.35);
+        padding: 8px 10px; box-shadow: none;
+      }}
+      .sel-obrisi:hover {{ background: rgba(255,69,58,0.28); filter: none; }}
+      #btn-skini-vise {{ width: 100%; display: none; }}
+
+      .timeline-multi-blok {{
+        position: absolute; top: 0; bottom: 0; background: rgba(156, 45, 79, 0.28);
+        border-left: 2px solid {ACCENT}; border-right: 2px solid {ACCENT}; border-radius: 14px;
+        cursor: grab; z-index: 2;
+      }}
+      .timeline-multi-blok:active {{ cursor: grabbing; }}
+      .multi-blok-handle {{
+        position: absolute; top: 0; bottom: 0; width: 12px; cursor: ew-resize;
+        z-index: 4; display: flex; align-items: center; justify-content: center;
+      }}
+      .multi-blok-handle::after {{
+        content: ""; width: 3px; height: 55%; border-radius: 3px;
+        background: rgba(255,255,255,0.85); box-shadow: 0 0 3px rgba(0,0,0,0.4);
+      }}
+      .multi-blok-handle-left {{ left: -6px; }}
+      .multi-blok-handle-right {{ right: -6px; }}
+
+      #status-bar {{ margin-top: 10px; font-size: 12px; font-weight: 600; color: {SUCCESS}; text-align: center; min-height: 16px; flex-shrink: 0; }}
+
+      #volume-wrap {{
+        position: absolute; bottom: 12px; right: 12px; display:flex; align-items:center;
+        gap: 6px; background: rgba(10,11,24,0.55); padding: 7px 12px; border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.15);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      }}
+      #volume-slider {{ width: 70px; accent-color: {ACCENT}; cursor: pointer; }}
+    </style>
+    </head>
+    <body>
+    <div id="omot">
+      <div id="player-wrap">
+        {player_element}
+        <div id="volume-wrap">
+          <button class="icon-btn secondary" id="btn-mute" onclick="toggleMute()" style="padding:5px 9px;">🔊</button>
+          <input type="range" id="volume-slider" min="0" max="100" value="100" oninput="promijeniGlasnocu(this.value)">
+        </div>
+      </div>
+
+      <div id="timeline-container">
+        <div id="timeline-selection">
+          <div class="selection-handle" id="handle-left"></div>
+          <div class="selection-handle" id="handle-right"></div>
+          <div id="dodaj-plus" title="{PT['add_another_hint']}">+</div>
+        </div>
+        <div id="drag-tooltip"></div>
+      </div>
+      <div class="timeline-hint">{PT['drag_hint']}</div>
+
+      <div class="info-red">
+        <div>{PT['trenutno']}: <span id="vrijeme-trenutno">00:00:00</span></div>
+        <div id="trajanje-isjecka-info" style="color:{SUCCESS}; font-weight:bold;">{PT['isjecak_prefix']}: {PT['nije_oznaceno']}</div>
+        <div>{PT['ukupno']}: <span id="vrijeme-ukupno">00:00:00</span></div>
+      </div>
+
+      <div class="kontrole">
+        <button class="secondary icon-btn" onclick="pomakniZa(-5)" title="{PT['back5_title']}">⏪ -5s</button>
+        <button class="secondary icon-btn" id="btn-play" onclick="togglePlay()" title="{PT['playpause_title']}">{PT['playpause_text']}</button>
+        <button class="secondary icon-btn" onclick="pomakniZa(5)" title="{PT['fwd5_title']}">⏩ +5s</button>
+        {cc_dugme}
+        <button onclick="oznaciPocetak()" title="{PT['set_start_title']}">{PT['set_start_text']}</button>
+        <button onclick="oznaciKraj()" title="{PT['set_end_title']}">{PT['set_end_text']}</button>
+      </div>
+
+      <div class="shorts-panel">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span style="color:{TEXT}; font-size:12px; font-weight:bold;">{PT['current_selection']}</span>
+          <label>{PT['od_label']}</label>
+          <input type="text" id="input-od" placeholder="00:00:00">
+          <label>{PT['do_label']}</label>
+          <input type="text" id="input-do" placeholder="00:00:00">
+        </div>
+        <div>
+          <button class="btn-dodaj-odabir" onclick="dodajUListu()">{PT['add_selection']}</button>
+        </div>
+      </div>
+
+      <div id="multi-panel">
+        <div id="lista-selekcija"></div>
+        <button class="btn-download-short" id="btn-skini-vise" onclick="skiniViseIsjecaka()">{PT['download_all_clips']}</button>
+      </div>
+
+      <div id="status-bar">{PT['loading_player']}</div>
+    </div>
+    {head_script}
+    <script>
+      var player;
+      var trajanjeVid = 0;
+      var selectionBox = document.getElementById('timeline-selection');
+      var pocSec = null, krajSec = null;
+      var seekTimeout = null;
+      var spreman = false;
+      var ccUkljucen = false;
+      var muted = false;
+      var fallbackPokrenut = false;
+
+      // Auto-formatiranje "Trenutni odabir" OD/DO polja dok korisnik rucno
+      // upisuje vrijeme - sam ubacuje ":" na ispravna mjesta (HH:MM:SS) dok
+      // tipka, umjesto da korisnik mora sam paziti na dvotocke.
+      function autoFormatirajVrijeme(e) {{
+        var el = e.target;
+        var cifre = el.value.replace(/\\D/g, '').slice(0, 6);  // samo znamenke, max 6 (HHMMSS)
+        var formatirano = '';
+        for (var i = 0; i < cifre.length; i++) {{
+          if (i === 2 || i === 4) formatirano += ':';
+          formatirano += cifre[i];
+        }}
+        el.value = formatirano;
+      }}
+      document.getElementById('input-od').addEventListener('input', autoFormatirajVrijeme);
+      document.getElementById('input-do').addEventListener('input', autoFormatirajVrijeme);
+
+      function formatiraj(t) {{
+        // HH:MM:SS - uvijek prikazuje sat/minutu/sekundu (npr. "00:03:45"),
+        // ne samo minute:sekunde, da bude jasno i za dulje videe.
+        if (isNaN(t)) return "00:00:00";
+        t = Math.max(0, Math.floor(t));
+        var h = Math.floor(t / 3600);
+        var m = Math.floor((t % 3600) / 60);
+        var s = t % 60;
+        var dvocifreno = function(n) {{ return (n < 10 ? "0" : "") + n; }};
+        return dvocifreno(h) + ":" + dvocifreno(m) + ":" + dvocifreno(s);
+      }}
+{init_script}
+      function azurirajPlayhead() {{
+        if (!spreman || !trajanjeVid) return;
+        var t = player.getCurrentTime();
+        document.getElementById('vrijeme-trenutno').innerText = formatiraj(t);
+        var stanje = player.getPlayerState();
+        document.getElementById('btn-play').innerText = (stanje === 1) ? '{PT["pause_text"]}' : '{PT["play_text"]}';
+      }}
+
+      // ---- klik za premotavanje ILI povlacenje (drag) da izravno oznacis
+      // isjecak na traci - stil kao u referentnom editoru (NVIDIA ShadowPlay).
+      // Klik (bez pomicanja) na praznu traku = premotaj. Povlacenje po praznoj
+      // traci = napravi novu selekciju. Povlacenje LIJEVOG/DESNOG hvatista
+      // postojece selekcije = pomjeri POCETAK ili KRAJ. Povlacenje SREDINE
+      // postojece selekcije = pomjeri CIJELI isjecak (zadrzavajuci trajanje). ----
+      var dragTooltip = document.getElementById('drag-tooltip');
+      var timelineEl = document.getElementById('timeline-container');
+      var handleLijevo = document.getElementById('handle-left');
+      var handleDesno = document.getElementById('handle-right');
+      var dragPocetnaX = null, dragJePravaSelekcija = false;
+
+      function pozicijaUSekundama(clientX) {{
+        var rect = timelineEl.getBoundingClientRect();
+        var udio = (clientX - rect.left) / rect.width;
+        udio = Math.min(Math.max(udio, 0), 1);
+        return udio * trajanjeVid;
+      }}
+
+      function prikaziTooltip(sekOd, sekDo) {{
+        if (!trajanjeVid) return;
+        var sredina = ((sekOd + sekDo) / 2 / trajanjeVid) * 100;
+        dragTooltip.style.left = sredina + '%';
+        dragTooltip.innerText = formatiraj(Math.min(sekOd, sekDo)) + ' → ' + formatiraj(Math.max(sekOd, sekDo));
+        dragTooltip.style.display = 'block';
+      }}
+
+      function primijeniOdDo(od, doo) {{
+        pocSec = od; krajSec = doo;
+        document.getElementById('input-od').value = formatiraj(pocSec);
+        document.getElementById('input-do').value = formatiraj(krajSec);
+        window.pywebview.api.oznaci_pocetak(pocSec);
+        window.pywebview.api.oznaci_kraj(krajSec);
+        azurirajRaspon();
+      }}
+
+      function zapocniPomjeranjeRuba(e, rubKojiSePomjera) {{
+        e.stopPropagation();
+        function naPomicanje(ev) {{
+          var nova = pozicijaUSekundama(ev.clientX);
+          var od = (rubKojiSePomjera === 'od') ? Math.min(nova, krajSec - 0.1) : pocSec;
+          var doo = (rubKojiSePomjera === 'do') ? Math.max(nova, pocSec + 0.1) : krajSec;
+          selectionBox.style.left = (od / trajanjeVid * 100) + '%';
+          selectionBox.style.width = ((doo - od) / trajanjeVid * 100) + '%';
+          prikaziTooltip(od, doo);
+        }}
+        function naOtpustanje(ev) {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+          var nova = pozicijaUSekundama(ev.clientX);
+          var od = (rubKojiSePomjera === 'od') ? Math.min(nova, krajSec - 0.1) : pocSec;
+          var doo = (rubKojiSePomjera === 'do') ? Math.max(nova, pocSec + 0.1) : krajSec;
+          primijeniOdDo(od, doo);
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }}
+
+      function zapocniPomjeranjeCijele(e) {{
+        e.stopPropagation();
+        var trajanjeIsjecka = krajSec - pocSec;
+        var pocetniX = e.clientX;
+        var pocetniOd = pocSec;
+        function naPomicanje(ev) {{
+          var pomakSek = pozicijaUSekundama(ev.clientX) - pozicijaUSekundama(pocetniX);
+          var od = Math.min(Math.max(pocetniOd + pomakSek, 0), trajanjeVid - trajanjeIsjecka);
+          var doo = od + trajanjeIsjecka;
+          selectionBox.style.left = (od / trajanjeVid * 100) + '%';
+          selectionBox.style.width = ((doo - od) / trajanjeVid * 100) + '%';
+          prikaziTooltip(od, doo);
+        }}
+        function naOtpustanje(ev) {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+          var pomakSek = pozicijaUSekundama(ev.clientX) - pozicijaUSekundama(pocetniX);
+          var od = Math.min(Math.max(pocetniOd + pomakSek, 0), trajanjeVid - trajanjeIsjecka);
+          primijeniOdDo(od, od + trajanjeIsjecka);
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }}
+
+      handleLijevo.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeRuba(e, 'od'); }});
+      handleDesno.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeRuba(e, 'do'); }});
+      selectionBox.addEventListener('mousedown', function(e) {{
+        if (pocSec === null || krajSec === null) return;
+        zapocniPomjeranjeCijele(e);
+      }});
+
+      timelineEl.addEventListener('mousedown', function(e) {{
+        if (!spreman || !trajanjeVid) {{
+          document.getElementById('status-bar').innerText = '{PT["still_loading"]}';
+          return;
+        }}
+        dragPocetnaX = e.clientX;
+        dragJePravaSelekcija = false;
+
+        function naPomicanje(ev) {{
+          if (Math.abs(ev.clientX - dragPocetnaX) < 6) return;  // ne racunaj sitne pomake kao drag
+          dragJePravaSelekcija = true;
+          var sekPocetak = pozicijaUSekundama(dragPocetnaX);
+          var sekTrenutno = pozicijaUSekundama(ev.clientX);
+          var od = Math.min(sekPocetak, sekTrenutno), doo = Math.max(sekPocetak, sekTrenutno);
+          selectionBox.style.left = (od / trajanjeVid * 100) + '%';
+          selectionBox.style.width = ((doo - od) / trajanjeVid * 100) + '%';
+          selectionBox.style.display = 'block';
+          prikaziTooltip(od, doo);
+        }}
+
+        function naOtpustanje(ev) {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+
+          if (!dragJePravaSelekcija) {{
+            // obican klik (bez povlacenja) - samo premotaj, kao prije
+            var novaPozicija = pozicijaUSekundama(ev.clientX);
+            document.getElementById('vrijeme-trenutno').innerText = formatiraj(novaPozicija);
+            if (seekTimeout) clearTimeout(seekTimeout);
+            seekTimeout = setTimeout(function() {{ player.seekTo(novaPozicija, true); }}, 120);
+            return;
+          }}
+
+          // stvarno povlacenje po PRAZNOJ traci - napravi novu selekciju
+          // (povlacenje hvatista/sredine postojece selekcije se hvata gore,
+          // prije nego stigne ovamo - e.stopPropagation() to sprijeci)
+          var sekPocetak = pozicijaUSekundama(dragPocetnaX);
+          var sekKraj = pozicijaUSekundama(ev.clientX);
+          primijeniOdDo(Math.min(sekPocetak, sekKraj), Math.max(sekPocetak, sekKraj));
+        }}
+
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }});
+
+      function pomakniZa(s) {{
+        if (!spreman) return;
+        player.seekTo(Math.max(0, player.getCurrentTime() + s), true);
+      }}
+
+      function togglePlay() {{
+        if (!spreman) return;
+        var stanje = player.getPlayerState();
+        if (stanje === 1) player.pauseVideo(); else player.playVideo();
+      }}
+
+      function toggleMute() {{
+        if (!spreman) return;
+        muted = !muted;
+        var btnMute = document.getElementById('btn-mute');
+        var slider = document.getElementById('volume-slider');
+        if (muted) {{
+          player.mute();
+          btnMute.innerText = '🔇';
+        }} else {{
+          player.unMute();
+          btnMute.innerText = '🔊';
+          if (parseInt(slider.value) === 0) {{ slider.value = 50; player.setVolume(50); }}
+        }}
+      }}
+
+      function promijeniGlasnocu(v) {{
+        if (!spreman) return;
+        player.setVolume(v);
+        var btnMute = document.getElementById('btn-mute');
+        if (parseInt(v) === 0) {{
+          muted = true;
+          btnMute.innerText = '🔇';
+        }} else {{
+          if (muted) {{ player.unMute(); }}
+          muted = false;
+          btnMute.innerText = '🔊';
+        }}
+      }}
+
+      function oznaciPocetak() {{
+        if (!spreman) return;
+        pocSec = player.getCurrentTime();
+        var tFmt = formatiraj(pocSec);
+        document.getElementById('input-od').value = tFmt;
+        window.pywebview.api.oznaci_pocetak(pocSec);
+        azurirajRaspon();
+      }}
+
+      function oznaciKraj() {{
+        if (!spreman) return;
+        krajSec = player.getCurrentTime();
+        var tFmt = formatiraj(krajSec);
+        document.getElementById('input-do').value = tFmt;
+        window.pywebview.api.oznaci_kraj(krajSec);
+        azurirajRaspon();
+      }}
+
+      function azurirajRaspon() {{
+        if (pocSec !== null && krajSec !== null && trajanjeVid) {{
+          selectionBox.style.left = (pocSec / trajanjeVid) * 100 + '%';
+          selectionBox.style.width = ((krajSec - pocSec) / trajanjeVid) * 100 + '%';
+          selectionBox.style.display = 'block';
+          document.getElementById('dodaj-plus').style.display = 'flex';
+          document.getElementById('trajanje-isjecka-info').innerText =
+            "{PT['isjecak_prefix']}: " + formatiraj(pocSec) + " → " + formatiraj(krajSec) +
+            "  (" + formatiraj(krajSec - pocSec) + ")";
+        }}
+      }}
+
+      // ---- lista više isječaka odjednom ----
+      var brojacSelekcija = 0;
+
+      function dodajRedUListu(odVal, doVal) {{
+        brojacSelekcija += 1;
+        var id = brojacSelekcija;
+        var red = document.createElement('div');
+        red.className = 'selekcija-red';
+        red.id = 'sel-' + id;
+        red.innerHTML =
+          '<span class="selekcija-broj"></span>' +
+          '<div class="selekcija-polja">' +
+            '<div class="selekcija-polje"><label>{PT["od_label_short"]}</label><input type="text" class="sel-od" value="' + odVal + '"></div>' +
+            '<div class="selekcija-polje"><label>{PT["do_label_short"]}</label><input type="text" class="sel-do" value="' + doVal + '"></div>' +
+          '</div>' +
+          '<button class="secondary icon-btn sel-obrisi" onclick="obrisiSelekciju(' + id + ')" title="{PT["remove_clip_title"]}">🗑</button>';
+        document.getElementById('lista-selekcija').appendChild(red);
+        red.querySelector('.sel-od').addEventListener('input', azurirajTimelineSelekcije);
+        red.querySelector('.sel-do').addEventListener('input', azurirajTimelineSelekcije);
+        red.querySelector('.sel-od').addEventListener('focus', function() {{ oznaciAktivnuSelekciju(id); }});
+        red.querySelector('.sel-do').addEventListener('focus', function() {{ oznaciAktivnuSelekciju(id); }});
+        oznaciAktivnuSelekciju(id);
+        azurirajListu();
+        return id;
+      }}
+
+      function dodajUListu() {{
+        var odVal = document.getElementById('input-od').value;
+        var doVal = document.getElementById('input-do').value;
+        if (!odVal || !doVal) {{
+          document.getElementById('status-bar').innerText = '{PT["add_selection_warn"]}';
+          return;
+        }}
+        dodajRedUListu(odVal, doVal);
+
+        // ocisti "trenutni odabir" polja da je spremno za sljedece oznacavanje
+        document.getElementById('input-od').value = '';
+        document.getElementById('input-do').value = '';
+        pocSec = null; krajSec = null;
+        selectionBox.style.display = 'none';
+        document.getElementById('dodaj-plus').style.display = 'none';
+        document.getElementById('trajanje-isjecka-info').innerText = '{PT["isjecak_prefix"]}: {PT["nije_oznaceno"]}';
+      }}
+
+      // ---- "+" na kraju hvatista - odmah doda JOS JEDAN isjecak (kratak,
+      // odmah nakon trenutnog, ili prije njega ako nema mjesta iza) direktno
+      // u listu, spreman da ga korisnik povuce/rastegne na tocno mjesto koje
+      // zeli - brzi precac umjesto rucnog povlacenja nove selekcije od nule ----
+      document.getElementById('dodaj-plus').addEventListener('click', function(e) {{
+        e.stopPropagation();
+        if (pocSec === null || krajSec === null || !trajanjeVid) return;
+        var trajanjeNovog = Math.min(krajSec - pocSec, 10);
+        var noviOd = krajSec;
+        var noviDo = Math.min(noviOd + trajanjeNovog, trajanjeVid);
+        if (noviDo - noviOd < 0.5) {{
+          // nema dovoljno prostora NAKON trenutne selekcije - probaj PRIJE nje
+          noviDo = pocSec;
+          noviOd = Math.max(noviDo - trajanjeNovog, 0);
+        }}
+        if (noviDo - noviOd < 0.5) return;  // ni tu nema mjesta (video prekratak) - odustani tiho
+        dodajRedUListu(formatiraj(noviOd), formatiraj(noviDo));
+      }});
+
+      function obrisiSelekciju(id) {{
+        var el = document.getElementById('sel-' + id);
+        if (el) el.remove();
+        azurirajListu();
+      }}
+
+      function oznaciAktivnuSelekciju(id) {{
+        document.querySelectorAll('.selekcija-red').forEach(function(red) {{
+          red.classList.toggle('aktivna', red.id === 'sel-' + id);
+        }});
+      }}
+
+      function azurirajListu() {{
+        var redovi = document.querySelectorAll('.selekcija-red');
+        redovi.forEach(function(red, i) {{
+          red.querySelector('.selekcija-broj').innerText = (i + 1) + '.';
+        }});
+        var btn = document.getElementById('btn-skini-vise');
+        if (redovi.length > 0) {{
+          btn.style.display = 'block';
+          btn.innerText = '{PT["download_all_clips"]} (' + redovi.length + ')';
+        }} else {{
+          btn.style.display = 'none';
+        }}
+        azurirajTimelineSelekcije();
+      }}
+
+      function azurirajTimelineSelekcije() {{
+        document.querySelectorAll('.timeline-multi-blok').forEach(function(e) {{ e.remove(); }});
+        if (!trajanjeVid) return;
+        document.querySelectorAll('.selekcija-red').forEach(function(red) {{
+          var od = parseVrijemeJS(red.querySelector('.sel-od').value);
+          var doo = parseVrijemeJS(red.querySelector('.sel-do').value);
+          if (od === null || doo === null || doo <= od) return;
+          var blok = document.createElement('div');
+          blok.className = 'timeline-multi-blok';
+          blok.style.left = (od / trajanjeVid * 100) + '%';
+          blok.style.width = ((doo - od) / trajanjeVid * 100) + '%';
+
+          var hLijevo = document.createElement('div');
+          hLijevo.className = 'multi-blok-handle multi-blok-handle-left';
+          var hDesno = document.createElement('div');
+          hDesno.className = 'multi-blok-handle multi-blok-handle-right';
+          blok.appendChild(hLijevo);
+          blok.appendChild(hDesno);
+
+          var redId = red.id;
+          hLijevo.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeMultiRuba(e, redId, 'od'); }});
+          hDesno.addEventListener('mousedown', function(e) {{ zapocniPomjeranjeMultiRuba(e, redId, 'do'); }});
+          blok.addEventListener('mousedown', function(e) {{
+            if (e.target === hLijevo || e.target === hDesno) return;
+            zapocniPomjeranjeMultiCijelog(e, redId, od, doo);
+          }});
+
+          document.getElementById('timeline-container').appendChild(blok);
+        }});
+      }}
+
+      // ---- povlacenje VEC DODANIH isjecaka izravno na traci - sinkronizira
+      // se s Od/Do poljima u listi ispod (koja su "izvor istine"), pa se
+      // azurirajTimelineSelekcije() samo ponovno iscrta prema njima ----
+      function zapocniPomjeranjeMultiRuba(e, redId, kojiRub) {{
+        e.stopPropagation();
+        var red = document.getElementById(redId);
+        var odInput = red.querySelector('.sel-od');
+        var doInput = red.querySelector('.sel-do');
+
+        function naPomicanje(ev) {{
+          var nova = pozicijaUSekundama(ev.clientX);
+          var trenOd = parseVrijemeJS(odInput.value);
+          var trenDo = parseVrijemeJS(doInput.value);
+          if (kojiRub === 'od') {{
+            nova = Math.min(nova, trenDo - 0.1);
+            odInput.value = formatiraj(nova);
+            prikaziTooltip(nova, trenDo);
+          }} else {{
+            nova = Math.max(nova, trenOd + 0.1);
+            doInput.value = formatiraj(nova);
+            prikaziTooltip(trenOd, nova);
+          }}
+          azurirajTimelineSelekcije();
+        }}
+        function naOtpustanje() {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }}
+
+      function zapocniPomjeranjeMultiCijelog(e, redId, pocOd, pocDo) {{
+        e.stopPropagation();
+        var red = document.getElementById(redId);
+        var odInput = red.querySelector('.sel-od');
+        var doInput = red.querySelector('.sel-do');
+        var trajanjeIsjecka = pocDo - pocOd;
+        var pocetniX = e.clientX;
+
+        function naPomicanje(ev) {{
+          var pomakSek = pozicijaUSekundama(ev.clientX) - pozicijaUSekundama(pocetniX);
+          var od = Math.min(Math.max(pocOd + pomakSek, 0), trajanjeVid - trajanjeIsjecka);
+          odInput.value = formatiraj(od);
+          doInput.value = formatiraj(od + trajanjeIsjecka);
+          azurirajTimelineSelekcije();
+          prikaziTooltip(od, od + trajanjeIsjecka);
+        }}
+        function naOtpustanje() {{
+          document.removeEventListener('mousemove', naPomicanje);
+          document.removeEventListener('mouseup', naOtpustanje);
+          dragTooltip.style.display = 'none';
+        }}
+        document.addEventListener('mousemove', naPomicanje);
+        document.addEventListener('mouseup', naOtpustanje);
+      }}
+
+      function parseVrijemeJS(tekst) {{
+        tekst = (tekst || '').trim();
+        if (!tekst) return null;
+        if (tekst.indexOf(':') >= 0) {{
+          var dijelovi = tekst.split(':').map(Number);
+          if (dijelovi.some(isNaN)) return null;
+          var sek = 0;
+          dijelovi.forEach(function(d) {{ sek = sek * 60 + d; }});
+          return sek;
+        }}
+        var v = parseFloat(tekst);
+        return isNaN(v) ? null : v;
+      }}
+
+      function skiniViseIsjecaka() {{
+        var lista = [];
+        document.querySelectorAll('.selekcija-red').forEach(function(red) {{
+          var od = red.querySelector('.sel-od').value;
+          var doo = red.querySelector('.sel-do').value;
+          if (od && doo) lista.push([od, doo]);
+        }});
+        if (lista.length === 0) {{
+          document.getElementById('status-bar').innerText = '{PT["add_clip_warn"]}';
+          return;
+        }}
+        window.pywebview.api.skini_visestruke_isjecke(lista);
+        document.getElementById('status-bar').innerText =
+          '{PT["download_started"]}'.replace('{{0}}', lista.length);
+      }}
+    </script>
+    </body>
+    </html>
+    """
+
+
+class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
+    """SimpleHTTPRequestHandler prosiren podrskom za HTTP Range zahtjeve.
+    Standardni SimpleHTTPRequestHandler NE podrzava Range, pa <video> tag ne moze
+    premotavati (seek) - motor ne zna kako dohvatiti proizvoljni dio fajla, pa
+    dopusta samo puštanje od pocetka do kraja bez skakanja po traci."""
+    protocol_version = "HTTP/1.1"
+
+    def send_head(self):
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            return super().send_head()
+        try:
+            f = open(path, "rb")
+        except OSError:
+            self.send_error(404, "File not found")
+            return None
+
+        file_len = os.fstat(f.fileno()).st_size
+        ctype = self.guess_type(path)
+        range_header = self.headers.get("Range")
+
+        if range_header:
+            m = re.match(r"bytes=(\d*)-(\d*)", range_header)
+            if m:
+                start_s, end_s = m.groups()
+                start = int(start_s) if start_s else 0
+                end = int(end_s) if end_s else file_len - 1
+                end = min(end, file_len - 1)
+                if start > end or start >= file_len:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{file_len}")
+                    self.end_headers()
+                    f.close()
+                    return None
+                length = end - start + 1
+                self.send_response(206)
+                self.send_header("Content-type", ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_len}")
+                self.send_header("Content-Length", str(length))
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self.end_headers()
+                f.seek(start)
+                self._raspon_duljina = length
+                return f
+
+        self.send_response(200)
+        self.send_header("Content-type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(file_len))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.end_headers()
+        self._raspon_duljina = None
+        return f
+
+    def copyfile(self, source, outputfile):
+        duljina = getattr(self, "_raspon_duljina", None)
+        if duljina is None:
+            return super().copyfile(source, outputfile)
+        preostalo = duljina
+        while preostalo > 0:
+            komad = source.read(min(65536, preostalo))
+            if not komad:
+                break
+            try:
+                outputfile.write(komad)
+            except (BrokenPipeError, ConnectionAbortedError):
+                break
+            preostalo -= len(komad)
+
+
+def pokreni_lokalni_server(temp_dir):
+    """Pokrece mali HTTP server na 127.0.0.1 - potreban da YouTube iframe API radi ispravno
+    (embed s file:// ili html= porijeklom cesto ne radi zbog YouTubeovih origin provjera),
+    i da lokalno servirani preview video (TikTok/ostalo) moze podrzavati premotavanje
+    (Range zahtjevi) - vidi RangeRequestHandler."""
+    handler = functools.partial(RangeRequestHandler, directory=temp_dir)
+    httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return port
+
+
+def pokreni_webview_proces(preview_url, queue_sanjac):
+    api = PlayerAPI(queue_sanjac)
+    webview.create_window("Mister Muscle — Timeline Player", url=preview_url, js_api=api, width=1180, height=760)
+    webview.start()
+
+
+def _cookie_u_netscape_redak(domena, putanja, secure, istice, naziv, vrijednost):
+    if not domena.startswith("."):
+        domena = "." + domena.lstrip(".")
+    return f"{domena}\tTRUE\t{putanja}\t{secure}\t{istice}\t{naziv}\t{vrijednost}"
+
+
+def pokreni_instagram_login_proces(cookies_izlazna_putanja, jezik):
+    """Pokrece se u ZASEBNOM procesu (isti obrazac kao pokreni_webview_proces
+    za fallback player) - otvara PRAVU Instagram stranicu za prijavu u
+    ugradjenom pywebview prozoru. Korisnik se prijavi normalno (ovo NIJE
+    lazna/phishing stranica, doslovno je instagram.com).
+
+    v3.2: PRIJE se izvlacenje kolacica (window.get_cookies()) pokusavalo u
+    'closing' event handleru, TOCNO u trenutku kad korisnik zatvori prozor -
+    to je rusilo cijelu app (vjerojatno COM/WebView2 threading problem kod
+    pozivanja te funkcije usred rusenja prozora). Sad se umjesto toga koristi
+    SLUZBENI, dokumentirani pywebview obrazac za pozadinski rad DOK JE prozor
+    OTVOREN i stabilan: 'webview.start(funkcija, window)' pokrene funkciju u
+    pozadinskoj niti dok GUI radi normalno. Ta funkcija periodicki (svake 2s)
+    PROVJERI je li se URL pomaknuo dalje od login stranice (znak da je
+    prijava uspjela) i ako jest, ODMAH spremi kolacice (dok je sve jos
+    stabilno) pa se sama ugasi - korisnik NE mora ni zatvarati prozor rucno,
+    zatvori se sam nakon uspjesne prijave."""
+    def dohvati_i_spremi_ako_prijavljen(window):
+        """Vraca True SAMO ako je pronadjen VALJAN Instagram sesijski kolacic
+        ('sessionid') - i tek TADA zapise kolacice u fajl. Provjera KOLACICA
+        (ne URL-a!) je pouzdan nacin da se prepozna STVARAN uspjeh, neovisno
+        o tome kroz koliko medjukoraka/preusmjeravanja je prijava prosla
+        (obican email+lozinka, ili "Login with Facebook" koji ide kroz
+        Facebookove OAuth ekrane prije povratka na Instagram) - URL se zna
+        privremeno "odmaknuti" od login stranice UZ PUT kroz takav tok a da
+        prijava jos NIJE stvarno zavrsena (upravo ono sto se dogadjalo s
+        "Login with Facebook" - stari kod je URL provjeru krivo protumacio
+        kao gotovu prijavu i zatvorio prozor prerano)."""
+        istice = str(int(time.time()) + 180 * 24 * 3600)  # 180 dana unaprijed
+        redovi = ["# Netscape HTTP Cookie File", "# Generated by Mister Muscle Downloader", ""]
+        ima_sesiju = False
+        for cookie_dict in window.get_cookies():
+            for naziv, morsel in cookie_dict.items():
+                if naziv == "sessionid" and morsel.value:
+                    ima_sesiju = True
+                domena = morsel["domain"] if morsel["domain"] else ".instagram.com"
+                putanja = morsel["path"] if morsel["path"] else "/"
+                secure = "TRUE" if morsel["secure"] else "FALSE"
+                redovi.append(_cookie_u_netscape_redak(domena, putanja, secure, istice, naziv, morsel.value))
+        if not ima_sesiju:
+            return False
+        with open(cookies_izlazna_putanja, "w", encoding="utf-8") as f:
+            f.write("\n".join(redovi) + "\n")
+        return True
+
+    def prati_prijavu(window):
+        # do 10 minuta cekanja (300 x 2s) - dovoljno za spor 2FA/OAuth tijek i sl.
+        for _ in range(300):
+            time.sleep(2)
+            try:
+                if dohvati_i_spremi_ako_prijavljen(window):
+                    window.destroy()
+                    return
+            except Exception:
+                return  # prozor je vjerojatno zatvoren rucno (prije uspjesne prijave) - gotovo
+
+    naslov = ("Prijavi se na Instagram (prozor će se sam zatvoriti)" if jezik == "hr"
+              else "Log into Instagram (window closes itself)")
+    window = webview.create_window(naslov, url="https://www.instagram.com/accounts/login/",
+                                   width=480, height=760)
+    webview.start(prati_prijavu, window)
+
+
+
+class App:
+    def __init__(self, root):
+        _log_pokretanja("App.__init__ ušao")
+        self.root = root
+        self.cfg = ucitaj_config()
+        _log_pokretanja("config učitan")
+        self.jezik = self.cfg.get("jezik", "en")
+        if self.jezik not in PRIJEVODI:
+            self.jezik = "en"
+
+        root.title(self.t("naslov_prozora"))
+        # Ikona prozora (naslovna traka, taskbar dok app radi) - ista ikona kao
+        # .exe fajl u Exploreru. Ako 'ikona.ico' iz nekog razloga ne postoji
+        # (npr. .exe je izgradjen bez nje), ovo se tiho preskace - app i dalje
+        # normalno radi, samo s Tkinterovom zadanom ikonom.
+        try:
+            _ip = _ikona_putanja()
+            if _ip:
+                root.iconbitmap(_ip)
+        except Exception:
+            pass
+        # Prisilno postavi "normal" (ne-maksimizirano) stanje prije nego sto
+        # uopce postavimo geometriju - da smo sto sigurniji da prozor NIJE
+        # zaglavljen u zoomed/maksimiziranom stanju iz bilo kojeg razloga.
+        try:
+            root.state("normal")
+        except Exception:
+            pass
+        root.geometry(self.cfg.get("prozor", "1240x820"))
+        # Sigurnosna mreza za poznat problem - ako je app ZADNJI
+        # PUT zatvorena dok je bila maksimizirana (ili je spremljena velicina s
+        # NEKOG DRUGOG, veceg monitora), geometry() moze vratiti/postaviti
+        # velicinu koja pokriva (skoro) citav trenutni ekran - pa prozor bude
+        # ogroman iako tehnicki NIJE maksimiziran, i "Restore" gumb nista ne
+        # mijenja jer je spremljena velicina VEC = ekran. Koristimo i
+        # winfo_vrootwidth/height (pokriva slucaj vise monitora) uz obicni
+        # winfo_screenwidth/height, sto god od to dvoje je veci broj.
+        root.update_idletasks()
+        try:
+            ekran_sirina = max(root.winfo_screenwidth(), root.winfo_vrootwidth())
+            ekran_visina = max(root.winfo_screenheight(), root.winfo_vrootheight())
+            if (root.winfo_width() >= ekran_sirina * 0.95
+                    or root.winfo_height() >= ekran_visina * 0.90):
+                root.geometry("1240x820")
+                root.update_idletasks()
+        except Exception:
+            pass
+        # v17.0.5: dosta manji minsize - prozor sad smije biti i malen/uzak
+        # (npr. kao suzena Discord kartica), ne samo veliki "desktop" raspored.
+        # Stvarna prilagodba rasporeda (lijevo+desno jedno pored drugog naspram
+        # jedno ispod drugog) radi se u _na_promjenu_velicine_prozora().
+        root.minsize(360, 480)
+        root.resizable(True, True)
+        root.configure(bg=BG)
+        self._centriraj_prozor()
+
+        # ---- stanje ----
+        self._queue_failed_urls = []
+        self._queue_total = 0
+        self._queue_finished = 0
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.aktivno_preuzimanje = False
+        self.otkazano = False
+        self.aktivni_proces = None
+        self.player_proces = None          # fallback: zaseban prozor (bez ugradnje)
+        self._webview_window = None        # ugradjeni player (Windows + pywin32)
+        self._webview_hwnd = None
+        self._webview_spreman = threading.Event()
+        self._blink_token = 0
+        self.queue_sanjac = multiprocessing.Queue()
+        self.trenutni_folder = self.cfg["izlazni_folder"]
+        self.temp_dir = tempfile.mkdtemp(prefix="mister_muscle_")
+        self.http_port = pokreni_lokalni_server(self.temp_dir) if PYWEBVIEW_DOSTUPAN else None
+        self.od_sek = None
+        self.do_sek = None
+        self._auto_ucitaj_after_id = None      # zakazani (debounced) poziv auto-ucitavanja playera
+        self._zadnji_auto_ucitani_link = None  # da se isti link ne ucitava iznova u krug
+        self._zadnji_clipboard_link = None     # zadnji link iz clipboarda koji smo vec obradili
+        self._prozor_ima_fokus = True          # pretpostavka pri pokretanju (prozor se tek otvorio)
+
+        self.var_nacin = tk.StringVar(value=self.cfg["nacin"])
+        # Normaliziraj spremljenu vrijednost na TRENUTNI jezik - ako je
+        # korisnik zadnji put birao na hrvatskom ("Najbolja") pa presao na
+        # engleski (zahtijeva restart, vidi _postavi_jezik), bez ovoga bi
+        # combobox i dalje pokazivao "Najbolja" usred inace engleskog UI-ja
+        # (Tkinter combobox prikaze BILO KOJI string u varijabli, cak i ako
+        # nije medju ponudjenim "values").
+        _pocetna_kvaliteta = self.cfg["kvaliteta"]
+        if self.jezik == "en" and _pocetna_kvaliteta == "Najbolja":
+            _pocetna_kvaliteta = "Best"
+        elif self.jezik != "en" and _pocetna_kvaliteta == "Best":
+            _pocetna_kvaliteta = "Najbolja"
+        self.var_kvaliteta = tk.StringVar(value=_pocetna_kvaliteta)
+        self.var_video_format = tk.StringVar(value=self.cfg.get("video_format", "mp4"))
+        self.var_audio_format = tk.StringVar(value=self.cfg["audio_format"])
+        self.var_omjer_slike = tk.StringVar(value=self.cfg.get("omjer_slike", "Original"))
+        self.var_cookies_browser = tk.StringVar(value=self.cfg.get("cookies_browser", "Chrome"))
+        self.var_cookies_izvor = tk.StringVar(value=self.cfg.get("cookies_izvor", "browser"))
+        self.var_cookies_fajl = tk.StringVar(value=self.cfg.get("cookies_fajl", ""))
+        self.var_h264 = tk.BooleanVar(value=bool(self.cfg["h264"]))
+        self.var_metapodaci = tk.BooleanVar(value=bool(self.cfg["metapodaci"]))
+
+        self._pripremi_stilove()
+        self._prilagodjena_traka_ok = self._izgradi_prilagodjenu_naslovnu_traku()
+        if not self._prilagodjena_traka_ok:
+            # Fallback ako prilagodjena traka nije uspjela (nije Windows, ili
+            # je nesto puklo) - barem DWM "tamni" stil na obicnom OS okviru.
+            _omoguci_tamnu_naslovnu_traku(self.root)
+            self.root.after(300, lambda: _omoguci_tamnu_naslovnu_traku(self.root))
+        self._izgradi_meni()
+        self._izgradi_glavni_dio()
+        self._izgradi_donju_traku()
+        self._izgradi_statusnu_traku()
+
+        self.root.protocol("WM_DELETE_WINDOW", self.zatvori)
+
+        self.ispisi(f"💪 {self.t('podnaslov_app')}")
+        if not PYWEBVIEW_DOSTUPAN:
+            self.ispisi(self.t("msg_need_pywebview"))
+        elif not EMBED_PLAYERA_DOSTUPAN:
+            self.ispisi(self.t("msg_need_pywin32"))
+        elif PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
+            self.ispisi(self.t("msg_black_player_hint"))
+        self._osvjezi_stanje_nacina()
+        threading.Thread(target=self._provjera_alata_pri_pokretanju, daemon=True).start()
+        if PYWEBVIEW_DOSTUPAN and JE_WINDOWS:
+            self.root.after(800, lambda: self._provjeri_webview2_pri_pokretanju(tih=True))
+        if PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
+            _log_pokretanja("pozivam _pripremi_ugradjeni_webview()")
+            self._pripremi_ugradjeni_webview()
+            _log_pokretanja("_pripremi_ugradjeni_webview() gotovo (samo registracija, ugradnja je async)")
+        self.root.after(400, self._provjeri_i_prikazi_novosti)
+        self.root.bind("<FocusIn>", self._na_fokus_prozora)
+        self.root.bind("<FocusOut>", self._na_gubitak_fokusa_prozora)
+        self.root.after(1000, self._pokreni_pracenje_clipboarda)
+        self.provjeri_queue()
+        _log_pokretanja("App.__init__ završio")
+
+    # ------------------------------------------------------------------ UI ---
+    def t(self, kljuc):
+        """Vraca prevedeni tekst za trenutno odabrani jezik (self.jezik) - ako
+        kljuc nedostaje u odabranom jeziku, tiho pada natrag na hrvatski, a ako
+        ni tamo ne postoji, vraca sam kljuc (da UI nikad ne ostane prazan)."""
+        return PRIJEVODI.get(self.jezik, {}).get(kljuc) or PRIJEVODI["hr"].get(kljuc, kljuc)
+
+    def _postavi_jezik(self, novi_jezik):
+        if novi_jezik == self.jezik:
+            return
+        self.jezik = novi_jezik
+        self.cfg["jezik"] = novi_jezik
+        spremi_config(self.cfg)
+        messagebox.showinfo(
+            "Jezik / Language",
+            "Postavka je spremljena. Ponovno pokreni aplikaciju da se promjena primijeni.\n\n"
+            "Setting saved. Restart the application for the change to take effect."
+        )
+
+    def _centriraj_prozor(self):
+        self.root.update_idletasks()
+        try:
+            s, v = self.root.geometry().split("+")[0].split("x")
+            s, v = int(s), int(v)
+        except Exception:
+            s, v = 1240, 820
+        x = max(0, (self.root.winfo_screenwidth() - s) // 2)
+        y = max(0, (self.root.winfo_screenheight() - v) // 3)
+        self.root.geometry(f"{s}x{v}+{x}+{y}")
+
+    def _pripremi_stilove(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Cyber.Horizontal.TProgressbar",
+                        troughcolor=TROUGH, background=SUCCESS, bordercolor=TROUGH, thickness=10)
+        style.configure("Cyber.TCombobox",
+                        fieldbackground=INPUT_BG, background=PAUSE_BG, foreground=TEXT,
+                        arrowcolor=TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+        style.map("Cyber.TCombobox",
+                  fieldbackground=[("readonly", INPUT_BG)],
+                  selectbackground=[("readonly", INPUT_BG)],
+                  selectforeground=[("readonly", TEXT)],
+                  foreground=[("readonly", TEXT)])
+        self.root.option_add("*TCombobox*Listbox.background", CARD)
+        self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "white")
+
+    def _izgradi_prilagodjenu_naslovnu_traku(self):
+        """Potpuno prilagođena naslovna traka umjesto Windows-ove zadane -
+        uklanja STVARNI OS okvir prozora (overrideredirect), pa se sve što OS
+        inače radi sam (pomjeranje, minimize/maximize/close dugmad, promjena
+        veličine, taskbar ikonica) mora RUČNO implementirati ovdje. Vraća
+        True ako je uspjelo, False ako ne (npr. nije Windows) - pozivatelj
+        tad koristi obični OS okvir (samo s DWM tamnim stilom) kao fallback.
+
+        SVE JE U JEDNOM TRY/EXCEPT - ako BILO ŠTA ovdje pukne, odmah se vrati
+        na normalan OS okvir umjesto da korisnik ostane zaglavljen s
+        prozorom koji se ne može ni pomjeriti ni zatvoriti.
+
+        POZNATA OGRANIČENJA (svjesna odluka, nisu bugovi):
+        - Gubi se Windows "Snap" (automatsko poravnanje na pola/četvrtinu
+          ekrana povlačenjem uz rub) - to je OS funkcija vezana uz pravi
+          prozorski okvir koji ovdje namjerno uklanjamo.
+        - Promjena veličine je moguća SAMO preko malog "grip" znaka u donjem
+          desnom kutu, ne povlačenjem bilo kojeg ruba.
+        - Samo na Windowsu - drugi OS-ovi zadržavaju normalan okvir."""
+        if not JE_WINDOWS or not KORISTI_PRILAGODJENU_NASLOVNU_TRAKU:
+            return False
+        try:
+            self.root.overrideredirect(True)
+            self._omoguci_taskbar_ikonu()
+            # Sigurnosni ponovni pokusaj s odgodom - ako je prvi put bilo
+            # prerano (prozor jos nije stvarno realiziran na OS razini),
+            # isti obrazac koji je vec pomogao za slicne Windows probleme
+            # drugdje u ovoj app.
+            self.root.after(500, self._omoguci_taskbar_ikonu)
+
+            self._maksimiziran = False
+            self._geometrija_prije_max = None
+
+            traka = tk.Frame(self.root, bg=CARD, height=34, cursor="fleur")
+            traka.pack(fill="x", side="top")
+            traka.pack_propagate(False)
+            staklena_linija(traka, posvijetli(CARD, 0.16)).pack(fill="x", side="bottom")
+
+            lijevo = tk.Frame(traka, bg=CARD, cursor="fleur")
+            lijevo.pack(side="left", fill="both", expand=True)
+            tk.Label(lijevo, text="💪", font=("Segoe UI Emoji", 11), bg=CARD, fg=TEXT,
+                    cursor="fleur").pack(side="left", padx=(12, 6))
+            tk.Label(lijevo, text=self.t("naslov_prozora"), font=("Segoe UI", 9), bg=CARD, fg=SUBTEXT,
+                    cursor="fleur").pack(side="left")
+
+            desno = tk.Frame(traka, bg=CARD)
+            desno.pack(side="right", fill="y")
+
+            self._btn_max_naslov = self._dugme_naslovne_trake(desno, "🗖", self._toggle_maksimiziraj)
+            btn_min = self._dugme_naslovne_trake(desno, "🗕", self._minimiziraj)
+            btn_close = self._dugme_naslovne_trake(desno, "✕", self.zatvori,
+                                                   hover_bg="#e81123", hover_fg="white")
+            btn_close.pack(side="right", fill="y")
+            self._btn_max_naslov.pack(side="right", fill="y")
+            btn_min.pack(side="right", fill="y")
+
+            for w in (traka, lijevo):
+                w.bind("<ButtonPress-1>", self._zapocni_pomjeranje_prozora)
+                w.bind("<B1-Motion>", self._pomjeri_prozor)
+                w.bind("<Double-Button-1>", lambda e: self._toggle_maksimiziraj())
+
+            # mali "grip" znak u donjem desnom kutu - jedini nacin za rucnu
+            # promjenu velicine kad nema pravog OS okvira s rubovima za to
+            grip = tk.Label(self.root, text="◢", font=("Segoe UI", 9), bg=BG, fg=BORDER, cursor="size_nw_se")
+            grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-2)
+            grip.bind("<ButtonPress-1>", self._zapocni_promjenu_velicine)
+            grip.bind("<B1-Motion>", self._izvrsi_promjenu_velicine)
+            self._grip_naslovne_trake = grip
+            return True
+        except Exception:
+            try:
+                self.root.overrideredirect(False)
+            except Exception:
+                pass
+            return False
+
+    def _dugme_naslovne_trake(self, parent, tekst, komanda, hover_bg=None, hover_fg=None):
+        hover_bg = hover_bg or PAUSE_BG
+        hover_fg = hover_fg or TEXT
+        lbl = tk.Label(parent, text=tekst, font=("Segoe UI", 10), bg=CARD, fg=SUBTEXT, width=5, cursor="arrow")
+        lbl.bind("<Button-1>", lambda e: komanda())
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=hover_bg, fg=hover_fg))
+        lbl.bind("<Leave>", lambda e: lbl.config(bg=CARD, fg=SUBTEXT))
+        return lbl
+
+    def _zapocni_pomjeranje_prozora(self, event):
+        if self._maksimiziran:
+            return
+        self._drag_x = event.x_root - self.root.winfo_x()
+        self._drag_y = event.y_root - self.root.winfo_y()
+
+    def _pomjeri_prozor(self, event):
+        if self._maksimiziran:
+            return
+        self.root.geometry(f"+{event.x_root - self._drag_x}+{event.y_root - self._drag_y}")
+
+    def _minimiziraj(self):
+        # overrideredirect prozori se na Windowsima ne minimiziraju pouzdano
+        # sami preko iconify() (znaju "nestati" bez traga u taskbaru) -
+        # privremeno se vrati na normalan OS okvir, minimizira, pa se pri
+        # restauraciji opet ukloni okvir.
+        try:
+            self.root.overrideredirect(False)
+        except Exception:
+            pass
+        self.root.iconify()
+        self.root.bind("<Map>", self._na_restauraciju_prozora)
+
+    def _na_restauraciju_prozora(self, event=None):
+        if self.root.state() != "normal":
+            return
+        try:
+            self.root.unbind("<Map>")
+        except Exception:
+            pass
+        try:
+            self.root.overrideredirect(True)
+        except Exception:
+            pass
+
+    def _toggle_maksimiziraj(self):
+        if self._maksimiziran:
+            if self._geometrija_prije_max:
+                self.root.geometry(self._geometrija_prije_max)
+            self._maksimiziran = False
+            self._btn_max_naslov.config(text="🗖")
+        else:
+            self._geometrija_prije_max = self.root.geometry()
+            x, y, sirina, visina = _radni_prostor_ekrana(self.root)
+            self.root.geometry(f"{sirina}x{visina}+{x}+{y}")
+            self._maksimiziran = True
+            self._btn_max_naslov.config(text="🗗")
+
+    def _zapocni_promjenu_velicine(self, event):
+        self._resize_start_x = event.x_root
+        self._resize_start_y = event.y_root
+        self._resize_start_w = self.root.winfo_width()
+        self._resize_start_h = self.root.winfo_height()
+
+    def _izvrsi_promjenu_velicine(self, event):
+        if self._maksimiziran:
+            return
+        nova_sirina = max(360, self._resize_start_w + (event.x_root - self._resize_start_x))
+        nova_visina = max(480, self._resize_start_h + (event.y_root - self._resize_start_y))
+        self.root.geometry(f"{nova_sirina}x{nova_visina}")
+
+    def _omoguci_taskbar_ikonu(self):
+        """overrideredirect(True) zna sakriti app iz taskbara (Windows takve
+        prozore po defaultu tretira kao "alatne", ne kao prave aplikacije).
+
+        v2.3: PRIJE smo mijenjali WS_EX_APPWINDOW/TOOLWINDOW stil NA SAMOM
+        borderless prozoru NAKON sto je vec stvoren - dva razlicita pokusaja
+        toga (withdraw+deiconify, pa SetWindowPos+FRAMECHANGED) su OBA znala
+        povremeno rezultirati time da app nestane iz taskbara dok se ostalo
+        ne minimizira. Umjesto toga koristimo poznatiju, robusniju tehniku:
+        napravimo SITAN, TRAJNO SKRIVEN "vlasnicki" prozor koji ima NORMALAN
+        Windows stil OD SAMOG POCETKA (dakle stabilnu taskbar prisutnost bez
+        ikakvog naknadnog hakiranja stila), i njega postavimo kao VLASNIKA
+        (owner, preko GWLP_HWNDPARENT) naseg stvarnog borderless prozora.
+        Windows taskbar prati vlasnicki lanac, pa app dobije pouzdanu
+        ikonicu koja ne ovisi o Z-redu drugih prozora."""
+        try:
+            import ctypes
+            import ctypes.wintypes
+
+            GetWindowLongPtrW = getattr(ctypes.windll.user32, "GetWindowLongPtrW", None) \
+                or ctypes.windll.user32.GetWindowLongW
+            SetWindowLongPtrW = getattr(ctypes.windll.user32, "SetWindowLongPtrW", None) \
+                or ctypes.windll.user32.SetWindowLongW
+            # GetWindowLongPtrW/SetWindowLongPtrW postoje samo na 64-bit Pythonu;
+            # na 32-bit se automatski vrati na 32-bit inacicu (getattr fallback gore).
+
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+
+            # Sitan, TRAJNO skriven "vlasnicki" prozor - obican Tk Toplevel s
+            # normalnim (ne-overrideredirect) stilom, pozicioniran daleko izvan
+            # ekrana. Cuvamo referencu na self da ga garbage collector ne
+            # pokupi (i time unisti hwnd) dok app radi.
+            if not hasattr(self, "_taskbar_vlasnik"):
+                self._taskbar_vlasnik = tk.Toplevel(self.root)
+                self._taskbar_vlasnik.title(self.t("naslov_prozora"))
+                self._taskbar_vlasnik.geometry("1x1+-3000+-3000")
+                try:
+                    _ip = _ikona_putanja()
+                    if _ip:
+                        self._taskbar_vlasnik.iconbitmap(_ip)
+                except Exception:
+                    pass
+                self._taskbar_vlasnik.attributes("-alpha", 0.0)
+                self._taskbar_vlasnik.update_idletasks()
+                # BITNO: sam vlasnicki prozor MORA biti "alatni" (WS_EX_TOOLWINDOW)
+                # inace bi i ON dobio svoju (praznu, duh) taskbar ikonicu - cilj
+                # mu je SAMO da posluzi kao stabilna "kuka" za nas pravi prozor,
+                # ne da se sam vidi bilo gdje.
+                try:
+                    v_hwnd = (ctypes.windll.user32.GetParent(self._taskbar_vlasnik.winfo_id())
+                              or self._taskbar_vlasnik.winfo_id())
+                    GWL_EXSTYLE_V = -20
+                    WS_EX_TOOLWINDOW_V = 0x00000080
+                    WS_EX_APPWINDOW_V = 0x00040000
+                    v_stil = ctypes.windll.user32.GetWindowLongW(v_hwnd, GWL_EXSTYLE_V)
+                    v_stil = (v_stil | WS_EX_TOOLWINDOW_V) & ~WS_EX_APPWINDOW_V
+                    ctypes.windll.user32.SetWindowLongW(v_hwnd, GWL_EXSTYLE_V, v_stil)
+                    ctypes.windll.user32.SetWindowPos(v_hwnd, None, 0, 0, 0, 0, 0x27)
+                except Exception:
+                    pass
+
+            vlasnik_hwnd = (ctypes.windll.user32.GetParent(self._taskbar_vlasnik.winfo_id())
+                            or self._taskbar_vlasnik.winfo_id())
+
+            GWLP_HWNDPARENT = -8
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, vlasnik_hwnd)
+
+            # I dalje postavimo WS_EX_APPWINDOW/uklonimo TOOLWINDOW na glavnom
+            # prozoru kao dodatnu sigurnost (ne smeta, cak i ako vlasnicki
+            # trik sam po sebi vec rijesi problem).
+            GWL_EXSTYLE = -20
+            WS_EX_APPWINDOW = 0x00040000
+            WS_EX_TOOLWINDOW = 0x00000080
+            stil = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            stil = (stil | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, stil)
+            # SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED = 0x1|0x2|0x4|0x20
+            ctypes.windll.user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x27)
+        except Exception:
+            pass
+
+    def provjeri_dostupne_kvalitete(self, automatski=False):
+        """Asinkrono ocita stvarne YouTube formate i azurira izbor kvalitete."""
+        if getattr(self, "_quality_scan_running", False):
+            return
+        url = self._prvi_link()
+        if not url or prepoznaj_platformu(url) != "youtube":
+            if not automatski:
+                messagebox.showinfo("Smart Quality", "Zalijepi jedan YouTube link za provjeru kvaliteta.")
+            return
+        if not yt_dlp_dostupan():
+            if not automatski:
+                self.ispisi("⚠ yt-dlp nije instaliran. Pokreni Provjeri ažuriranja.")
+            return
+        if getattr(self, "_quality_scan_url", None) == url and getattr(self, "_quality_scan_heights", None):
+            if not automatski:
+                self.ispisi("📺 Dostupni kvaliteti: " + ", ".join(f"{h}p" for h in self._quality_scan_heights))
+            return
+        self._quality_scan_running = True
+        self._quality_scan_request_url = url
+        if not automatski:
+            self.ispisi("🔎 Smart Quality: provjeravam dostupne rezolucije...")
+        threading.Thread(target=self._quality_scan_worker, args=(url, automatski), daemon=True).start()
+
+    def _quality_scan_worker(self, url, automatski):
+        try:
+            result = pokreni_yt_dlp(["--no-playlist", "--skip-download", "--dump-single-json", url], timeout=90)
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "yt-dlp error")[-500:])
+            data = json.loads(result.stdout)
+            formats = data.get("formats") or []
+            heights = sorted({int(f["height"]) for f in formats
+                              if f.get("vcodec") not in (None, "none") and f.get("height")}, reverse=True)
+            if not heights:
+                raise RuntimeError("YouTube nije ponudio video formate s poznatom rezolucijom.")
+            self.root.after(0, self._quality_scan_apply, url, heights, formats)
+        except Exception as err:
+            if not automatski:
+                self.root.after(0, self.ispisi, "⚠ Smart Quality: " + str(err))
+        finally:
+            self.root.after(0, setattr, self, "_quality_scan_running", False)
+
+    def _quality_scan_apply(self, url, heights, formats):
+        if self._prvi_link() != url:
+            return  # zastarjeli odgovor za prethodni link
+        self._quality_scan_url = url
+        self._quality_scan_heights = heights
+        self._quality_scan_formats = formats
+        najbolja = "Best" if self.jezik == "en" else "Najbolja"
+        opcije = [najbolja] + [f"{h}p" for h in heights]
+        self.cb_kvaliteta.configure(values=opcije)
+        izabrana = self.var_kvaliteta.get()
+        if visina_iz_kvalitete(izabrana) is not None and visina_iz_kvalitete(izabrana) not in heights:
+            self.ispisi(f"⚠ Izabrani kvalitet {izabrana} nije dostupan za ovaj video. Izaberi ponuđeni kvalitet.")
+        self.ispisi("📺 Smart Quality: " + ", ".join(f"{h}p" for h in heights))
+        self.ispisi("ℹ Dostupnost formata je informativna; preuzimanje može naknadno biti ograničeno.")
+
+    def prikazi_detalje_formata(self):
+        """Tabela stvarnih video streamova iz posljednje yt-dlp provjere."""
+        url = self._prvi_link()
+        if not url or prepoznaj_platformu(url) != "youtube":
+            messagebox.showinfo("Detalji formata", "Prvo zalijepi YouTube link.")
+            return
+        formats = getattr(self, "_quality_scan_formats", None)
+        if getattr(self, "_quality_scan_url", None) != url or not formats:
+            messagebox.showinfo("Detalji formata", "Podaci još nisu spremni. Klikni Smart Quality, sačekaj rezultat i pokušaj ponovo.")
+            self.provjeri_dostupne_kvalitete()
+            return
+
+        prozor = tk.Toplevel(self.root)
+        prozor.title("Mister Muscle — Detalji YouTube formata")
+        prozor.geometry("900x510")
+        prozor.minsize(700, 350)
+        prozor.configure(bg=BG)
+        try:
+            prozor.transient(self.root)
+        except Exception:
+            pass
+        tk.Label(prozor, text="Dostupni video formati (yt-dlp)",
+                 bg=BG, fg=TEXT, font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
+        tk.Label(prozor, text="Veličina je procjena kada je označena ~. Format na listi ne garantuje uspješno preuzimanje.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(0, 10))
+        okvir = tk.Frame(prozor, bg=BG)
+        okvir.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        kolone = ("id", "resolution", "fps", "codec", "container", "size", "protocol")
+        tabela = ttk.Treeview(okvir, columns=kolone, show="headings", selectmode="extended")
+        naslovi = {"id":"Format ID", "resolution":"Rezolucija", "fps":"FPS", "codec":"Kodek",
+                   "container":"Ekstenzija", "size":"Veličina", "protocol":"Protokol"}
+        sirine = {"id":90, "resolution":115, "fps":65, "codec":170, "container":100, "size":110, "protocol":125}
+        for col in kolone:
+            tabela.heading(col, text=naslovi[col])
+            tabela.column(col, width=sirine[col], minwidth=55, anchor="center" if col != "codec" else "w")
+        yscroll = ttk.Scrollbar(okvir, orient="vertical", command=tabela.yview)
+        xscroll = ttk.Scrollbar(okvir, orient="horizontal", command=tabela.xview)
+        tabela.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tabela.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        okvir.grid_rowconfigure(0, weight=1)
+        okvir.grid_columnconfigure(0, weight=1)
+
+        def broj(x):
+            try:
+                return float(x or 0)
+            except (ValueError, TypeError):
+                return 0
+
+        video = [f for f in formats if f.get("vcodec") not in (None, "none") and f.get("height")]
+        video.sort(key=lambda f: (broj(f.get("height")), broj(f.get("fps")), broj(f.get("tbr"))), reverse=True)
+        for f in video:
+            visina = int(broj(f.get("height")))
+            sirina = int(broj(f.get("width")))
+            rez = f"{sirina}×{visina}" if sirina else f"{visina}p"
+            fps = broj(f.get("fps"))
+            fps_tekst = f"{fps:g}" if fps else "—"
+            vel = broj(f.get("filesize"))
+            procjena = False
+            if not vel:
+                vel = broj(f.get("filesize_approx"))
+                procjena = bool(vel)
+            vel_tekst = (f"{'~' if procjena else ''}{vel / (1024**2):.1f} MiB" if vel else "Nepoznato")
+            tabela.insert("", "end", values=(str(f.get("format_id") or "—"), rez, fps_tekst,
+                           str(f.get("vcodec") or "—"), str(f.get("ext") or "—"),
+                           vel_tekst, str(f.get("protocol") or "—")))
+        tk.Label(prozor, text=f"Ukupno video formata: {len(video)}  |  Podaci važe za trenutni link.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(0, 12))
+
+    def provjeri_4k_podrsku(self):
+        """Provjerava alate i dostupne rezolucije bez preuzimanja videa."""
+        if getattr(self, "_dijagnostika_u_tijeku", False):
+            self.ispisi("ℹ Dijagnostika je već pokrenuta.")
+            return
+        linkovi = self.text_links.get("1.0", "end").strip().splitlines()
+        url = next((x.strip() for x in linkovi if x.strip()), "")
+        self._dijagnostika_u_tijeku = True
+        self._prikazi_sadrzaj("log")
+        self.ispisi("🔎 Pokrećem provjeru 4K podrške (bez preuzimanja)...")
+        threading.Thread(target=self._provjeri_4k_podrsku_radnik, args=(url,), daemon=True).start()
+
+    def _provjeri_4k_podrsku_radnik(self, url):
+        def log(poruka):
+            self.root.after(0, self.ispisi, poruka)
+
+        try:
+            exe = yt_dlp_exe_putanja()
+            if not os.path.isfile(exe):
+                log("❌ yt-dlp nije pronađen. Pokreni 'Provjeri ažuriranja' u meniju Alati.")
+                return
+            try:
+                r = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", timeout=15,
+                                   env=_okolina_s_alatima(), **_SUBPROCESS_FLAGS)
+                log("yt-dlp: " + (r.stdout.strip() if r.returncode == 0 else "neispravan"))
+            except Exception as err:
+                log(f"❌ yt-dlp se ne pokreće: {err}")
+                return
+            log("Deno: " + (deno_verzija() or "NIJE DOSTUPAN — mogu nedostajati kvalitetniji formati"))
+            log("FFmpeg: " + (ffmpeg_putanja() or "NIJE DOSTUPAN — spajanje videa i zvuka neće raditi"))
+            log("PO Token plugin: " + ("instaliran (rad nije potvrđen)" if _PO_TOKEN_READY
+                                        else "nije aktiviran; provera će koristiti podrazumevane klijente"))
+            if not url:
+                log("ℹ Zalijepi YouTube link u polje za linkove i ponovo pokreni provjeru za popis rezolucija.")
+                return
+            if not re.search(r"(?:youtube\.com|youtu\.be|youtube-nocookie\.com)", url, re.I):
+                log("ℹ Provjera dostupnih rezolucija trenutno je namijenjena YouTube linkovima.")
+                return
+            log("⏳ Provjeravam formate videa (može potrajati do 90 sekundi)...")
+            args = ["--no-playlist", "--skip-download", "--dump-single-json", "--no-warnings", url]
+            result = pokreni_yt_dlp(args, timeout=90)
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                log("❌ yt-dlp nije uspio pročitati formate: " + details[-1200:])
+                return
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                log("❌ yt-dlp je vratio neispravan JSON; provjeri verziju alata.")
+                return
+            formats = data.get("formats") or []
+            video = [f for f in formats if f.get("vcodec") not in (None, "none") and f.get("height")]
+            heights = sorted({int(f["height"]) for f in video}, reverse=True)
+            if not heights:
+                log("⚠ YouTube nije ponudio nijedan format s poznatom video rezolucijom.")
+                return
+            log("📺 Dostupne visine videa: " + ", ".join(f"{h}p" for h in heights))
+            for h in heights[:7]:
+                choices = [f for f in video if int(f["height"]) == h]
+                codecs = sorted({str(f.get("vcodec", "?")) for f in choices})
+                fps = sorted({str(f.get("fps")) for f in choices if f.get("fps")})
+                log(f"  {h}p | FPS: {', '.join(fps) or '?'} | kodeci: {', '.join(codecs)[:100]}")
+            if max(heights) >= 2160:
+                log("✅ 4K format je vidljiv yt-dlp-u. Preuzimanje još nije testirano.")
+            else:
+                log(f"⚠ 4K nije ponuđen. Najviša pronađena rezolucija: {max(heights)}p.")
+                log("   Mogući razlozi: izvorni video, YouTube ograničenja, yt-dlp ili PO Token.")
+            if result.stderr.strip():
+                log("ℹ Dodatna dijagnostika: " + result.stderr.strip()[-800:])
+        except subprocess.TimeoutExpired:
+            log("❌ Provjera je istekla nakon 90 sekundi; pokušaj ponovo.")
+        except Exception as err:
+            log(f"❌ Greška dijagnostike: {err}")
+        finally:
+            self.root.after(0, setattr, self, "_dijagnostika_u_tijeku", False)
+
+    def _novo_t(self, hr, en):
+        """Prevod novih funkcija prema aktivnom jeziku aplikacije."""
+        return en if self.jezik == "en" else hr
+
+    def _izgradi_meni(self):
+        """Vlastita, ručno nacrtana traka izbornika (umjesto Windows-ovog
+        ugrađenog Menu widgeta preko root.config(menu=...)) - Windows NE
+        dozvoljava mijenjanje boja svog klasičnog izbornika (za razliku od
+        naslovne trake, koju smo već zatamnili preko DWM API-ja), pa je ovo
+        jedini pouzdan način da traka izbornika bude u bojama app-a umjesto
+        zadano bijela."""
+        self._otvoreni_dropdown = None
+
+        traka = tk.Frame(self.root, bg=CARD)
+        traka.pack(fill="x", side="top")
+        staklena_linija(traka, posvijetli(CARD, 0.14)).pack(fill="x", side="bottom")
+
+        stavke_alati = [
+            ("cmd", self.t("meni_provjeri_azuriranja"), self.provjeri_azuriranja),
+            ("cmd", self._novo_t("🔎 Provjeri 4K podršku", "🔎 Check 4K support"), self.provjeri_4k_podrsku),
+        ]
+        if JE_WINDOWS:
+            stavke_alati.append(("cmd", self.t("meni_webview2"), self._provjeri_webview2_pri_pokretanju))
+        stavke_alati += [
+            ("cmd", self._novo_t("📜 Povijest preuzimanja", "📜 Download History"), self.otvori_povijest),
+            ("sep",),
+            ("cmd", self.t("meni_folder_alati"), lambda: self._otvori_putanju(_alati_folder())),
+            ("cmd", self.t("meni_config"), lambda: self._otvori_putanju(os.path.dirname(CONFIG_PATH))),
+            ("sep",),
+            ("cmd", self.t("meni_reset_prozor"), self.resetiraj_velicinu_prozora),
+        ]
+        self._dugme_menija(traka, self.t("meni_alati"), stavke_alati)
+
+        self.var_jezik_meni = tk.StringVar(value=self.jezik)
+        stavke_jezik = [
+            ("radio", self.t("meni_jezik_hr"), "hr", self.var_jezik_meni, lambda: self._postavi_jezik("hr")),
+            ("radio", self.t("meni_jezik_en"), "en", self.var_jezik_meni, lambda: self._postavi_jezik("en")),
+        ]
+        self._dugme_menija(traka, self.t("meni_jezik"), stavke_jezik)
+
+        stavke_pomoc = [("cmd", self.t("meni_o_aplikaciji"), self.o_aplikaciji)]
+        self._dugme_menija(traka, self.t("meni_pomoc"), stavke_pomoc)
+
+        # "Doniraj" - JEDNIM klikom (nema padajuci izbornik, samo jedna akcija
+        # pa dropdown nema smisla) otvara PayPal link u zadanom browseru.
+        self._dugme_doniraj(traka)
+
+    # v4.7: povijest se cuva odvojeno od postavki i samo nakon uspjeha.
+    def _history_path(self):
+        return os.path.join(_podaci_folder(), "download_history.json")
+
+    def _history_read(self):
+        try:
+            with open(self._history_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def _duplicate_key(self, url):
+        """Normalize known tracking/playlist variants without changing media identity."""
+        try:
+            parsed = urllib.parse.urlsplit(url.strip())
+            host = (parsed.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+            path = parsed.path.rstrip("/")
+            params = urllib.parse.parse_qs(parsed.query)
+            if host in ("youtube.com", "music.youtube.com") and path == "/watch":
+                video_id = params.get("v", [""])[0]
+                if video_id:
+                    return "youtube:" + video_id
+            if host == "youtu.be" and path:
+                return "youtube:" + path.lstrip("/").split("/")[0]
+            if host.endswith("youtube.com") and (path.startswith("/shorts/") or path.startswith("/live/")):
+                return "youtube:" + path.split("/")[2]
+            if host.endswith("instagram.com") and path.startswith(("/reel/", "/p/", "/tv/")):
+                return "instagram:" + path.split("/")[2]
+            if host.endswith("tiktok.com") and "/video/" in path:
+                return "tiktok:" + path.split("/video/", 1)[1].split("/", 1)[0]
+            return host + path + ("?" + parsed.query if parsed.query else "")
+        except Exception:
+            return url.strip()
+
+    def _duplicate_preflight(self, urls, mode):
+        """Ask once for the batch. Return filtered URLs or None if cancelled."""
+        with _HISTORY_LOCK:
+            records = self._history_read()
+        previous = {self._duplicate_key(x.get("url", "")) for x in records
+                    if isinstance(x, dict) and x.get("mode") == mode and x.get("url")}
+        seen = set()
+        duplicates = []
+        for url in urls:
+            key = self._duplicate_key(url)
+            if key in previous or key in seen:
+                duplicates.append(url)
+            seen.add(key)
+        if not duplicates:
+            return urls
+        en = self.jezik == "en"
+        heading = "Duplicate Detector" if en else "Detektor duplikata"
+        description = (
+            f"{len(duplicates)} of {len(urls)} links were already downloaded in this mode "
+            "or appear more than once in this batch.\n\n"
+            "YES = Download all again\nNO = Skip duplicates\nCANCEL = Stop"
+            if en else
+            f"{len(duplicates)} od {len(urls)} linkova već je preuzeto u ovom načinu "
+            "ili se ponavlja u ovom popisu.\n\n"
+            "DA = Svejedno preuzmi sve\nNE = Preskoči duplikate\nODUSTANI = Prekini"
+        )
+        decision = messagebox.askyesnocancel(heading, description, parent=self.root)
+        if decision is None:
+            return None
+        if decision:
+            return urls
+        result, seen = [], set()
+        for url in urls:
+            key = self._duplicate_key(url)
+            if key not in previous and key not in seen:
+                result.append(url)
+            seen.add(key)
+        if not result:
+            messagebox.showinfo(heading,
+                "All links were skipped. Nothing to download." if en else
+                "Svi linkovi su preskočeni. Nema novih preuzimanja.", parent=self.root)
+        return result
+
+    def _history_title(self, url, platforma):
+        """Uzimanje naslova bez skidanja medija; kvar mreze ne utjece na download."""
+        if platforma == "instagram" and "/p/" in url:
+            return ""
+        try:
+            r = pokreni_yt_dlp(["--skip-download", "--no-playlist", "--print", "%(title)s", url], timeout=25)
+            if r.returncode == 0:
+                lines = [x.strip() for x in r.stdout.splitlines() if x.strip()]
+                if lines:
+                    title = lines[-1]
+                    return title[:350] if title != "NA" else ""
+        except Exception:
+            pass
+        return ""
+
+    def _history_save_success(self, url, nacin, platforma, folder):
+        title = self._history_title(url, platforma)
+        try:
+            with _HISTORY_LOCK:
+                data = self._history_read()
+                data.append({"url": url, "title": title, "mode": nacin, "platform": platforma,
+                             "folder": folder, "date": time.strftime("%Y-%m-%d %H:%M:%S")})
+                data = data[-2000:]
+                path = self._history_path()
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, path)
+        except Exception as exc:
+            self.root.after(0, lambda e=str(exc): self.ispisi("⚠ " + self._novo_t("Povijest", "History") + ": " + e))
+
+    def otvori_povijest(self):
+        """Povijest s nazivom videa, pretragom i lokaliziranim kontrolama."""
+        tr = lambda hr, en: self._novo_t(hr, en)
+        prozor = tk.Toplevel(self.root)
+        prozor.title(tr("Povijest preuzimanja", "Download History"))
+        prozor.geometry("1100x560")
+        prozor.configure(bg=BG)
+        pretraga = tk.StringVar()
+        tk.Label(prozor, text=tr("Pretraga", "Search"), bg=BG, fg=TEXT).pack(anchor="w", padx=12, pady=(12, 2))
+        polje = tk.Entry(prozor, textvariable=pretraga, bg=CARD, fg=TEXT,
+                         insertbackground=TEXT, relief="flat")
+        polje.pack(fill="x", padx=12, ipady=6)
+        okvir = tk.Frame(prozor, bg=BG)
+        okvir.pack(fill="both", expand=True, padx=12, pady=10)
+        stupci = ("date", "title", "platform", "mode", "url")
+        tablica = ttk.Treeview(okvir, columns=stupci, show="headings", selectmode="extended")
+        headings = (("date", tr("Datum", "Date"), 140),
+                    ("title", tr("Naziv klipa", "Video title"), 310),
+                    ("platform", tr("Platforma", "Platform"), 90),
+                    ("mode", tr("Način", "Mode"), 105), ("url", "URL", 380))
+        for col, label, width in headings:
+            tablica.heading(col, text=label)
+            tablica.column(col, width=width, minwidth=70, stretch=col in ("title", "url"))
+        scroll = ttk.Scrollbar(okvir, orient="vertical", command=tablica.yview)
+        tablica.configure(yscrollcommand=scroll.set)
+        tablica.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        zapisi = self._history_read()
+        prikazani = {}
+        mode_labels = {
+            "video_zvuk": tr("Video + zvuk", "Video + audio"),
+            "samo_video": tr("Samo video", "Video only"),
+            "samo_zvuk": tr("Samo zvuk", "Audio only"),
+            "slika_instagram": tr("Instagram slika", "Instagram image"),
+        }
+
+        def osvjezi(*_):
+            tablica.delete(*tablica.get_children())
+            prikazani.clear()
+            q = pretraga.get().strip().casefold()
+            for idx in range(len(zapisi) - 1, -1, -1):
+                rec = zapisi[idx]
+                if not isinstance(rec, dict):
+                    continue
+                if q and q not in " ".join(str(v) for v in rec.values()).casefold():
+                    continue
+                iid = str(idx)
+                prikazani[iid] = rec
+                tablica.insert("", "end", iid=iid,
+                               values=(rec.get("date", ""), rec.get("title") or tr("Nepoznat naziv", "Unknown title"),
+                                       rec.get("platform", ""), mode_labels.get(rec.get("mode"), rec.get("mode", "")),
+                                       rec.get("url", "")))
+
+        def odabrano():
+            selection = tablica.selection()
+            return (selection[0], prikazani.get(selection[0])) if selection else (None, None)
+
+        def odabrani_zapisi():
+            return [prikazani[iid] for iid in tablica.selection() if iid in prikazani]
+
+        def oznaci_sve(event=None):
+            svi = tablica.get_children()
+            if svi:
+                tablica.selection_set(svi)
+                tablica.focus(svi[0])
+            return "break"
+
+        # Treeview: klik, Ctrl+klik, Shift+klik i Ctrl+A.
+        # Pretraga zadrzava vlastiti Ctrl+A za oznacavanje teksta.
+        tablica.bind("<Control-a>", oznaci_sve)
+        tablica.bind("<Control-A>", oznaci_sve)
+
+        # Windows-style rectangle selection. Blank-space clicks must NEVER
+        # select a row; only rows physically intersecting the drag rectangle count.
+        drag = {"start": None, "active": False, "base": (), "ctrl": False,
+                "overlay": None, "canvas": None}
+
+        def drag_cleanup():
+            overlay = drag.get("overlay")
+            if overlay is not None:
+                try:
+                    overlay.destroy()
+                except tk.TclError:
+                    pass
+            drag.update(start=None, active=False, base=(), ctrl=False,
+                        overlay=None, canvas=None)
+
+        def drag_press(event):
+            drag_cleanup()
+            region = tablica.identify_region(event.x, event.y)
+            row = tablica.identify_row(event.y) if region in ("cell", "tree") else ""
+            ctrl = bool(event.state & 0x0004)
+            shift = bool(event.state & 0x0001)
+            if shift:
+                return  # Native Shift+click range selection
+            drag["start"] = (event.x_root, event.y_root)
+            drag["ctrl"] = ctrl
+            drag["base"] = tuple(tablica.selection()) if ctrl else ()
+            if not row:
+                # Clicking empty space clears selection; dragging from it
+                # begins with an empty selection, like Windows Explorer.
+                if not ctrl:
+                    tablica.selection_remove(tablica.selection())
+                return "break"
+            # Normal row click remains native (including Ctrl+click).
+
+        def drag_overlay():
+            if not JE_WINDOWS:
+                return
+            try:
+                top = tk.Toplevel(prozor)
+                top.overrideredirect(True)
+                top.attributes("-topmost", True)
+                key = "#010203"
+                top.configure(bg=key)
+                top.wm_attributes("-transparentcolor", key)
+                top.geometry(f"{tablica.winfo_width()}x{tablica.winfo_height()}+{tablica.winfo_rootx()}+{tablica.winfo_rooty()}")
+                canvas = tk.Canvas(top, bg=key, highlightthickness=0, bd=0)
+                canvas.pack(fill="both", expand=True)
+                canvas.bind("<B1-Motion>", drag_motion)
+                canvas.bind("<ButtonRelease-1>", drag_release)
+                drag["overlay"] = top
+                drag["canvas"] = canvas
+            except tk.TclError:
+                drag["overlay"] = None
+                drag["canvas"] = None
+
+        def drag_motion(event):
+            if drag["start"] is None:
+                return
+            sx, sy = drag["start"]
+            ex, ey = event.x_root, event.y_root
+            if not drag["active"]:
+                if abs(ex - sx) < 6 and abs(ey - sy) < 6:
+                    return
+                drag["active"] = True
+                drag_overlay()
+            left, right = sorted((sx - tablica.winfo_rootx(), ex - tablica.winfo_rootx()))
+            top_y, bottom_y = sorted((sy - tablica.winfo_rooty(), ey - tablica.winfo_rooty()))
+            # Select ONLY visible rows whose actual bounding boxes intersect
+            # the rectangle. No first/last-row fallback on blank space.
+            selected = set(drag["base"])
+            for iid in tablica.get_children():
+                bbox = tablica.bbox(iid)
+                if not bbox:
+                    continue
+                x, y, w, h = bbox
+                if left <= x + w and right >= x and top_y <= y + h and bottom_y >= y:
+                    selected.add(iid)
+            tablica.selection_set(tuple(selected))
+            canvas = drag.get("canvas")
+            if canvas is not None:
+                canvas.delete("rubberband")
+                canvas.create_rectangle(left, top_y, right, bottom_y,
+                                        outline="#4DA3FF", width=2,
+                                        dash=(4, 3), tags="rubberband")
+
+        def drag_release(event):
+            was_active = drag["active"]
+            drag_cleanup()
+            if was_active:
+                tablica.focus_set()
+                return "break"
+
+        tablica.bind("<ButtonPress-1>", drag_press, add="+")
+        tablica.bind("<B1-Motion>", drag_motion, add="+")
+        tablica.bind("<ButtonRelease-1>", drag_release, add="+")
+        prozor.bind("<Destroy>", lambda e: drag_cleanup() if e.widget is prozor else None, add="+")
+
+        def kopiraj():
+            records = odabrani_zapisi()
+            if records:
+                links = [r.get("url", "") for r in records if r.get("url")]
+                prozor.clipboard_clear()
+                prozor.clipboard_append("\n".join(links))
+                prozor.update()
+
+        def otvori_folder():
+            _, rec = odabrano()
+            if rec and os.path.isdir(rec.get("folder", "")):
+                self._otvori_putanju(rec["folder"])
+            elif rec:
+                messagebox.showinfo(prozor.title(), tr("Folder više nije dostupan.", "Folder is no longer available."), parent=prozor)
+
+        def zapisi_u_datoteku(current):
+            path = self._history_path()
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(current, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+
+        def obrisi():
+            records = odabrani_zapisi()
+            if not records:
+                return
+            pitanje = (tr("Obrisati {n} odabranih zapisa iz povijesti?\nPreuzete datoteke ostaju na disku.",
+                          "Delete {n} selected history entries?\nDownloaded files will remain on disk.")
+                       .format(n=len(records)))
+            if not messagebox.askyesno(prozor.title(), pitanje, parent=prozor):
+                return
+            try:
+                with _HISTORY_LOCK:
+                    current = self._history_read()
+                    # Uklanjamo samo trazeni broj jednakih zapisa (duplikati su moguci).
+                    for rec in records:
+                        for i in range(len(current) - 1, -1, -1):
+                            if current[i] == rec:
+                                current.pop(i)
+                                break
+                    zapisi_u_datoteku(current)
+                zapisi[:] = current
+                osvjezi()
+            except OSError as exc:
+                messagebox.showerror(prozor.title(), str(exc), parent=prozor)
+
+        def obrisi_sve():
+            # Brise CIJELU povijest, ukljucujuci zapise skrivene filtrom pretrage.
+            with _HISTORY_LOCK:
+                current = self._history_read()
+                if not current:
+                    messagebox.showinfo(prozor.title(), tr("Povijest je već prazna.", "History is already empty."), parent=prozor)
+                    return
+                pitanje = tr("Trajno obrisati svih {n} zapisa iz povijesti?\nPreuzete datoteke ostaju na disku.",
+                             "Permanently clear all {n} history entries?\nDownloaded files will remain on disk.").format(n=len(current))
+                if not messagebox.askyesno(prozor.title(), pitanje, parent=prozor):
+                    return
+                try:
+                    zapisi_u_datoteku([])
+                except OSError as exc:
+                    messagebox.showerror(prozor.title(), str(exc), parent=prozor)
+                    return
+            zapisi.clear()
+            osvjezi()
+
+        # Delete brise oznacene zapise, uz istu potvrdu kao dugme.
+        # Radi samo kad je fokus u tabeli, ne dok se kuca u polje pretrage.
+        def delete_tipka(event=None):
+            obrisi()
+            return "break"
+
+        tablica.bind("<Delete>", delete_tipka)
+        tablica.bind("<KP_Delete>", delete_tipka)
+
+        pretraga.trace_add("write", osvjezi)
+        komande = tk.Frame(prozor, bg=BG)
+        komande.pack(fill="x", padx=12, pady=(0, 12))
+        for naziv, fn in ((tr("📋 Kopiraj link", "📋 Copy link"), kopiraj),
+                          (tr("📂 Otvori folder", "📂 Open folder"), otvori_folder),
+                          (tr("☑ Označi sve", "☑ Select all"), oznaci_sve),
+                          (tr("🗑 Obriši odabrano", "🗑 Delete selected"), obrisi),
+                          (tr("🗑 Očisti povijest", "🗑 Clear history"), obrisi_sve),
+                          (tr("🔄 Osvježi", "🔄 Refresh"), lambda: (zapisi.__setitem__(slice(None), self._history_read()), osvjezi()))):
+            tk.Button(komande, text=naziv, command=fn).pack(side="left", padx=(0, 8))
+        osvjezi()
+        polje.focus_set()
+
+    def _dugme_menija(self, traka, naslov, stavke):
+        """Jedan klikabilan naslov u traci izbornika (npr. 'Alati') - klik
+        otvara/zatvara padajući izbornik ispod njega."""
+        lbl = tk.Label(traka, text=naslov, font=("Segoe UI", 9), bg=CARD, fg=TEXT,
+                       padx=12, pady=7, cursor="hand2")
+        lbl.pack(side="left")
+        lbl.bind("<Button-1>", lambda e: self._toggle_dropdown(lbl, stavke))
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=PAUSE_BG))
+        lbl.bind("<Leave>", lambda e: lbl.config(
+            bg=CARD if not (self._otvoreni_dropdown and self._otvoreni_dropdown[0] is lbl) else PAUSE_BG))
+        return lbl
+
+    def _dugme_doniraj(self, traka):
+        """Isti vizualni stil kao ostali naslovi u traci (_dugme_menija), ali
+        BEZ padajuceg izbornika - jedna akcija, jedan klik, odmah otvori
+        PayPal link u zadanom browseru."""
+        lbl = tk.Label(traka, text=self.t("meni_doniraj"), font=("Segoe UI", 9), bg=CARD, fg=TEXT,
+                       padx=12, pady=7, cursor="hand2")
+        lbl.pack(side="left")
+        lbl.bind("<Button-1>", lambda e: self._otvori_donate())
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=PAUSE_BG, fg="#ff6b81"))
+        lbl.bind("<Leave>", lambda e: lbl.config(bg=CARD, fg=TEXT))
+        return lbl
+
+    def _otvori_donate(self):
+        try:
+            webbrowser.open(DONATE_URL)
+        except Exception as err:
+            messagebox.showerror(self.t("err_naslov"), self.t("msg_cannot_open").format(err, DONATE_URL))
+
+    def _toggle_dropdown(self, dugme, stavke):
+        if self._otvoreni_dropdown and self._otvoreni_dropdown[0] is dugme:
+            self._zatvori_dropdown()
+            return
+        self._zatvori_dropdown()
+
+        x = dugme.winfo_rootx()
+        y = dugme.winfo_rooty() + dugme.winfo_height()
+
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.configure(bg=BORDER)
+        try:
+            top.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        okvir = tk.Frame(top, bg=CARD)
+        okvir.pack(padx=1, pady=1)
+
+        for stavka in stavke:
+            if stavka[0] == "sep":
+                tk.Frame(okvir, bg=BORDER, height=1).pack(fill="x", padx=6, pady=4)
+            elif stavka[0] == "cmd":
+                _, tekst, callback = stavka
+                self._stavka_dropdowna(okvir, tekst, callback)
+            elif stavka[0] == "radio":
+                _, tekst, vrijednost, varijabla, callback = stavka
+                oznaka = ("●  " if varijabla.get() == vrijednost else "     ") + tekst
+                self._stavka_dropdowna(okvir, oznaka, callback)
+
+        top.update_idletasks()
+        top.geometry(f"+{x}+{y}")
+        dugme.config(bg=PAUSE_BG)
+        self._otvoreni_dropdown = (dugme, top)
+
+        top.bind("<FocusOut>", lambda e: self._zatvori_dropdown())
+        top.focus_set()
+        self.root.bind("<Button-1>", self._klik_izvan_dropdowna, add="+")
+
+    def _stavka_dropdowna(self, okvir, tekst, callback):
+        lbl = tk.Label(okvir, text=tekst, font=("Segoe UI", 9), bg=CARD, fg=TEXT,
+                       anchor="w", padx=14, pady=7, cursor="hand2")
+        lbl.pack(fill="x")
+
+        def pokreni(e=None):
+            self._zatvori_dropdown()
+            callback()
+
+        lbl.bind("<Button-1>", pokreni)
+        lbl.bind("<Enter>", lambda e: lbl.config(bg=ACCENT))
+        lbl.bind("<Leave>", lambda e: lbl.config(bg=CARD))
+
+    def _klik_izvan_dropdowna(self, event):
+        if not self._otvoreni_dropdown:
+            return
+        dugme, top = self._otvoreni_dropdown
+        if event.widget is dugme:
+            return  # toggle logika u _toggle_dropdown to vec hendla
+        self._zatvori_dropdown()
+
+    def _zatvori_dropdown(self):
+        if self._otvoreni_dropdown:
+            dugme, top = self._otvoreni_dropdown
+            try:
+                dugme.config(bg=CARD)
+            except Exception:
+                pass
+            try:
+                top.destroy()
+            except Exception:
+                pass
+            self._otvoreni_dropdown = None
+        try:
+            self.root.unbind("<Button-1>")
+        except Exception:
+            pass
+
+    # Ispod ove sirine prozora (u pikselima) lijevi i desni panel idu jedan ispod
+    # drugog umjesto jedan pored drugog - da app moze biti i malen/uzak prozor,
+    # ne samo puni "desktop" raspored.
+    PRAG_UZANOG_RASPOREDA = 900
+    SIRINA_LIJEVOG_STUPCA = 460  # koristi se SAMO u sirokom (dvostupcnom) rasporedu
+
+    def _izgradi_glavni_dio(self):
+        # Naslov/podnaslov app-a se gradi UNUTAR lijeve kolone (ispod), ne kao
+        # zaseban red preko cijele sirine kao ranije - tako desna kolona
+        # (player) krene od SAMOG vrha umjesto ispod tog naslova, i iskoristi
+        # taj prostor. "Provjeri azuriranja" dugme je uklonjeno (postoji u
+        # meniju Alati).
+        self.glavni = tk.Frame(self.root, bg=BG)
+        self.glavni.pack(fill="both", expand=True, padx=22, pady=(8, 0))
+
+        self.lijevo = tk.Frame(self.glavni, bg=BG)
+        self.desno = tk.Frame(self.glavni, bg=BG)
+
+        # v3.3: lijevi stupac zna narasti VISE nego sto stane u prozor (npr.
+        # "Slika (Instagram)" panel je poprilican) - bez skrolanja, "4.
+        # POKRENI" gumb i donji dio kartica postanu FIZICKI nedohvatljivi dok
+        # se prozor ne maksimizira. Standardni Tkinter "scrollable frame"
+        # trik: Canvas+Scrollbar unutar self.lijevo (koji i dalje ucestvuje u
+        # grid rasporedu kao prije - vidi _primijeni_raspored), sa STVARNIM
+        # sadrzajem (naslov + sve tri kartice) u self.lijevo_unutra frameu
+        # UNUTAR tog canvasa umjesto direktno u self.lijevo.
+        self.lijevo_canvas = tk.Canvas(self.lijevo, bg=BG, highlightthickness=0)
+        self.lijevo_scrollbar = ttk.Scrollbar(self.lijevo, orient="vertical",
+                                              command=self.lijevo_canvas.yview)
+        self.lijevo_canvas.configure(yscrollcommand=self.lijevo_scrollbar.set)
+        self.lijevo_canvas.pack(side="left", fill="both", expand=True)
+        self.lijevo_scrollbar.pack(side="right", fill="y")
+
+        self.lijevo_unutra = tk.Frame(self.lijevo_canvas, bg=BG)
+        self._lijevo_canvas_prozor = self.lijevo_canvas.create_window(
+            (0, 0), window=self.lijevo_unutra, anchor="nw")
+
+        def _lijevo_sadrzaj_promijenjen(event=None):
+            self.lijevo_canvas.configure(scrollregion=self.lijevo_canvas.bbox("all"))
+
+        def _lijevo_canvas_promijenjen(event):
+            # sirina unutrasnjeg frame-a prati sirinu canvasa - inace bi karte
+            # (koje koriste fill="x" ocekujuci roditeljevu sirinu) ostale na
+            # svojoj "prirodnoj" minimalnoj sirini umjesto pune sirine stupca.
+            self.lijevo_canvas.itemconfig(self._lijevo_canvas_prozor, width=event.width)
+
+        self.lijevo_unutra.bind("<Configure>", _lijevo_sadrzaj_promijenjen)
+        self.lijevo_canvas.bind("<Configure>", _lijevo_canvas_promijenjen)
+
+        def _lijevo_kotacic(event):
+            self.lijevo_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        self.lijevo_canvas.bind("<Enter>", lambda e: self.lijevo_canvas.bind_all("<MouseWheel>", _lijevo_kotacic))
+        self.lijevo_canvas.bind("<Leave>", lambda e: self.lijevo_canvas.unbind_all("<MouseWheel>"))
+
+        naslov_red = tk.Frame(self.lijevo_unutra, bg=BG)
+        naslov_red.pack(fill="x", pady=(6, 12))
+
+        # Pravi logo (umjesto stare 💪 emoji) - ucitan preko cistog Tkintera
+        # (tk.PhotoImage nativno cita PNG, ne treba Pillow ovisnost u samoj
+        # app-i). subsample() smanji na razumnu prikaznu velicinu (logo.png
+        # je 128x128 izvorno, ovdje ciljamo ~40px).
+        _logo_put = _logo_putanja()
+        if _logo_put:
+            try:
+                self._logo_img = tk.PhotoImage(file=_logo_put)
+                faktor = max(1, self._logo_img.width() // 40)
+                if faktor > 1:
+                    self._logo_img = self._logo_img.subsample(faktor, faktor)
+                tk.Label(naslov_red, image=self._logo_img, bg=BG).pack(side="left", padx=(0, 10))
+            except Exception:
+                pass
+
+        tk.Label(naslov_red, text=self.t("naslov_app"), font=(FONT_NASLOV, 20),
+                 bg=BG, fg=TEXT).pack(side="left", anchor="w")
+
+        self._kartica_linkovi(self.lijevo_unutra)
+        self._kartica_opcije(self.lijevo_unutra)
+        self._kartica_folder(self.lijevo_unutra)
+        self._panel_desno(self.desno)
+
+        self._raspored_je_uzak = None  # None = jos nepoznato, postavlja se u nastavku
+        self._primijeni_raspored(uzak=False)
+        self.root.bind("<Configure>", self._na_promjenu_velicine_prozora)
+        # Sigurnosni ponovni pokusaj malo nakon starta - na nekim sustavima/
+        # velicinama prozora prvi grid raspored (prije nego je prozor STVARNO
+        # realiziran i nacrtan na ekranu) ne primijeni tezine (weight) do
+        # kraja ispravno, pa desni panel ostane kraci nego bi trebao (prazan
+        # prostor ispod njega). Ponovno pozivanje nakon kratke odgode - kad
+        # prozor sigurno vec postoji - to popravi.
+        # Sigurnosno PONAVLJANJE (ne samo jednom) - stvarni uzrok (zaboravljen
+        # minsize od prijelaznog uskog rasporeda) je pronadjen i popravljen
+        # (vidi _primijeni_raspored), ali ostavljamo par ponovnih pokusaja kao
+        # jeftinu dodatnu sigurnost za slucaj neke slicne buduce sitnice.
+        self._raspored_reapply_pokusaji = 0
+        self._periodicna_reprovjera_rasporeda()
+
+    def _periodicna_reprovjera_rasporeda(self):
+        self._primijeni_raspored(self._raspored_je_uzak)
+        self._raspored_reapply_pokusaji += 1
+        if self._raspored_reapply_pokusaji < 2:
+            self.root.after(300, self._periodicna_reprovjera_rasporeda)
+
+    def _na_promjenu_velicine_prozora(self, event):
+        if event.widget is not self.root:
+            return
+        uzak = event.width < self.PRAG_UZANOG_RASPOREDA
+        if uzak != self._raspored_je_uzak:
+            self._primijeni_raspored(uzak)
+
+    def _primijeni_raspored(self, uzak):
+        """Prebacuje izmedu 'desktop' rasporeda (lijevo+desno jedno pored drugog)
+        i 'kompaktnog' rasporeda za uske prozore (lijevo pa desno jedno ispod
+        drugog, oba preko cijele sirine) - slicno kako se npr. Discord prozor
+        preslaze kad ga jako suzis."""
+        self._raspored_je_uzak = uzak
+        self.lijevo.grid_forget()
+        self.desno.grid_forget()
+
+        if uzak:
+            self.glavni.columnconfigure(0, minsize=0, weight=1)
+            self.glavni.columnconfigure(1, weight=0)
+            # v3.3: lijevi stupac sad SKROLA (vidi _izgradi_glavni_dio), pa mu
+            # treba STVARAN, ogranicen prostor (weight=1 + minsize) da se
+            # canvas unutra ima u cemu skrolati - "weight=0" (prirodna,
+            # neogranicena visina) bi ga ucinilo proizvoljno visokim ovisno o
+            # sadrzaju, sto je tocno ono sto smo zeljeli izbjeci.
+            self.glavni.rowconfigure(0, weight=1, minsize=260)
+            self.glavni.rowconfigure(1, weight=1, minsize=220)
+            self.lijevo.grid(row=0, column=0, sticky="nsew")
+            self.desno.grid(row=1, column=0, sticky="nsew", pady=(16, 0))
+        else:
+            self.glavni.columnconfigure(0, minsize=self.SIRINA_LIJEVOG_STUPCA, weight=0)
+            self.glavni.columnconfigure(1, weight=1)
+            self.glavni.rowconfigure(0, weight=1)
+            self.glavni.rowconfigure(1, weight=0, minsize=0)
+            self.lijevo.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+            self.desno.grid(row=0, column=1, sticky="nsew")
+
+        self._primijeni_raspored_donje_trake(uzak)
+
+    def _naslov_kartice(self, roditelj, broj, tekst):
+        # 'broj' se vise ne prikazuje (korisnik je odlucio da brojcane oznake
+        # 1/2/3/4 ne trebaju) - parametar je ostao u potpisu SAMO da se ne
+        # moraju mijenjati svi pozivi (self._naslov_kartice(roditelj, "1", ...)
+        # na 4 razlicita mjesta), iako se vise ne koristi unutra.
+        red = tk.Frame(roditelj, bg=BG)
+        red.pack(fill="x", pady=(0, 6))
+        tk.Label(red, text=tekst, font=("Segoe UI", 9, "bold"), bg=BG, fg=SUBTEXT).pack(side="left")
+        return red
+
+    def _kartica_linkovi(self, roditelj):
+        self._naslov_kartice(roditelj, "1", self.t("kartica_1"))
+        card = tk.Frame(roditelj, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x", pady=(0, 14))
+        staklena_linija(card, posvijetli(CARD, 0.22)).pack(fill="x", side="top")
+
+        self.text_links = tk.Text(card, height=5, font=("Segoe UI", 10), bg=INPUT_BG, fg=TEXT,
+                                  insertbackground=TEXT, relief="flat", highlightbackground=BORDER,
+                                  highlightthickness=1, wrap="word")
+        self.text_links.pack(padx=14, pady=(14, 8), fill="x")
+        self._placeholder = self.t("placeholder_linkovi")
+        self._postavi_placeholder()
+        self.text_links.edit_modified(False)  # placeholder ne smije brojati kao "promjena"
+        self.text_links.bind("<FocusIn>", self._obrisi_placeholder)
+        self.text_links.bind("<FocusOut>", self._vrati_placeholder)
+        # <<Modified>> se okine na SVAKU promjenu sadrzaja (tipkanje, paste preko
+        # Ctrl+V, paste preko desnog klika/"Zalijepi" gumba - sve to na kraju ide
+        # kroz insert/delete na ovom Text widgetu) - to koristimo da AUTOMATSKI
+        # otvorimo/osvjezimo player cim prepoznamo valjan link, bez klika na gumb.
+        self.text_links.bind("<<Modified>>", self._na_promjenu_linkova)
+
+        self.context_menu = tk.Menu(self.root, tearoff=0, bg=CARD, fg=TEXT,
+                                    activebackground=ACCENT, activeforeground=TEXT)
+        self.context_menu.add_command(label=self.t("gumb_zalijepi"), command=self.zalijepi_tekst)
+        self.text_links.bind("<Button-3>", self.prikazi_desni_klik)
+
+        red = tk.Frame(card, bg=CARD)
+        red.pack(fill="x", padx=14, pady=(0, 12))
+        self.btn_player = self._napravi_dugme(red, self.t("gumb_pregledaj"), self.otvori_player,
+                                              bg=PAUSE_BG, hover=PAUSE_HOVER, font_size=9, padx=12, pady=6)
+        self.btn_player.pack(side="left")
+        self._napravi_dugme(red, self.t("gumb_zalijepi"), self.zalijepi_tekst, bg=PAUSE_BG, hover=PAUSE_HOVER,
+                            font_size=9, padx=12, pady=6).pack(side="left", padx=(8, 0))
+        self._napravi_dugme(red, self.t("gumb_ocisti"), self.ocisti_linkove, bg=PAUSE_BG, hover=PAUSE_HOVER,
+                            font_size=9, padx=12, pady=6).pack(side="left", padx=(8, 0))
+
+        self.isjecak_frame = tk.Frame(card, bg=CARD_LIGHT)
+        self.lbl_isjecak = tk.Label(self.isjecak_frame, text="", font=("Segoe UI", 9, "bold"),
+                                    bg=CARD_LIGHT, fg=SUCCESS, anchor="w")
+        self.lbl_isjecak.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+        self.btn_ocisti_isjecak = tk.Button(self.isjecak_frame, text=self.t("gumb_ponisti_isjecak"), font=("Segoe UI", 8, "bold"),
+                                            bg=CARD_LIGHT, fg=SUBTEXT, activebackground=CARD_LIGHT,
+                                            activeforeground=TEXT, relief="flat", bd=0, cursor="hand2",
+                                            command=self.ponisti_isjecak)
+        self.btn_ocisti_isjecak.pack(side="right", padx=(0, 10))
+
+    def _kartica_opcije(self, roditelj):
+        self._naslov_kartice(roditelj, "2", self.t("kartica_2"))
+        card = tk.Frame(roditelj, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x", pady=(0, 14))
+        staklena_linija(card, posvijetli(CARD, 0.22)).pack(fill="x", side="top")
+
+        nacini = [
+            ("video_zvuk", self.t("nacin_video_zvuk")),
+            ("samo_video", self.t("nacin_samo_video")),
+            ("samo_zvuk", self.t("nacin_samo_zvuk")),
+            ("slika_instagram", self.t("nacin_slika_instagram")),
+        ]
+        for vrijednost, naslov in nacini:
+            red = tk.Frame(card, bg=CARD)
+            red.pack(fill="x", padx=14, pady=(10 if vrijednost == "video_zvuk" else 2, 2))
+            tk.Radiobutton(red, text=naslov, value=vrijednost, variable=self.var_nacin,
+                           command=self._osvjezi_stanje_nacina, font=("Segoe UI", 10, "bold"),
+                           bg=CARD, fg=TEXT, activebackground=CARD, activeforeground=TEXT,
+                           selectcolor=INPUT_BG, highlightthickness=0, bd=0,
+                           cursor="hand2", anchor="w").pack(side="left")
+
+        razdjelnik = tk.Frame(card, bg=BORDER, height=1)
+        razdjelnik.pack(fill="x", padx=14, pady=(12, 12))
+
+        red_kv = tk.Frame(card, bg=CARD)
+        red_kv.pack(fill="x", padx=14, pady=(0, 14))
+
+        self.lbl_kvaliteta = tk.Label(red_kv, text=self.t("oznaka_kvaliteta"), font=("Segoe UI", 8, "bold"),
+                                      bg=CARD, fg=SUBTEXT)
+        self.lbl_kvaliteta.grid(row=0, column=0, sticky="w", pady=(0, 3))
+        self.cb_kvaliteta = ttk.Combobox(red_kv, values=kvalitete_za_jezik(self.jezik), textvariable=self.var_kvaliteta,
+                                         state="readonly", style="Cyber.TCombobox", width=16)
+        self.cb_kvaliteta.grid(row=1, column=0, sticky="w")
+        self.btn_smart_quality = tk.Button(red_kv, text="🔎 Smart Quality",
+                                           font=("Segoe UI", 8, "bold"), bg=INPUT_BG, fg=TEXT,
+                                           activebackground=CARD_LIGHT, activeforeground=TEXT,
+                                           relief="flat", bd=0, cursor="hand2",
+                                           command=self.provjeri_dostupne_kvalitete)
+        self.btn_smart_quality.grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.btn_quality_inspector = tk.Button(
+            red_kv, text=self._novo_t("📊 Detalji formata", "📊 Format details"), font=("Segoe UI", 8, "bold"),
+            bg=INPUT_BG, fg=TEXT, activebackground=CARD_LIGHT,
+            activeforeground=TEXT, relief="flat", bd=0, cursor="hand2",
+            command=self.prikazi_detalje_formata)
+        self.btn_quality_inspector.grid(row=3, column=0, sticky="w", pady=(5, 0))
+
+        self.lbl_format_videa = tk.Label(red_kv, text=self.t("oznaka_format_videa"), font=("Segoe UI", 8, "bold"),
+                                         bg=CARD, fg=SUBTEXT)
+        self.lbl_format_videa.grid(row=0, column=1, sticky="w", padx=(18, 0), pady=(0, 3))
+        self.cb_video_format = ttk.Combobox(red_kv, values=VIDEO_FORMATI, textvariable=self.var_video_format,
+                                            state="readonly", style="Cyber.TCombobox", width=18)
+        self.cb_video_format.grid(row=1, column=1, sticky="w", padx=(18, 0))
+
+        self.lbl_format_zvuka = tk.Label(red_kv, text=self.t("oznaka_format_zvuka"), font=("Segoe UI", 8, "bold"),
+                                         bg=CARD, fg=SUBTEXT)
+        self.lbl_format_zvuka.grid(row=0, column=2, sticky="w", padx=(18, 0), pady=(0, 3))
+        self.cb_audio = ttk.Combobox(red_kv, values=AUDIO_FORMATI, textvariable=self.var_audio_format,
+                                     state="readonly", style="Cyber.TCombobox", width=20)
+        self.cb_audio.grid(row=1, column=2, sticky="w", padx=(18, 0))
+
+        self.red_omjer = tk.Frame(card, bg=CARD)
+        self.red_omjer.pack(fill="x", padx=14, pady=(12, 14))
+        tk.Label(self.red_omjer, text=self.t("oznaka_omjer_slike"), font=("Segoe UI", 8, "bold"), bg=CARD,
+                 fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
+        self.cb_omjer = ttk.Combobox(self.red_omjer, values=OMJERI_SLIKE, textvariable=self.var_omjer_slike,
+                                     state="readonly", style="Cyber.TCombobox", width=28)
+        self.cb_omjer.pack(anchor="w")
+
+        # Panel objasnjenja + odabir izvora kolacica za "Slika (Instagram)"
+        # nacin - skriven osim kad je taj nacin odabran (vidi
+        # _osvjezi_stanje_nacina). Namjerno vizualno izdvojen (obrub, druga
+        # nijansa) da odmah upada u oko da ovo NIJE isto kao obicno skidanje
+        # videa - treba prijava.
+        #
+        # v3.1: DVA nacina dobavljanja kolacica, ne samo jedan - direktno iz
+        # browsera zahtijeva da bude ZATVOREN (Chromium zakljuca svoju bazu
+        # kolacica dok radi), sto je korisnicima smetalo. Dodana alternativa:
+        # gotov cookies.txt fajl (izvezen preko besplatne ekstenzije dok je
+        # browser normalno otvoren) - sporiji za pripremiti PRVI put, ali
+        # NIKAD ne treba zatvarati browser.
+        self.panel_ig_slika = tk.Frame(card, bg=posvijetli(CARD, 0.06),
+                                       highlightbackground=ACCENT, highlightthickness=1)
+        unutra_ig = tk.Frame(self.panel_ig_slika, bg=posvijetli(CARD, 0.06))
+        unutra_ig.pack(fill="x", padx=12, pady=10)
+        tk.Label(unutra_ig, text="📷 " + self.t("ig_slika_naslov"), font=("Segoe UI", 9, "bold"),
+                 bg=posvijetli(CARD, 0.06), fg=TEXT).pack(anchor="w")
+        tk.Label(unutra_ig, text=self.t("ig_slika_objasnjenje"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT, wraplength=380, justify="left").pack(
+            anchor="w", pady=(4, 8))
+
+        # Preporucena, najjednostavnija opcija - prijava UNUTAR same app (bez
+        # ekstenzije, bez zatvaranja browsera) preko pywebview-a, koji vec
+        # koristimo za player. Vidi pokreni_instagram_login_proces() na vrhu
+        # fajla za objasnjenje mehanizma.
+        self.btn_ig_prijava = self._napravi_dugme(
+            unutra_ig, self.t("gumb_ig_prijava"), self._pokreni_instagram_prijavu,
+            bg=ACCENT, hover=ACCENT_HOVER, font_size=9, height=1)
+        self.btn_ig_prijava.pack(fill="x", pady=(0, 4))
+
+        red_ig_status = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        red_ig_status.pack(fill="x", pady=(0, 8))
+        self.lbl_ig_prijava_status = tk.Label(red_ig_status, text="", font=("Segoe UI", 8),
+                                              bg=posvijetli(CARD, 0.06), fg=SUCCESS, wraplength=300,
+                                              justify="left")
+        self.lbl_ig_prijava_status.pack(side="left", anchor="w")
+        # Suzdrzana, mala poveznica (ne konkurira glavnom gumbu) - za one koji
+        # zele obrisati spremljenu prijavu iz privatnosnih/sigurnosnih razloga.
+        self.lbl_ig_odjava = tk.Label(red_ig_status, text=self.t("link_ig_odjava"), font=("Segoe UI", 8, "underline"),
+                                      bg=posvijetli(CARD, 0.06), fg=SUBTEXT, cursor="hand2")
+        self.lbl_ig_odjava.pack(side="right", anchor="e")
+        self.lbl_ig_odjava.bind("<Button-1>", self._odjavi_instagram)
+        self.lbl_ig_odjava.bind("<Enter>", lambda e: self.lbl_ig_odjava.config(fg=DANGER))
+        self.lbl_ig_odjava.bind("<Leave>", lambda e: self.lbl_ig_odjava.config(fg=SUBTEXT))
+
+        tk.Label(unutra_ig, text=self.t("ig_ili_rucno"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 6))
+
+        red_izvor = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        red_izvor.pack(fill="x", pady=(0, 6))
+        tk.Radiobutton(red_izvor, text=self.t("cookies_izvor_browser"), value="browser",
+                       variable=self.var_cookies_izvor, command=self._osvjezi_izvor_cookies,
+                       font=("Segoe UI", 8, "bold"), bg=posvijetli(CARD, 0.06), fg=TEXT,
+                       activebackground=posvijetli(CARD, 0.06), activeforeground=TEXT,
+                       selectcolor=INPUT_BG, highlightthickness=0, bd=0, cursor="hand2",
+                       anchor="w").pack(anchor="w")
+        tk.Radiobutton(red_izvor, text=self.t("cookies_izvor_fajl"), value="fajl",
+                       variable=self.var_cookies_izvor, command=self._osvjezi_izvor_cookies,
+                       font=("Segoe UI", 8, "bold"), bg=posvijetli(CARD, 0.06), fg=TEXT,
+                       activebackground=posvijetli(CARD, 0.06), activeforeground=TEXT,
+                       selectcolor=INPUT_BG, highlightthickness=0, bd=0, cursor="hand2",
+                       anchor="w").pack(anchor="w")
+
+        self.red_cookies_browser = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        tk.Label(self.red_cookies_browser, text=self.t("oznaka_cookies_browser"), font=("Segoe UI", 8, "bold"),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
+        self.cb_cookies_browser = ttk.Combobox(self.red_cookies_browser, values=BROWSERI_COOKIES,
+                                               textvariable=self.var_cookies_browser,
+                                               state="readonly", style="Cyber.TCombobox", width=20)
+        self.cb_cookies_browser.pack(anchor="w")
+        tk.Label(self.red_cookies_browser, text=self.t("cookies_browser_napomena"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT, wraplength=380, justify="left").pack(
+            anchor="w", pady=(6, 0))
+
+        self.red_cookies_fajl = tk.Frame(unutra_ig, bg=posvijetli(CARD, 0.06))
+        tk.Label(self.red_cookies_fajl, text=self.t("oznaka_cookies_fajl"), font=("Segoe UI", 8, "bold"),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT).pack(anchor="w", pady=(0, 3))
+        red_fajl_odabir = tk.Frame(self.red_cookies_fajl, bg=posvijetli(CARD, 0.06))
+        red_fajl_odabir.pack(fill="x")
+        self.entry_cookies_fajl = tk.Entry(red_fajl_odabir, textvariable=self.var_cookies_fajl,
+                                           font=("Segoe UI", 9), bg=INPUT_BG, fg=TEXT,
+                                           insertbackground=TEXT, relief="flat", width=26)
+        self.entry_cookies_fajl.pack(side="left", ipady=4, fill="x", expand=True)
+        self._napravi_dugme(red_fajl_odabir, self.t("gumb_odaberi_folder"), self._odaberi_cookies_fajl,
+                            bg=CARD_LIGHT, hover=posvijetli(CARD_LIGHT, 0.1), font_size=9,
+                            height=1, width=9).pack(side="left", padx=(6, 0))
+        tk.Label(self.red_cookies_fajl, text=self.t("cookies_fajl_napomena"), font=("Segoe UI", 8),
+                 bg=posvijetli(CARD, 0.06), fg=SUBTEXT, wraplength=380, justify="left").pack(
+            anchor="w", pady=(6, 0))
+
+        self._donji_razmak_opcije = tk.Frame(card, bg=CARD)
+        self._donji_razmak_opcije.pack(pady=4)
+        self._osvjezi_izvor_cookies()
+
+    def _osvjezi_izvor_cookies(self):
+        if self.var_cookies_izvor.get() == "fajl":
+            self.red_cookies_browser.pack_forget()
+            self.red_cookies_fajl.pack(fill="x")
+        else:
+            self.red_cookies_fajl.pack_forget()
+            self.red_cookies_browser.pack(fill="x")
+
+    def _odaberi_cookies_fajl(self):
+        putanja = filedialog.askopenfilename(
+            title=self.t("dijalog_odaberi_cookies_naslov"),
+            filetypes=[("cookies.txt", "*.txt"), (self.t("dijalog_svi_fajlovi"), "*.*")],
+        )
+        if putanja:
+            self.var_cookies_fajl.set(putanja)
+
+    def _pokreni_instagram_prijavu(self):
+        """Otvara PRAVU Instagram prijavu unutar ugradjenog (zasebni proces)
+        pywebview prozora - bez ekstenzije, bez zatvaranja bilo cega. Korisnik
+        se prijavi pa zatvori taj prozor; kolacici se automatski izvuku i
+        spreme kao cookies.txt, i ODMAH odaberu kao izvor (radio prebacen na
+        'fajl', polje popunjeno)."""
+        if not PYWEBVIEW_DOSTUPAN:
+            messagebox.showerror(self.t("err_naslov"), self.t("err_pywebview_missing_text"))
+            return
+        if not messagebox.askokcancel(self.t("ig_prijava_naslov"), self.t("ig_prijava_info")):
+            return
+
+        cookies_putanja = os.path.join(_alati_folder(), "instagram_cookies.txt")
+        try:
+            if os.path.exists(cookies_putanja):
+                os.remove(cookies_putanja)  # da sigurno prepoznamo NOVI (ili nikakav) rezultat
+        except Exception:
+            pass
+
+        self.btn_ig_prijava.config(state="disabled", text=self.t("ig_prijava_u_tijeku"))
+        self.lbl_ig_prijava_status.config(text="")
+
+        proces = multiprocessing.Process(target=pokreni_instagram_login_proces,
+                                         args=(cookies_putanja, self.jezik))
+        proces.start()
+        threading.Thread(target=self._cekaj_instagram_prijavu, args=(proces, cookies_putanja),
+                         daemon=True).start()
+
+    def _cekaj_instagram_prijavu(self, proces, cookies_putanja):
+        proces.join()
+        uspjelo = os.path.isfile(cookies_putanja) and os.path.getsize(cookies_putanja) > 0
+        self.root.after(0, self._na_zavrsetak_ig_prijave, uspjelo, cookies_putanja)
+
+    def _na_zavrsetak_ig_prijave(self, uspjelo, cookies_putanja):
+        self.btn_ig_prijava.config(state="normal", text=self.t("gumb_ig_prijava"))
+        if uspjelo:
+            self.var_cookies_fajl.set(cookies_putanja)
+            self.var_cookies_izvor.set("fajl")
+            self._osvjezi_izvor_cookies()
+            self.lbl_ig_prijava_status.config(text=self.t("ig_prijava_uspjeh"), fg=SUCCESS)
+            # BITNO: spremi ODMAH, ne cekaj da korisnik pokrene skidanje ili
+            # zatvori app normalno (_spremi_postavke() se inace zove samo u
+            # tim trenucima) - ako app padne/bude prisilno ugasena PRIJE
+            # toga, ova prijava bi se inace izgubila i sljedeci put bi opet
+            # trazila prijavu iznova.
+            self._spremi_postavke()
+        else:
+            self.lbl_ig_prijava_status.config(text=self.t("ig_prijava_neuspjeh"), fg=DANGER)
+
+    def _odjavi_instagram(self, event=None):
+        """Za paranoicne: obrise spremljenu Instagram prijavu (kolacice) s ovog
+        racunala. SAMO brise nas VLASTITI auto-generirani cookies.txt (onaj
+        napravljen preko '🔑 Prijavi se...' gumba) - ako je korisnik RUCNO
+        odabrao svoj vlastiti cookies.txt fajl (izvezen preko ekstenzije),
+        taj fajl ostaje netaknut, samo mu se maknu reference iz app-e."""
+        auto_generirani = os.path.join(_alati_folder(), "instagram_cookies.txt")
+        trenutni_fajl = self.var_cookies_fajl.get().strip()
+        if not trenutni_fajl and self.var_cookies_izvor.get() != "fajl":
+            self.lbl_ig_prijava_status.config(text=self.t("ig_odjava_nema_sto"), fg=SUBTEXT)
+            return
+        if not messagebox.askyesno(self.t("ig_odjava_naslov"), self.t("ig_odjava_potvrda")):
+            return
+        if trenutni_fajl and os.path.abspath(trenutni_fajl) == os.path.abspath(auto_generirani):
+            try:
+                os.remove(trenutni_fajl)
+            except Exception:
+                pass
+        self.var_cookies_fajl.set("")
+        self.var_cookies_izvor.set("browser")
+        self._osvjezi_izvor_cookies()
+        self.lbl_ig_prijava_status.config(text=self.t("ig_odjava_gotovo"), fg=SUBTEXT)
+        self._spremi_postavke()
+
+    def _kartica_folder(self, roditelj):
+        self._naslov_kartice(roditelj, "3", self.t("kartica_3"))
+        card = tk.Frame(roditelj, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x")
+        staklena_linija(card, posvijetli(CARD, 0.22)).pack(fill="x", side="top")
+
+        red = tk.Frame(card, bg=CARD)
+        red.pack(fill="x", padx=14, pady=14)
+        self.lbl_folder = tk.Label(red, text=self.trenutni_folder, font=("Segoe UI", 8), bg=INPUT_BG,
+                                   fg=TEXT, anchor="w", padx=8, highlightbackground=BORDER, highlightthickness=1)
+        self.lbl_folder.pack(side="left", fill="x", expand=True, ipady=6)
+        self._napravi_dugme(red, self.t("gumb_odaberi_folder"), self.odaberi_folder, bg=PAUSE_BG, hover=PAUSE_HOVER,
+                            font_size=8, padx=10, pady=6).pack(side="left", padx=(8, 0))
+        self._napravi_dugme(red, self.t("gumb_otvori_folder"), self.otvori_output_folder, bg=PAUSE_BG, hover=PAUSE_HOVER,
+                            font_size=8, padx=10, pady=6).pack(side="left", padx=(8, 0))
+
+    def _panel_desno(self, roditelj):
+        """Desna kolona: JEDAN panel koji dijeli isto mjesto između playera za
+        označavanje isječka (UGRAĐEN, bez zasebnog OS prozora koji iskače) i
+        STATUS logova - klikom na zaglavlje se sadržaj otvara/zatvara, a
+        svjetlo u zaglavlju pokazuje stanje (sivo = mirno, plavo = skidanje u
+        tijeku, crveno = greška, zeleno treperi 5s = uspješno skinuto)."""
+        roditelj.rowconfigure(0, weight=1)
+        roditelj.columnconfigure(0, weight=1)
+
+        self.desni_panel = tk.Frame(roditelj, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        self.desni_panel.grid(row=0, column=0, sticky="nsew")
+        staklena_linija(self.desni_panel, posvijetli(CARD, 0.22)).pack(fill="x", side="top")
+
+        # ---- zaglavlje (klikni za otvori/zatvori sadržaj ispod) ----
+        self._status_expanded = True
+        self._desni_mod = "log"  # "log" ili "player" - koji sadrzaj trenutno dijeli mjesto ispod
+        zaglavlje = tk.Frame(self.desni_panel, bg=CARD, cursor="hand2")
+        zaglavlje.pack(fill="x", side="top")
+
+        self.status_svjetlo = tk.Canvas(zaglavlje, width=14, height=14, bg=CARD, highlightthickness=0, cursor="hand2")
+        self._svjetlo_id = self.status_svjetlo.create_oval(2, 2, 13, 13, fill=SUBTEXT, outline="")
+        self.status_svjetlo.pack(side="left", padx=(12, 8), pady=9)
+
+        self.lbl_status_naslov = tk.Label(zaglavlje, text=self.t("status_naslov"), font=("Segoe UI", 9, "bold"),
+                                          bg=CARD, fg=SUBTEXT, cursor="hand2")
+        self.lbl_status_naslov.pack(side="left", pady=9)
+
+        # Zaseban gumb za PREBACIVANJE izmedju playera i STATUS loga (dok je
+        # panel otvoren) - "sakrij/prikaži" desno od ovoga samo SKUPLJA/SIRI
+        # cijeli panel, ne prebacuje sadrzaj, pa bez ovoga nema nacina da
+        # korisnik RUCNO pogleda log dok je player otvoren (npr. da provjeri
+        # detalje greske nakon neuspjelog pregleda).
+        self.lbl_prebaci_prikaz = tk.Label(zaglavlje, text="", font=("Segoe UI", 8, "underline"),
+                                           bg=CARD, fg=ACCENT, cursor="hand2")
+        self.lbl_prebaci_prikaz.pack(side="left", padx=(10, 0), pady=9)
+        self.lbl_prebaci_prikaz.bind("<Button-1>", self._prebaci_player_log)
+
+        self.lbl_status_strelica = tk.Label(zaglavlje, text=self.t("status_sakrij"), font=("Segoe UI", 8),
+                                            bg=CARD, fg=SUBTEXT, cursor="hand2")
+        self.lbl_status_strelica.pack(side="right", padx=12, pady=9)
+
+        tk.Button(zaglavlje, text=self.t("gumb_ocisti_log"), font=("Segoe UI", 8), bg=CARD, fg=SUBTEXT,
+                  activebackground=CARD, activeforeground=TEXT, relief="flat", bd=0, cursor="hand2",
+                  command=self.ocisti_log).pack(side="right", padx=(0, 4), pady=9)
+
+        for widget in (zaglavlje, self.status_svjetlo, self.lbl_status_naslov, self.lbl_status_strelica):
+            widget.bind("<Button-1>", self._toggle_status)
+
+        staklena_linija(self.desni_panel, posvijetli(CARD, 0.14)).pack(fill="x", side="top")
+
+        # ---- sadržaj: dijeljeno mjesto - ILI player ILI STATUS log, nikad oboje ----
+        self.desni_sadrzaj = tk.Frame(self.desni_panel, bg=CARD)
+        self.desni_sadrzaj.pack(fill="both", expand=True, side="top")
+
+        # -- player: placeholder dok se ne otvori, pa ugrađeni prozor preko njega --
+        self.player_placeholder = tk.Label(
+            self.desni_sadrzaj,
+            text=self.t("player_placeholder"),
+            font=("Segoe UI", 10), bg=CARD, fg=SUBTEXT, justify="center"
+        )
+        self.player_embed_frame = tk.Frame(self.desni_sadrzaj, bg="black")
+        # namjerno se NE prikazuje odmah - postavlja se tek kad se player stvarno otvori
+        self.player_embed_frame.bind("<Configure>", lambda e: self._namjesti_velicinu_playera())
+
+        # -- STATUS log + napredak --
+        self.status_body = tk.Frame(self.desni_sadrzaj, bg=BG)
+
+        # Popis pojedinačnih linkova sa statusom - prikazuje se SAMO kad se
+        # skida VIŠE OD JEDNOG linka odjednom (vidi _prikazi_status_linkova),
+        # da se odmah vidi KOJI je link uspio/pao umjesto da se to mora
+        # traziti skrolanjem kroz STATUS log.
+        self.frame_status_linkova = tk.Frame(self.status_body, bg=BG)
+        self._redovi_status_linkova = []
+
+        okvir = tk.Frame(self.status_body, bg=LOG_BG, highlightbackground=BORDER, highlightthickness=1)
+        self._log_okvir = okvir
+        okvir.pack(fill="both", expand=True, pady=(8, 0))
+        self.log = scrolledtext.ScrolledText(okvir, height=10, font=("Consolas", 9), state="disabled",
+                                             bg=LOG_BG, fg=LOG_TEXT, relief="flat", highlightthickness=0)
+        self.log.pack(fill="both", expand=True, padx=8, pady=8)
+
+        napredak = tk.Frame(self.status_body, bg=BG)
+        napredak.pack(fill="x", pady=(10, 0))
+        self.progress = ttk.Progressbar(napredak, style="Cyber.Horizontal.TProgressbar",
+                                        orient="horizontal", mode="determinate", maximum=100, value=0)
+        self.progress.pack(fill="x")
+
+        red = tk.Frame(self.status_body, bg=BG)
+        red.pack(fill="x", pady=(4, 0))
+        self.lbl_brzina = tk.Label(red, text="", font=("Segoe UI", 8), bg=BG, fg=SUBTEXT)
+        self.lbl_brzina.pack(side="left")
+        self.lbl_postotak = tk.Label(red, text="0%", font=("Segoe UI", 9, "bold"), bg=BG, fg=SUCCESS)
+        self.lbl_postotak.pack(side="right")
+
+        self._prikazi_sadrzaj("log")
+
+    def _toggle_status(self, event=None):
+        self._status_expanded = not self._status_expanded
+        if self._status_expanded:
+            self.desni_sadrzaj.pack(fill="both", expand=True, side="top")
+            self.lbl_status_strelica.config(text=self.t("status_sakrij"))
+            if (EMBED_PLAYERA_DOSTUPAN and getattr(self, "_webview_hwnd", None)
+                    and getattr(self, "_desni_mod", None) == "player"):
+                try:
+                    win32gui.ShowWindow(self._webview_hwnd, win32con.SW_SHOW)
+                except Exception:
+                    pass
+        else:
+            self.desni_sadrzaj.pack_forget()
+            self.lbl_status_strelica.config(text=self.t("status_prikazi"))
+            # isti razlog kao u _prikazi_sadrzaj - pravi Windows prozor se ne
+            # sakrije sam kad se Tkinter roditelj skupi, mora se rucno sakriti.
+            if EMBED_PLAYERA_DOSTUPAN and getattr(self, "_webview_hwnd", None):
+                try:
+                    win32gui.ShowWindow(self._webview_hwnd, win32con.SW_HIDE)
+                except Exception:
+                    pass
+
+    def _prikazi_sadrzaj(self, mod):
+        """Prebacuje ono sto je prikazano u zajednickom prostoru (self.desni_sadrzaj)
+        izmedju playera za oznacavanje isjecka i STATUS logova - oboje dijele
+        isto mjesto (umjesto zasebnih okvira kao ranije), nikad se ne prikazuju
+        istovremeno. 'mod' je 'player' ili 'log'. Ako je panel trenutno skupljen,
+        automatski se otvara da se novi sadrzaj stvarno i vidi."""
+        self._desni_mod = mod
+        self.player_placeholder.place_forget()
+        self.player_embed_frame.place_forget()
+        self.status_body.pack_forget()
+        # BITNO: ugradjeni webview je PRAVI Windows prozor (spojen preko
+        # SetParent, ne obican Tkinter widget) - place_forget() na Tkinter
+        # OKVIRU koji ga sadrzi NE sakrije i sam taj pravi prozor, on ostaje
+        # vidljiv PREKO svega (npr. preko STATUS loga) jer Tkinter uopce ne
+        # zna za njega. Mora se rucno sakriti/prikazati preko Win32 poziva.
+        if EMBED_PLAYERA_DOSTUPAN and getattr(self, "_webview_hwnd", None):
+            try:
+                win32gui.ShowWindow(self._webview_hwnd,
+                                    win32con.SW_SHOW if mod == "player" else win32con.SW_HIDE)
+            except Exception:
+                pass
+        if mod == "player":
+            self.lbl_status_naslov.config(text=self.t("player_naslov"))
+            self.lbl_prebaci_prikaz.config(text=self.t("link_prikazi_log"))
+            if EMBED_PLAYERA_DOSTUPAN:
+                self.player_embed_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+            else:
+                self.player_placeholder.config(text=self.t("player_zaseban_prozor"))
+                self.player_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+        else:
+            self.lbl_status_naslov.config(text=self.t("status_naslov"))
+            self.lbl_prebaci_prikaz.config(
+                text=self.t("link_prikazi_player") if getattr(self, "_zadnji_video_id", None) else "")
+            self.status_body.pack(fill="both", expand=True)
+        if not self._status_expanded:
+            self._toggle_status()
+
+    def _prebaci_player_log(self, event=None):
+        """Klik na 'Prikaži log'/'Prikaži player' link - RUCNO prebacivanje
+        izmedju ta dva prikaza, neovisno o skupi/rasiri gumbu pored njega."""
+        if self._desni_mod == "player":
+            self._prikazi_sadrzaj("log")
+        elif getattr(self, "_zadnji_video_id", None):
+            self._prikazi_sadrzaj("player")
+
+    # ------------------------------------------------------- status svjetlo ---
+    def _status_light(self, boja):
+        """Postavlja boju svjetla na STATUS traci i prekida bilo koje treperenje u tijeku."""
+        self._blink_token += 1
+        try:
+            self.status_svjetlo.itemconfig(self._svjetlo_id, fill=boja)
+        except Exception:
+            pass
+
+    def _status_blink_uspjeh(self, trajanje=6.0, interval_ms=400):
+        """Zeleno svjetlo treperi 'trajanje' sekundi kad skidanje uspješno završi."""
+        self._blink_token += 1
+        moj_token = self._blink_token
+        krajnje_vrijeme = time.time() + trajanje
+
+        def _tik(upaljeno=True):
+            if moj_token != self._blink_token:
+                return  # u međuvremenu je pokrenuto nešto drugo (nova greška/skidanje)
+            if time.time() >= krajnje_vrijeme:
+                try:
+                    self.status_svjetlo.itemconfig(self._svjetlo_id, fill=SUCCESS)
+                except Exception:
+                    pass
+                return
+            boja = SUCCESS if upaljeno else CARD
+            try:
+                self.status_svjetlo.itemconfig(self._svjetlo_id, fill=boja)
+            except Exception:
+                pass
+            self.root.after(interval_ms, lambda: _tik(not upaljeno))
+
+        _tik(True)
+
+    # -------------------------------------------------------- ugradnja playera ---
+    def _namjesti_velicinu_playera(self):
+        """Kad se 'player_embed_frame' promijeni veličine (npr. korisnik rastegne
+        prozor), ugrađeni OS prozor se ručno preslaguje na istu veličinu - Windows
+        to ne radi sam za reparentani prozor."""
+        if not self._webview_hwnd or not WIN32_DOSTUPAN:
+            return
+        self.player_embed_frame.update_idletasks()
+        sirina = self.player_embed_frame.winfo_width()
+        visina = self.player_embed_frame.winfo_height()
+        if sirina > 1 and visina > 1:
+            try:
+                win32gui.MoveWindow(self._webview_hwnd, 0, 0, sirina, visina, True)
+                # WebView2 (Edge) crta preko DirectComposition-a i zna ostati
+                # nacrtan NA STAROJ velicini kratko nakon sto se sam Windows
+                # prozor promijeni - isti "gubitak kompozicije" problem kao pri
+                # prvoj ugradnji (vidi _cekaj_pa_ugradi_webview). Bez ovog
+                # "kick-a" nakon svakog resiza, prazan/taman prostor ostaje
+                # ispod stvarnog sadrzaja dok se WebView2 sam ne odluci
+                # ponovno nacrtati (npr. pri sljedecem repaintu).
+                win32gui.SetWindowPos(
+                    self._webview_hwnd, None, 0, 0, 0, 0,
+                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED
+                )
+            except Exception:
+                pass
+
+    def _pripremi_ugradjeni_webview(self):
+        """Stvara JEDAN pywebview prozor koji živi cijelo vrijeme rada aplikacije.
+
+        VAŽNO (v17.0.1): 'webview.create_window()' smije se pozvati iz bilo koje
+        niti I PRIJE nego se pokrene 'webview.start()' - prozor se tada samo
+        registrira, a stvarno se stvara kad GUI petlja krene. Sam 'webview.start()'
+        MORA biti pozvan iz glavne niti aplikacije (tvrdo ograničenje biblioteke -
+        otud greška "pywebview must be run on a main thread" kad se pozivao iz
+        pozadinske niti). Zato se ovdje SAMO registrira prozor i pokreće nit koja
+        čeka da se on stvarno pojavi kao OS prozor pa ga ugrađuje (reparenta);
+        sam 'webview.start()' zove se na dnu datoteke, u glavnom pokretačkom bloku."""
+        try:
+            api = PlayerAPI(self.queue_sanjac)
+            self._player_api = api
+            self._webview_window = webview.create_window(
+                WEBVIEW_NASLOV_PROZORA, url="about:blank", js_api=api, width=100, height=100,
+                hidden=True,  # BITNO: skriven dok se stvarno ne ugradi (vidi _cekaj_pa_ugradi_webview)
+                              # - bez ovoga, ako ugradnja ikad zakasni/omane, korisnik na tren
+                              # (ili trajno, ako ugradnja stvarno ne uspije) vidi mali goli,
+                              # bijeli Windows prozor kako "lebdi" sam za sebe umjesto app-a.
+            )
+            threading.Thread(target=self._cekaj_pa_ugradi_webview, daemon=True).start()
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_embed_prep_failed").format(em)))
+
+    def _cekaj_pa_ugradi_webview(self):
+        _log_pokretanja("_cekaj_pa_ugradi_webview() ušao (nova nit) - tražim webview prozor po imenu")
+        hwnd = None
+        for _ in range(150):  # do ~15s čekanja da OS stvarno stvori prozor
+            hwnd = win32gui.FindWindow(None, WEBVIEW_NASLOV_PROZORA)
+            if hwnd:
+                break
+            time.sleep(0.1)
+        if not hwnd:
+            _log_pokretanja("_cekaj_pa_ugradi_webview() NIJE NAŠAO prozor nakon ~15s (odustao)")
+            self.root.after(0, self.ispisi, self.t("msg_embed_not_found"))
+            return
+        _log_pokretanja(f"_cekaj_pa_ugradi_webview() našao hwnd={hwnd} - ugrađujem")
+        try:
+            parent_hwnd = self.player_embed_frame.winfo_id()
+            stil = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+            stil = (stil & ~win32con.WS_POPUP & ~win32con.WS_CAPTION & ~win32con.WS_THICKFRAME
+                    & ~win32con.WS_SYSMENU & ~win32con.WS_MAXIMIZEBOX & ~win32con.WS_MINIMIZEBOX)
+            stil |= win32con.WS_CHILD
+            win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, stil)
+            win32gui.SetParent(hwnd, parent_hwnd)
+            # Prozor je stvoren SKRIVEN (vidi _pripremi_ugradjeni_webview) bas
+            # da ne bi ovaj kratki trenutak (dok se gore mijenja stil i
+            # reparenta) bio vidljiv kao goli, bijeli Windows prozor. Tek SAD,
+            # kad je vec pravi WS_CHILD unutar naseg embed-frame-a, ga
+            # pokazujemo - sad ce se pojaviti UNUTAR app-a, ne kao zaseban
+            # prozor.
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            self._webview_hwnd = hwnd
+            self.root.after(0, self._namjesti_velicinu_playera)
+            # WebView2 (Edge) crta preko DirectComposition-a i zna "izgubiti"
+            # kompoziciju čim se prozor reparenta drugom vlasniku - rezultat je
+            # potpuno crn player iako je stranica ispod haube stvarno učitana.
+            # SWP_FRAMECHANGED prisiljava Windows da ponovno izračuna stil/okvir,
+            # a mali "kick" veličine (smanji pa vrati) prisiljava WebView2 da
+            # ponovno izračuna svoj compositing target i stvarno nacrta sadržaj.
+            win32gui.SetWindowPos(
+                hwnd, None, 0, 0, 0, 0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED
+            )
+            self.root.after(200, self._forsiraj_repaint_playera)
+            self._webview_spreman.set()
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_embed_failed").format(em)))
+
+    def _forsiraj_repaint_playera(self):
+        """Nakon SetParent-a, WebView2 zna ostati crn dok se veličina prozora
+        stvarno ne promijeni. Ovo simulira tu promjenu (smanji pa odmah vrati)
+        da natjera WebView2 da ponovno nacrta sadržaj. Bezopasno je pozvati
+        više puta - koristi se i nakon svakog promjene veličine glavnog prozora."""
+        if not self._webview_hwnd or not WIN32_DOSTUPAN:
+            return
+        try:
+            rect = win32gui.GetWindowRect(self._webview_hwnd)
+            sirina = rect[2] - rect[0]
+            visina = rect[3] - rect[1]
+            if sirina <= 2 or visina <= 2:
+                self.root.after(200, self._forsiraj_repaint_playera)
+                return
+            win32gui.MoveWindow(self._webview_hwnd, 0, 0, sirina - 1, visina, True)
+            self.root.after(60, lambda: win32gui.MoveWindow(self._webview_hwnd, 0, 0, sirina, visina, True))
+        except Exception:
+            pass
+
+    def _izgradi_donju_traku(self):
+        # Vanjski omot preko CIJELE širine prozora (nevidljiv, boja pozadine) -
+        # unutar njega, kartica s dugmadima se poravna na LIJEVU stranu i
+        # suzuje na širinu lijevog stupca (izgleda kao prirodan "4. korak"
+        # nastavak kartica 1-2-3 iznad, umjesto odvojene trake preko cijelog
+        # prozora) - u uskom rasporedu se proširi na sve. Isti grid+minsize
+        # trik kao za sam lijevi/desni stupac (_primijeni_raspored), samo
+        # primijenjen ovdje na jedan red umjesto na cijeli glavni raspored.
+        omot = tk.Frame(self.root, bg=BG)
+        omot.pack(fill="x", padx=22, pady=(14, 6))
+        self._donja_traka_omot = omot
+
+        uzi = tk.Frame(omot, bg=BG)
+        uzi.grid(row=0, column=0, sticky="ew")
+        self._donja_traka_uzi = uzi
+
+        self._naslov_kartice(uzi, "4", self.t("kartica_4"))
+
+        card = tk.Frame(uzi, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x")
+        staklena_linija(card, posvijetli(CARD, 0.22)).pack(fill="x", side="top")
+
+        unutra = tk.Frame(card, bg=CARD)
+        unutra.pack(fill="x", padx=14, pady=14)
+
+        self.btn_download = self._napravi_dugme(unutra, self.t("skini_video"), self.pokreni_preuzimanje,
+                                                bg=ACCENT, hover=ACCENT_HOVER, font_size=12, height=2)
+        self.btn_download.pack(fill="x")
+
+        red_dugmadi = tk.Frame(unutra, bg=CARD)
+        red_dugmadi.pack(fill="x", pady=(8, 0))
+
+        self.btn_pause = self._napravi_dugme(red_dugmadi, self.t("gumb_pauziraj"), self.toggle_pauza,
+                                             bg=PAUSE_BG, hover=PAUSE_HOVER, font_size=10, height=1)
+        self.btn_pause.pack(side="left", fill="x", expand=True)
+        self.btn_pause.config(state="disabled")
+
+        # Prekini dobiva CRVENKASTI hover (umjesto istog sivog kao Pauziraj) -
+        # to je ozbiljnija/nepovratna akcija, pa boja to sad i vizualno odražava.
+        self.btn_prekini = self._napravi_dugme(red_dugmadi, self.t("gumb_prekini"), self.prekini_preuzimanje,
+                                               bg=PAUSE_BG, hover="#7a2a35", font_size=10, height=1)
+        self.btn_prekini.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.btn_prekini.config(state="disabled")
+
+        self.btn_retry_failed = self._napravi_dugme(
+            unutra, self._novo_t("↻ Ponovi neuspjele (0)", "↻ Retry failed (0)"), self._ponovi_neuspjele,
+            bg=PAUSE_BG, hover=PAUSE_HOVER, font_size=10, height=1)
+        self.btn_retry_failed.pack(fill="x", pady=(8, 0))
+        self.btn_retry_failed.config(state="disabled")
+        self.lbl_queue_summary = tk.Label(
+            unutra, text=self._novo_t("Red čekanja: 0/0", "Queue: 0/0"), bg=CARD, fg=SUBTEXT,
+            font=("Segoe UI", 9), anchor="w")
+        self.lbl_queue_summary.pack(fill="x", pady=(5, 0))
+
+        self._primijeni_raspored_donje_trake(getattr(self, "_raspored_je_uzak", False))
+
+    def _primijeni_raspored_donje_trake(self, uzak):
+        """Sirina kartice s dugmadima za skidanje prati isto pravilo kao lijevi
+        stupac (vidi _primijeni_raspored) - fiksna sirina poravnata lijevo u
+        sirokom rasporedu (stupac 1 ostaje prazan prostor desno), puna sirina
+        u uskom (stupac 1 se iskljuci, da stupac 0 uzme sve)."""
+        if not hasattr(self, "_donja_traka_omot"):
+            return
+        if uzak:
+            self._donja_traka_omot.columnconfigure(0, minsize=0, weight=1)
+            self._donja_traka_omot.columnconfigure(1, weight=0)
+        else:
+            self._donja_traka_omot.columnconfigure(0, minsize=self.SIRINA_LIJEVOG_STUPCA, weight=0)
+            self._donja_traka_omot.columnconfigure(1, weight=1)
+
+    def _izgradi_statusnu_traku(self):
+        traka = tk.Frame(self.root, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        traka.pack(fill="x", side="bottom")
+        self.lbl_status_alati = tk.Label(traka, text=self.t("provjeravam_alate"), font=("Segoe UI", 8),
+                                         bg=CARD, fg=SUBTEXT, anchor="w")
+        self.lbl_status_alati.pack(side="left", padx=12, pady=5)
+
+    def _napravi_dugme(self, parent, tekst, komanda, bg, hover, font_size=10, bold=True,
+                       height=None, width=None, padx=14, pady=None):
+        kwargs = dict(
+            text=tekst, font=("Segoe UI", font_size, "bold" if bold else "normal"),
+            bg=bg, fg="white" if bg == ACCENT else TEXT,
+            activebackground=hover, activeforeground="white" if bg == ACCENT else TEXT,
+            relief="flat", bd=0, cursor="hand2", command=komanda, padx=padx,
+        )
+        if height is not None:
+            kwargs["height"] = height
+        if width is not None:
+            kwargs["width"] = width
+        if pady is not None:
+            kwargs["pady"] = pady
+        btn = tk.Button(parent, **kwargs)
+        btn.bind("<Enter>", lambda e: btn.config(bg=hover) if btn["state"] != "disabled" else None)
+        btn.bind("<Leave>", lambda e: btn.config(bg=bg) if btn["state"] != "disabled" else None)
+        return btn
+
+    # ------------------------------------------------------- male pomocne ---
+    def _osvjezi_stanje_nacina(self):
+        """Sivi/sakriva opcije koje za odabrani nacin nemaju smisla - da korisnik
+        ne bira rezoluciju za mp3, audio format za nijemi video, ili bilo koju
+        video/audio opciju za 'Slika (Instagram)' (koja preko gallery-dl vuce
+        SLIKE, ne video - kvaliteta/format/omjer tu nemaju nikakvog smisla)."""
+        nacin = self.var_nacin.get()
+        je_slika = (nacin == "slika_instagram")
+
+        if je_slika and getattr(self, "_desni_mod", None) == "player":
+            # Player (video pregled/oznacavanje isjecka) nema smisla za slike
+            # - ako je vec otvoren kad korisnik prebaci na ovaj nacin, sklonimo
+            # ga umjesto da ostane prikazivati stari video pregled bez smisla.
+            self._prikazi_sadrzaj("log")
+            self.ispisi(self.t("msg_ig_slika_no_preview"))
+
+        self.cb_audio.config(state="readonly" if nacin == "samo_zvuk" else "disabled")
+        self.cb_video_format.config(state="disabled" if nacin in ("samo_zvuk", "slika_instagram") else "readonly")
+        self.cb_kvaliteta.config(state="disabled" if nacin in ("samo_zvuk", "slika_instagram") else "readonly")
+
+        if je_slika:
+            self.lbl_kvaliteta.grid_remove()
+            self.cb_kvaliteta.grid_remove()
+        else:
+            self.lbl_kvaliteta.grid(row=0, column=0, sticky="w", pady=(0, 3))
+            self.cb_kvaliteta.grid(row=1, column=0, sticky="w")
+
+        if nacin == "samo_video" or je_slika:
+            self.lbl_format_zvuka.grid_remove()
+            self.cb_audio.grid_remove()
+        else:
+            self.lbl_format_zvuka.grid(row=0, column=2, sticky="w", padx=(18, 0), pady=(0, 3))
+            self.cb_audio.grid(row=1, column=2, sticky="w", padx=(18, 0))
+
+        if nacin == "samo_zvuk" or je_slika:
+            self.lbl_format_videa.grid_remove()
+            self.cb_video_format.grid_remove()
+        else:
+            self.lbl_format_videa.grid(row=0, column=1, sticky="w", padx=(18, 0), pady=(0, 3))
+            self.cb_video_format.grid(row=1, column=1, sticky="w", padx=(18, 0))
+
+        if nacin == "samo_zvuk" or je_slika:
+            self.red_omjer.pack_forget()
+        else:
+            self.red_omjer.pack(fill="x", padx=14, pady=(12, 14), before=self._donji_razmak_opcije)
+
+        if je_slika:
+            self.panel_ig_slika.pack(fill="x", padx=14, pady=(0, 14), before=self._donji_razmak_opcije)
+        else:
+            self.panel_ig_slika.pack_forget()
+
+        oznake = {"video_zvuk": self.t("skini_video"), "samo_video": self.t("skini_video_bez_zvuka"),
+                  "samo_zvuk": self.t("skini_zvuk"), "slika_instagram": self.t("skini_slike")}
+        if not self.aktivno_preuzimanje:
+            self.btn_download.config(text=oznake.get(nacin, self.t("skini_video")))
+
+    def _spremi_postavke(self):
+        self.cfg.update({
+            "izlazni_folder": self.trenutni_folder,
+            "nacin": self.var_nacin.get(),
+            "kvaliteta": self.var_kvaliteta.get(),
+            "video_format": self.var_video_format.get(),
+            "audio_format": self.var_audio_format.get(),
+            "omjer_slike": self.var_omjer_slike.get(),
+            "cookies_browser": self.var_cookies_browser.get(),
+            "cookies_izvor": self.var_cookies_izvor.get(),
+            "cookies_fajl": self.var_cookies_fajl.get(),
+            "h264": self.var_h264.get(),
+            "metapodaci": self.var_metapodaci.get(),
+        })
+        try:
+            # NE spremaj velicinu dok je prozor maksimiziran - u tom stanju
+            # geometry() vraca velicinu RADNOG PROSTORA EKRANA, a ne "normalnu"
+            # velicinu prozora prije maksimiziranja. Da smo je ovdje spremili,
+            # svako sljedece pokretanje app bi bio ogroman prozor. Provjeravamo
+            # I self._maksimiziran (nasa prilagodjena naslovna traka, gdje
+            # root.state() ostaje "normal" jer se maksimiziranje radi rucno
+            # preko geometry(), ne preko root.state('zoomed')) I sam
+            # root.state() (obican OS okvir, ako prilagodjena traka nije
+            # aktivna na ovom sustavu).
+            if getattr(self, "_maksimiziran", False):
+                pass
+            elif self.root.state() != "zoomed":
+                self.cfg["prozor"] = self.root.geometry().split("+")[0]
+        except Exception:
+            pass
+        return spremi_config(self.cfg)
+
+    def zatvori(self):
+        self._spremi_postavke()
+        if self.player_proces and self.player_proces.is_alive():
+            try:
+                self.player_proces.terminate()
+            except Exception:
+                pass
+        if self._webview_window is not None:
+            try:
+                self._webview_window.destroy()
+            except Exception:
+                pass
+        if hasattr(self, "_taskbar_vlasnik"):
+            try:
+                self._taskbar_vlasnik.destroy()
+            except Exception:
+                pass
+        self.root.destroy()
+        if PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
+            # sigurnosna mreža: ako webview.start() u glavnoj niti iz bilo kojeg
+            # razloga ne vrati kontrolu čim se zadnji prozor uništi, ugasi proces
+            # nasilno nakon kratke pauze - bolje to nego app koji "visi" u pozadini.
+            threading.Timer(2.0, lambda: os._exit(0)).start()
+
+    def resetiraj_velicinu_prozora(self):
+        """Rucni, pouzdan izlaz iz nužde - vraca prozor na razumnu pocetnu
+        velicinu (1240x820) i normalno (ne-maksimizirano) stanje, bez obzira
+        sto je uzrokovalo da prozor ostane ogroman. Namjerno ne ovisi ni o
+        kakvoj automatskoj detekciji - samo silom postavi poznato dobro stanje."""
+        try:
+            self.root.state("normal")
+        except Exception:
+            pass
+        if getattr(self, "_maksimiziran", False):
+            self._maksimiziran = False
+            try:
+                self._btn_max_naslov.config(text="🗖")
+            except Exception:
+                pass
+        self.root.geometry("1240x820")
+        self._centriraj_prozor()
+        self.cfg["prozor"] = "1240x820"
+        spremi_config(self.cfg)
+        self.ispisi(self.t("msg_window_reset"))
+
+    def _provjeri_i_prikazi_novosti(self):
+        """Ako je ovo prvi put da se OVA verzija pokrece na ovom racunalu, prikaze
+        kratak dijalog sto je promijenjeno/popravljeno (iz PROMJENE recnika) - i
+        onda to zapamti, tako da se dijalog ne ponavlja na svako pokretanje, nego
+        samo jednom po verziji (opet ce se pojaviti tek kad izadje sljedeca)."""
+        if self.cfg.get("zadnja_prikazana_verzija") == APP_VERZIJA:
+            return
+        stavke = PROMJENE.get(APP_VERZIJA, {}).get(self.jezik) or PROMJENE.get(APP_VERZIJA, {}).get("hr")
+        if stavke:
+            tekst = "\n\n".join(f"• {s}" for s in stavke)
+            naslov = f"Novosti u v{APP_VERZIJA}" if self.jezik == "hr" else f"What's new in v{APP_VERZIJA}"
+            messagebox.showinfo(naslov, tekst)
+        self.cfg["zadnja_prikazana_verzija"] = APP_VERZIJA
+        spremi_config(self.cfg)
+
+    def o_aplikaciji(self):
+        messagebox.showinfo(
+            self.t("o_aplikaciji_naslov"),
+            f"💪 Mister Muscle Downloader\n"
+            f"{'Verzija' if self.jezik == 'hr' else 'Version'} {APP_VERZIJA}\n"
+            f"{self.t('o_aplikaciji_autor')}\n"
+            f"{self.t('o_aplikaciji_prava')}\n\n"
+            f"{self.t('podnaslov_app')}\n\n"
+            f"{self.t('o_aplikaciji_auto_update')}\n\n"
+            f"{self.t('o_aplikaciji_alati')}: {_alati_folder()}\n"
+            f"{self.t('o_aplikaciji_postavke')}: {CONFIG_PATH}\n"
+            f"yt-dlp: {yt_dlp_exe_putanja()}\n"
+            f"ffmpeg: {ffmpeg_putanja() or self.t('nije_pronadjen')}"
+        )
+
+    def _otvori_putanju(self, putanja):
+        try:
+            napravi_folder(putanja)
+            if JE_WINDOWS:
+                os.startfile(putanja)
+            else:
+                subprocess.Popen(["xdg-open", putanja])
+        except Exception as err:
+            messagebox.showerror(self.t("err_naslov"), self.t("msg_cannot_open").format(err, putanja))
+
+    def prikazi_desni_klik(self, event):
+        try:
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.context_menu.grab_release()
+
+    def zalijepi_tekst(self):
+        try:
+            clipboard_tekst = self.root.clipboard_get()
+            if self.text_links.get("1.0", "end").strip() == self._placeholder:
+                self.text_links.delete("1.0", "end")
+                self.text_links.config(fg=TEXT)
+            self.text_links.insert("insert", clipboard_tekst)
+        except Exception:
+            pass
+
+    def ocisti_linkove(self):
+        self.text_links.delete("1.0", "end")
+        self._postavi_placeholder()
+        if self._auto_ucitaj_after_id:
+            self.root.after_cancel(self._auto_ucitaj_after_id)
+            self._auto_ucitaj_after_id = None
+        self._zadnji_auto_ucitani_link = None
+
+    # ---------------------------------------------------- auto-ucitaj player ---
+    def _na_promjenu_linkova(self, event=None):
+        """Poziva se na SVAKU promjenu teksta u polju za linkove (<<Modified>>).
+        Ne radimo nista tesko ovdje - samo (re)zakazemo provjeru malo kasnije,
+        da ne pokusavamo otvarati player na svaki pojedini pritisak tipke dok
+        korisnik jos tipka/lijepi (debounce)."""
+        if not self.text_links.edit_modified():
+            return
+        self.text_links.edit_modified(False)  # mora se rucno resetirati da se event opet okine
+        if self._auto_ucitaj_after_id:
+            self.root.after_cancel(self._auto_ucitaj_after_id)
+        self._auto_ucitaj_after_id = self.root.after(600, self._auto_ucitaj_player)
+        # Quality scan ne blokira GUI; kratka odgoda dok korisnik lijepi link.
+        if getattr(self, "_quality_scan_after_id", None):
+            self.root.after_cancel(self._quality_scan_after_id)
+        self._quality_scan_url = None
+        self._quality_scan_heights = None
+        self._quality_scan_formats = None
+        self.cb_kvaliteta.configure(values=kvalitete_za_jezik(self.jezik))
+        self._quality_scan_after_id = self.root.after(
+            1300, lambda: self.provjeri_dostupne_kvalitete(automatski=True))
+
+    def _auto_ucitaj_player(self):
+        """Ako prvi redak izgleda kao pravi link i razlikuje se od zadnjeg koji
+        smo vec automatski otvorili, otvori/osvjezi player - BEZ da korisnik mora
+        kliknuti '🔄 Ponovno učitaj player'."""
+        self._auto_ucitaj_after_id = None
+        if not PYWEBVIEW_DOSTUPAN:
+            return
+        if self.aktivno_preuzimanje:
+            return  # ne diraj player dok skidanje vec traje
+        if self.var_nacin.get() == "slika_instagram":
+            return  # slike nemaju video pregled - vidi otvori_player()
+        url = self._prvi_link()
+        if not url or not re.match(r"^https?://", url, re.IGNORECASE):
+            return
+        if url == self._zadnji_auto_ucitani_link:
+            return
+        self._zadnji_auto_ucitani_link = url
+        self.otvori_player()
+
+    def ocisti_log(self):
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
+
+    def _postavi_placeholder(self):
+        self.text_links.insert("1.0", self._placeholder)
+        self.text_links.config(fg=SUBTEXT)
+
+    def _obrisi_placeholder(self, event=None):
+        if self.text_links.get("1.0", "end").strip() == self._placeholder:
+            self.text_links.delete("1.0", "end")
+            self.text_links.config(fg=TEXT)
+
+    def _vrati_placeholder(self, event=None):
+        if not self.text_links.get("1.0", "end").strip():
+            self._postavi_placeholder()
+
+    def _prvi_link(self):
+        sirovi = self.text_links.get("1.0", "end").strip()
+        if not sirovi or sirovi == self._placeholder:
+            return None
+        prvi_redak = sirovi.splitlines()[0].strip()
+        # Ako se isti YouTube URL slučajno zalijepi dvaput bez razmaka,
+        # uzmi prvi URL umjesto prosljeđivanja spojenog niza yt-dlp-u.
+        drugi_url = re.search(r"https?://", prvi_redak[8:], re.IGNORECASE)
+        if drugi_url:
+            prvi_redak = prvi_redak[:8 + drugi_url.start()].strip()
+        return prvi_redak
+
+    # ------------------------------------------------- auto-zalijepi iz clipboarda ---
+    def _pokreni_pracenje_clipboarda(self):
+        """Periodicki (svake ~1s) provjerava je li u clipboardu novi link, i ako
+        JEST, sam ga upisuje u polje za linkove - bez da korisnik mora sam
+        pritisnuti Ctrl+V ili 'Zalijepi'. Radi SAMO dok prozor ima fokus (vidi
+        _na_fokus_prozora) - ne diramo clipboard dok korisnik radi u NEKOJ
+        DRUGOJ aplikaciji, samo kad se stvarno vrati na nas prozor (npr. nakon
+        sto je kopirao link u browseru)."""
+        if getattr(self, "_prozor_ima_fokus", False) and not self.aktivno_preuzimanje:
+            self._provjeri_clipboard_za_link()
+        self.root.after(1000, self._pokreni_pracenje_clipboarda)
+
+    def _na_fokus_prozora(self, event):
+        if event.widget is not self.root:
+            return
+        self._prozor_ima_fokus = True
+
+    def _na_gubitak_fokusa_prozora(self, event):
+        if event.widget is not self.root:
+            return
+        self._prozor_ima_fokus = False
+
+    def _provjeri_clipboard_za_link(self):
+        try:
+            tekst = self.root.clipboard_get().strip()
+        except Exception:
+            return  # clipboard prazan ili ne sadrzi tekst (npr. slika) - nema se sto raditi
+
+        if tekst == self._zadnji_clipboard_link:
+            return  # vec smo ovo vidjeli/obradili - ne radi nista (izbjegava ponavljanje)
+        self._zadnji_clipboard_link = tekst
+
+        if not re.match(r"^https?://\S+$", tekst, re.IGNORECASE):
+            return  # nije (samo) link - ne diraj polje
+
+        # Queue Manager: novi kopirani link dodaj u NOVI RED, ne brisi stare.
+        # Duplikate preskoci; placeholder se ne racuna kao stvarni sadrzaj.
+        sirovi = self.text_links.get("1.0", "end").strip()
+        postojeci = [] if sirovi == self._placeholder else [
+            red.strip() for red in sirovi.splitlines() if red.strip()
+        ]
+        if tekst in postojeci:
+            return
+        if not postojeci:
+            self.text_links.delete("1.0", "end")
+            self.text_links.config(fg=TEXT)
+            self.text_links.insert("1.0", tekst)
+        else:
+            # Tk Text 'end-1c' je pozicija neposredno prije zavrsnog newlinea.
+            self.text_links.insert("end-1c", "\n" + tekst)
+        self.ispisi(self.t("msg_clipboard_auto_zalijepljen"))
+
+    def otvori_output_folder(self):
+        self._otvori_putanju(self.trenutni_folder)
+
+    def odaberi_folder(self):
+        odabrani_dir = filedialog.askdirectory(initialdir=self.trenutni_folder)
+        if odabrani_dir:
+            self.trenutni_folder = odabrani_dir
+            self.lbl_folder.config(text=self.trenutni_folder)
+            greska = self._spremi_postavke()
+            if greska:
+                self.ispisi(self.t("msg_folder_session_only").format(greska))
+            else:
+                self.ispisi(self.t("msg_folder_saved").format(self.trenutni_folder))
+
+    def ispisi(self, poruka):
+        self.log.configure(state="normal")
+        self.log.insert("end", poruka + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+        if "❌" in poruka:
+            self._status_light(DANGER)
+
+    def azuriraj_progress(self, val):
+        self.progress["value"] = val
+        self.lbl_postotak.config(text=f"{val:.0f}%")
+
+    def azuriraj_brzinu(self, tekst):
+        self.lbl_brzina.config(text=tekst)
+
+    def _prikazi_status_linkova(self, linkovi):
+        """Gradi popis linkova sa statusom (⏳ čeka / 🔄 skida se / ✅ uspjelo /
+        ❌ nije uspjelo) - poziva se SAMO kad ima VIŠE OD JEDNOG linka, da se
+        odmah vidi koji je link uspio/pao, umjesto da se to mora tražiti
+        skrolanjem kroz STATUS log."""
+        for w in self.frame_status_linkova.winfo_children():
+            w.destroy()
+        self._redovi_status_linkova = []
+
+        if len(linkovi) <= 1:
+            self.frame_status_linkova.pack_forget()
+            return
+
+        self.frame_status_linkova.pack(fill="x", pady=(0, 8), before=self._log_okvir)
+        for i, url in enumerate(linkovi):
+            red = tk.Frame(self.frame_status_linkova, bg=CARD)
+            red.pack(fill="x", pady=1)
+            ikona = tk.Label(red, text="⏳", font=("Segoe UI", 9), bg=CARD, fg=SUBTEXT, width=2)
+            ikona.pack(side="left", padx=(6, 4), pady=3)
+            skraceno = url if len(url) <= 70 else url[:67] + "..."
+            tekst = tk.Label(red, text=skraceno, font=("Segoe UI", 8), bg=CARD, fg=SUBTEXT, anchor="w")
+            tekst.pack(side="left", fill="x", expand=True, pady=3)
+            self._redovi_status_linkova.append((ikona, tekst))
+
+    def _azuriraj_status_link(self, indeks, stanje):
+        """'stanje' je jedno od: 'skida', 'uspjeh', 'neuspjeh'."""
+        if indeks < 0 or indeks >= len(self._redovi_status_linkova):
+            return
+        ikona, tekst = self._redovi_status_linkova[indeks]
+        mapa = {
+            "skida": ("🔄", TEXT),
+            "uspjeh": ("✅", SUCCESS),
+            "neuspjeh": ("❌", DANGER),
+        }
+        simbol, boja = mapa.get(stanje, ("⏳", SUBTEXT))
+        try:
+            ikona.config(text=simbol, fg=boja)
+            tekst.config(fg=boja if stanje != "skida" else TEXT)
+        except Exception:
+            pass
+
+    def _sakrij_status_linkova(self):
+        self.frame_status_linkova.pack_forget()
+        for w in self.frame_status_linkova.winfo_children():
+            w.destroy()
+        self._redovi_status_linkova = []
+
+    def ponisti_isjecak(self):
+        self.od_sek = None
+        self.do_sek = None
+        self.azuriraj_isjecak_prikaz()
+
+    def azuriraj_isjecak_prikaz(self):
+        if self.od_sek is None and self.do_sek is None:
+            self.isjecak_frame.pack_forget()
+            return
+        od_txt = formatiraj_trajanje(self.od_sek) if self.od_sek is not None else self.t("isjecak_pocetak")
+        do_txt = formatiraj_trajanje(self.do_sek) if self.do_sek is not None else self.t("isjecak_kraj")
+        self.lbl_isjecak.config(text=self.t("isjecak_label").format(od_txt, do_txt))
+        self.isjecak_frame.pack(fill="x", padx=14, pady=(0, 12))
+
+    def provjeri_queue(self):
+        while not self.queue_sanjac.empty():
+            try:
+                podatak = self.queue_sanjac.get_nowait()
+                if isinstance(podatak, tuple) and len(podatak) == 2:
+                    tip, vrijednost = podatak
+                    if tip == "od":
+                        self.od_sek = parse_vrijeme(vrijednost)
+                        self.ispisi(self.t("msg_start_marked").format(formatiraj_trajanje(self.od_sek)))
+                        self.azuriraj_isjecak_prikaz()
+                    elif tip == "do":
+                        self.do_sek = parse_vrijeme(vrijednost)
+                        self.ispisi(self.t("msg_end_marked").format(formatiraj_trajanje(self.do_sek)))
+                        self.azuriraj_isjecak_prikaz()
+                    elif tip == "skini_short":
+                        od_vr, do_vr = vrijednost
+                        self.od_sek = parse_vrijeme(od_vr)
+                        self.do_sek = parse_vrijeme(do_vr)
+                        self.azuriraj_isjecak_prikaz()
+                        self.pokreni_preuzimanje()
+                    elif tip == "skini_visestruke":
+                        self.pokreni_preuzimanje_visestrukih_isjecaka(vrijednost)
+                    elif tip == "lokalni_pregled":
+                        self._fallback_lokalni_pregled()
+            except Exception as err:
+                # PRIJE (v2.2) se ovo tiho gutalo (samo 'break', bez ikakvog
+                # traga) - ako bi BILO STA u obradi poruke iz reda (npr.
+                # _fallback_lokalni_pregled()) puklo, korisnik NIKAD ne bi
+                # saznao zasto se nista ne desava, jer bi greska jednostavno
+                # nestala bez traga - upravo ono sto nam se dogadjalo. Sad se
+                # barem ispise puni trag u STATUS log.
+                self.ispisi(self.t("msg_error_generic").format(f"{type(err).__name__}: {err}"))
+                self.ispisi(self.t("msg_full_error_details").format(traceback.format_exc()))
+                break
+        self.root.after(100, self.provjeri_queue)
+
+    def _provjeri_webview2_pri_pokretanju(self, tih=False):
+        """Provjerava (na glavnoj niti, jer po potrebi prikazuje dijalog) je li
+        Microsoft Edge WebView2 Runtime instaliran - bez njega player uopce ne
+        moze raditi na Windowsima (ni ugradjen ni u zasebnom prozoru). Ako
+        nedostaje, pita korisnika smije li ga automatski preuzeti i instalirati
+        (instalacija moze zatraziti Windows UAC potvrdu, zato pitamo prije).
+        'tih=True' (koristi se pri pokretanju app-a) ne javlja nista ako je
+        sve u redu - 'tih=False' (klik iz menija) uvijek potvrdi rezultat."""
+        if webview2_dostupan():
+            if not tih:
+                messagebox.showinfo(self.t("webview2_naslov"), self.t("webview2_ok_text"))
+            return
+        self.ispisi(self.t("msg_webview2_missing"))
+        odgovor = messagebox.askyesno(
+            self.t("webview2_confirm_naslov"),
+            self.t("webview2_confirm_text")
+        )
+        if not odgovor:
+            self.ispisi(self.t("msg_webview2_skipped"))
+            return
+        threading.Thread(target=self._instaliraj_webview2_u_pozadini, daemon=True).start()
+
+    def _instaliraj_webview2_u_pozadini(self):
+        try:
+            preuzmi_i_instaliraj_webview2(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            self.root.after(0, self.ispisi, self.t("msg_webview2_ready"))
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_webview2_install_failed").format(em)))
+            self.root.after(0, lambda em=str(err): messagebox.showerror(
+                self.t("err_naslov"), self.t("webview2_error_text").format(em)))
+
+    # ------------------------------------------------------ alati / update ---
+    def _provjera_alata_pri_pokretanju(self):
+        """Pri svakom pokretanju provjeri jesu li yt-dlp, ffmpeg i gallery-dl
+        tu; ako nisu, skini ih automatski. Time korisnik NE MORA nista rucno
+        instalirati - vrijedi i za gallery-dl (mal je, ne zauzima puno mjesta,
+        pa nema razloga cekati da korisnik prvi put proba 'Slika (Instagram)'
+        da bi ga tek onda skinuli)."""
+        if not yt_dlp_dostupan():
+            self.root.after(0, self.ispisi, self.t("msg_tool_missing_downloading").format(YT_DLP_EXE_NAZIV))
+            try:
+                preuzmi_yt_dlp_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_ytdlp_download_failed").format(em)))
+
+        if not ffmpeg_dostupan():
+            self.root.after(0, self.ispisi, self.t("msg_ffmpeg_missing_note"))
+            try:
+                preuzmi_ffmpeg(callback_status=lambda p: self.root.after(0, self.ispisi, p),
+                               callback_postotak=lambda p: self.root.after(0, self.azuriraj_progress, p))
+                self.root.after(0, self.azuriraj_progress, 0)
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_ffmpeg_download_failed").format(em)))
+
+        if not gallery_dl_dostupan():
+            self.root.after(0, self.ispisi, self.t("msg_tool_missing_downloading").format(GALLERY_DL_EXE_NAZIV))
+            try:
+                preuzmi_gallery_dl_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): self.ispisi(
+                    self.t("msg_gallerydl_download_failed_short").format(em)))
+
+        # Deno (JS runtime) - BEZ njega yt-dlp ne vidi sve YouTube formate
+        # (4K/1440p...), vidi komentar uz DENO_EXE_NAZIV na vrhu fajla.
+        if JE_WINDOWS and not deno_dostupan():
+            self.root.after(0, self.ispisi, self.t("msg_deno_needed_downloading"))
+            try:
+                preuzmi_deno(callback_status=lambda p: self.root.after(0, self.ispisi, p),
+                             callback_postotak=lambda p: self.root.after(0, self.azuriraj_progress, p))
+                self.root.after(0, self.azuriraj_progress, 0)
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_deno_download_failed").format(em)))
+
+        self.root.after(0, self._osvjezi_statusnu_traku)
+        self.root.after(0, self._tiha_provjera_azuriranja_pri_pokretanju)
+
+    def _tiha_provjera_azuriranja_pri_pokretanju(self):
+        """Svaki put pri pokretanju, u pozadini i bez ikakvog vidljivog UI-a dok
+        traje, provjerava ima li nova verzija yt-dlp-a (mehanizma za skidanje,
+        koji se najcesce mijenja jer prati YouTube/TikTok/Instagram promjene).
+        Ako ima, PRIJE nego sto korisnik pocne bilo sto skidati, ponudi mu
+        (dijalogom) da je odmah preuzme - nista se ne skida bez pitanja."""
+        threading.Thread(target=self._tijek_tihe_provjere, daemon=True).start()
+
+    def _tijek_tihe_provjere(self):
+        if not yt_dlp_dostupan():
+            return  # tek ce se preuzeti (ili se upravo preuzima) - provjera ovdje nema smisla
+        try:
+            rez = pokreni_yt_dlp(["--version"], timeout=15)
+            trenutna = (rez.stdout or rez.stderr).strip()
+        except Exception:
+            trenutna = None
+        if trenutna:
+            najnovija = _najnovija_verzija_yt_dlp()
+            if najnovija and najnovija != trenutna:
+                self.root.after(0, lambda: self._ponudi_azuriranje_yt_dlp(trenutna, najnovija))
+
+        # provjeri i samu aplikaciju (ne samo yt-dlp) - preko GitHub Releases
+        app_verzija, app_url = _najnovija_verzija_app()
+        if app_verzija and app_url and _usporedi_verzije(app_verzija, APP_VERZIJA) > 0:
+            self.root.after(0, lambda: self._ponudi_azuriranje_app(app_verzija, app_url))
+
+        # gallery-dl (Instagram slike) - v3.4: SAMO ako je vec preuzet (ne
+        # prisiljavamo preuzimanje ovdje za korisnike koji tu opciju nikad ne
+        # koriste). Za razliku od yt-dlp/app gore, ovo se ažurira TIHO u
+        # pozadini bez pitanja - samostalan "-U" self-update je bezopasan
+        # (nema restart, nema rizika), a korisnik je trazio jednostavnost bez
+        # dodatnih dijaloga koji bi samo zbunjivali.
+        if gallery_dl_dostupan():
+            try:
+                pokreni_gallery_dl(["-U"], timeout=60)
+            except Exception:
+                pass  # tiha provjera - ako ne uspije, jednostavno probaj drugi put
+
+        # Deno (JS runtime za YouTube) - isto TIHO samo-ažuriranje, samo nasa
+        # preuzeta kopija (vidi azuriraj_deno).
+        try:
+            azuriraj_deno(timeout=120)
+        except Exception:
+            pass
+
+    def _ponudi_azuriranje_app(self, nova_verzija, url_setup):
+        if self.aktivno_preuzimanje:
+            return  # ne prekidaj ponudom vec pokrenuto skidanje - provjerit ce se opet sljedeci put
+        odgovor = messagebox.askyesno(
+            self.t("app_update_naslov"),
+            self.t("app_update_text").format(nova_verzija, APP_VERZIJA)
+        )
+        if odgovor:
+            threading.Thread(target=self._preuzmi_i_pokreni_azuriranje_app, args=(url_setup,), daemon=True).start()
+
+    def _preuzmi_i_pokreni_azuriranje_app(self, url_setup):
+        """Preuzima novi Setup.exe s GitHub Releasea i pokrece ga - app se zatim
+        SAMA zatvara (kroz self.zatvori(), koji vec cisti player/webview i sprema
+        postavke) da instalater moze zamijeniti trenutno pokrenuti .exe. Setup
+        se skida u sistemski temp folder (ne u folder aplikacije), pa radi cak i
+        ako je app instalirana u Program Files bez pisackih prava tamo."""
+        try:
+            self.root.after(0, self.ispisi, self.t("msg_downloading_app_update"))
+            cilj = os.path.join(tempfile.gettempdir(), "MisterMuscle_Setup_update.exe")
+            preuzmi_datoteku(url_setup, cilj,
+                             callback_postotak=lambda p: self.root.after(0, self.azuriraj_progress, p),
+                             min_velicina=1_000_000)
+            self.root.after(0, self.azuriraj_progress, 0)
+            self.root.after(0, self.ispisi, self.t("msg_launching_installer"))
+            # v3.4: EKSPLICITNO prosljedjujemo trenutni install folder preko
+            # /DIR= - bez ovoga se Inno Setup instalater oslanjao ISKLJUCIVO
+            # na svoje vlastito prepoznavanje "vec instalirano" (preko AppId
+            # u registryu), sto je znalo zakazati i stvoriti NOVI folder
+            # umjesto da nadogradi postojeci. Ovako je uvijek deterministicki
+            # ista, trenutna instalacijska putanja, bez nagadjanja.
+            trenutni_folder_appa = _bazni_folder()
+            subprocess.Popen([cilj, f"/DIR={trenutni_folder_appa}"], close_fds=True)
+            self.root.after(800, self.zatvori)
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_app_update_failed").format(em)))
+            self.root.after(0, lambda em=str(err): messagebox.showerror(
+                self.t("err_naslov"), self.t("msg_app_update_failed").format(em)))
+
+    def _ponudi_azuriranje_yt_dlp(self, trenutna, najnovija):
+        if self.aktivno_preuzimanje:
+            return  # ne prekidaj ponudom vec pokrenuto skidanje - provjerit ce se opet sljedeci put
+        odgovor = messagebox.askyesno(
+            self.t("update_available_naslov"),
+            self.t("update_available_text").format(najnovija, trenutna)
+        )
+        if odgovor:
+            self.ispisi(self.t("msg_updating_ytdlp"))
+            threading.Thread(target=self._azuriraj_yt_dlp_i_prijavi, daemon=True).start()
+
+    def _azuriraj_yt_dlp_i_prijavi(self):
+        poruka = self._azuriraj_yt_dlp()
+        self.root.after(0, self.ispisi, poruka)
+        self.root.after(0, self._osvjezi_statusnu_traku)
+
+    def _osvjezi_statusnu_traku(self):
+        try:
+            rez = pokreni_yt_dlp(["--version"], timeout=20)
+            yt_verzija = (rez.stdout or rez.stderr).strip() or "?"
+        except Exception:
+            yt_verzija = self.t("status_tools_unavailable")
+        ff = "✅ ffmpeg" if ffmpeg_dostupan() else self.t("status_ffmpeg_missing")
+        self.lbl_status_alati.config(text=f"yt-dlp {yt_verzija}   ·   {ff}   ·   alati: {_alati_folder()}")
+        self.ispisi(self.t("msg_tools_summary").format(yt_verzija, ff))
+
+    def provjeri_azuriranja(self, samo=None):
+        if self.aktivno_preuzimanje:
+            messagebox.showwarning(self.t("update_in_progress_naslov"), self.t("update_in_progress_text"))
+            return
+        if samo == "gallery-dl":
+            self.ispisi("🔄 " + self.t("meni_azuriraj_gallerydl"))
+        else:
+            self.ispisi(self.t("msg_updating_ytdlp") if samo != "ffmpeg" else "🔄 " + self.t("meni_reinstaliraj_ffmpeg"))
+        threading.Thread(target=self._tijek_azuriranja, args=(samo,), daemon=True).start()
+
+    def _tijek_azuriranja(self, samo=None):
+        sazetak = []
+
+        # --- 1) yt-dlp ---
+        if samo in (None, "yt-dlp"):
+            sazetak.append(self._azuriraj_yt_dlp())
+
+        # --- 2) ffmpeg ---
+        if samo in (None, "ffmpeg"):
+            sazetak.append(self._osiguraj_ffmpeg(prisilno=(samo == "ffmpeg")))
+
+        # --- 3) gallery-dl (Instagram slike) - v3.3: PRIJE se ovaj alat
+        # provjeravao/preuzimao SAMO kad korisnik prvi put pokusa skinuti
+        # Instagram sliku (lijeno, skriveno) - sad je i on dio redovne
+        # "Provjeri ažuriranja" provjere, isto kao yt-dlp/ffmpeg, tako da
+        # se moze unaprijed pripremiti/osvjeziti bez da se ceka prva stvarna
+        # upotreba te opcije.
+        if samo in (None, "gallery-dl"):
+            sazetak.append(self._azuriraj_gallery_dl())
+
+        # --- 3b) Deno (JS runtime za YouTube, v3.7) - bez njega nema 4K ---
+        if samo is None:
+            sazetak.append(self._osiguraj_deno())
+
+        # --- 4) sama aplikacija (preko GitHub Releases) - PRIJE (v2.6) se ovo
+        # provjeravalo SAMO JEDNOM, tiho, pri prvom pokretanju app-a - ako je
+        # korisnik ostavio app otvorenu satima/danima, klik na "Provjeri
+        # ažuriranja" nikad nije ponovno pitao GitHub, samo bi javio da je
+        # yt-dlp/ffmpeg azurno i sutio o samoj app-i. Sad ovaj klik UVIJEK
+        # ponovno pita GitHub, ne oslanja se na provjeru od pri pokretanju.
+        if samo is None:
+            app_verzija, app_url = _najnovija_verzija_app()
+            if app_verzija and app_url and _usporedi_verzije(app_verzija, APP_VERZIJA) > 0:
+                sazetak.append(self.t("msg_app_update_found_short").format(app_verzija))
+                self.root.after(0, lambda av=app_verzija, au=app_url: self._ponudi_azuriranje_app(av, au))
+            else:
+                sazetak.append(self.t("msg_app_already_latest"))
+
+        self.root.after(0, self._osvjezi_statusnu_traku)
+        self.root.after(0, lambda s="\n".join(sazetak): messagebox.showinfo(self.t("updates_naslov"), s))
+
+    def _azuriraj_yt_dlp(self):
+        if not yt_dlp_dostupan():
+            try:
+                preuzmi_yt_dlp_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+                return self.t("msg_ytdlp_downloaded_first")
+            except Exception as err:
+                return self.t("msg_ytdlp_download_failed_short").format(err)
+        try:
+            # "yt-dlp.exe -U" je sluzbeni ugradeni self-update samostalnog binarnika:
+            # sam sebe prepise najnovijom verzijom, bez pipa i bez Pythona. Zato radi
+            # i unutar naseg PyInstaller .exe-a (za razliku od "pip install --upgrade").
+            # Timeout je 300 s, ne 60 - skida se ~17 MB i na sporijoj vezi 60 s zna
+            # isteci usred zapisivanja, sto ostavlja pokvaren yt-dlp.exe.
+            self.root.after(0, self.ispisi, self.t("msg_ytdlp_running_update"))
+            rezultat = pokreni_yt_dlp(["-U"], timeout=300)
+            izlaz = (rezultat.stdout + "\n" + rezultat.stderr).strip()
+            self.root.after(0, lambda iz=izlaz: self.ispisi(self.t("msg_ytdlp_output").format(iz)))
+            nizak = izlaz.lower()
+            if "error" in nizak or rezultat.returncode != 0:
+                return self.t("msg_ytdlp_update_failed")
+            if "up to date" in nizak or "up-to-date" in nizak or "latest version" in nizak:
+                return self.t("msg_ytdlp_already_latest")
+            if "updated" in nizak or "updating to" in nizak:
+                return self.t("msg_ytdlp_updated")
+            return self.t("msg_ytdlp_check_done")
+        except subprocess.TimeoutExpired:
+            return self.t("msg_ytdlp_update_timeout")
+        except Exception as err:
+            return self.t("msg_ytdlp_update_error").format(err)
+
+    def _azuriraj_gallery_dl(self):
+        """Isti obrazac kao _azuriraj_yt_dlp - gallery-dl.exe ima isti ugradjeni
+        '-U' self-update flag (sam sebe prepise najnovijom verzijom, bez pipa/
+        Pythona). Ako gallery-dl JOS NIJE preuzet (korisnik nikad nije koristio
+        'Slika (Instagram)'), preuzima ga SAD, ovdje - da 'Provjeri ažuriranja'
+        i za njega ostane pouzdano mjesto za dobivanje/osvjezavanje alata,
+        umjesto da to ostane skriveno dok korisnik prvi put ne proba tu opciju."""
+        if not gallery_dl_dostupan():
+            try:
+                preuzmi_gallery_dl_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+                return self.t("msg_gallerydl_downloaded_first")
+            except Exception as err:
+                return self.t("msg_gallerydl_download_failed_short").format(err)
+        try:
+            self.root.after(0, self.ispisi, self.t("msg_gallerydl_running_update"))
+            rezultat = pokreni_gallery_dl(["-U"], timeout=300)
+            izlaz = (rezultat.stdout + "\n" + rezultat.stderr).strip()
+            self.root.after(0, lambda iz=izlaz: self.ispisi(self.t("msg_gallerydl_output").format(iz)))
+            nizak = izlaz.lower()
+            if "error" in nizak or rezultat.returncode != 0:
+                return self.t("msg_gallerydl_update_failed")
+            if "up to date" in nizak or "already" in nizak or "latest" in nizak:
+                return self.t("msg_gallerydl_already_latest")
+            if "updated" in nizak or "updating" in nizak:
+                return self.t("msg_gallerydl_updated")
+            return self.t("msg_gallerydl_check_done")
+        except subprocess.TimeoutExpired:
+            return self.t("msg_gallerydl_update_timeout")
+        except Exception as err:
+            return self.t("msg_gallerydl_update_error").format(err)
+
+    def _osiguraj_deno(self):
+        """Za 'Provjeri ažuriranja': osigurava da JS runtime (Deno) za YouTube
+        postoji - ako fali, skine ga. Vraca kratki sazetak za dijalog."""
+        if not JE_WINDOWS:
+            return self.t("msg_deno_not_needed")
+        if os.path.isfile(deno_exe_putanja()):
+            try:
+                rez = azuriraj_deno(timeout=180)
+                izlaz = ((rez.stdout or "") + "\n" + (rez.stderr or "")).strip()
+                self.root.after(0, lambda iz=izlaz: self.ispisi(f"🔄 Deno: {iz}"))
+                nizak = izlaz.lower()
+                if rez.returncode != 0:
+                    return self.t("msg_deno_update_failed")
+                if "most recent" in nizak or "latest" in nizak or "already" in nizak:
+                    return self.t("msg_deno_present")
+                if "upgraded" in nizak:
+                    return self.t("msg_deno_updated")
+                return self.t("msg_deno_present")
+            except Exception as err:
+                return self.t("msg_deno_failed_short").format(err)
+        if deno_dostupan():
+            return self.t("msg_deno_present")
+        try:
+            preuzmi_deno(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            return self.t("msg_deno_installed")
+        except Exception as err:
+            return self.t("msg_deno_failed_short").format(err)
+
+    def _osiguraj_ffmpeg(self, prisilno=False):
+        if ffmpeg_dostupan() and not prisilno:
+            return self.t("msg_ffmpeg_present")
+        try:
+            preuzmi_ffmpeg(callback_status=lambda p: self.root.after(0, self.ispisi, p),
+                           callback_postotak=lambda p: self.root.after(0, self.azuriraj_progress, p))
+            self.root.after(0, self.azuriraj_progress, 0)
+            return self.t("msg_ffmpeg_installed")
+        except Exception as err:
+            return self.t("msg_ffmpeg_error").format(err)
+
+    # ------------------------------------------------------------- player ---
+    def otvori_player(self):
+        if not PYWEBVIEW_DOSTUPAN:
+            messagebox.showerror(self.t("err_naslov"), self.t("err_pywebview_missing_text"))
+            return
+        if self.var_nacin.get() == "slika_instagram":
+            # Nema smisla pokusati VIDEO pregled za slike - yt-dlp na takvom
+            # linku samo pukne ("This content is only available for
+            # registered users...", jer to uopce nije video). Player za
+            # oznacavanje isjecaka (timeline, OD/DO) ionako nema smisla za
+            # slike - jednostavno preskacemo cijeli taj korak za ovaj nacin.
+            self._prikazi_sadrzaj("log")
+            self.ispisi(self.t("msg_ig_slika_no_preview"))
+            return
+        url = self._prvi_link()
+        if not url:
+            messagebox.showwarning(self.t("warn_naslov"), self.t("warn_paste_link_first"))
+            return
+
+        platforma = prepoznaj_platformu(url)
+        if platforma == "youtube":
+            video_id = izvuci_video_id(url)
+            if not video_id:
+                messagebox.showerror(self.t("err_naslov"), self.t("err_cant_recognize_youtube"))
+                return
+            identifikator = video_id
+        else:
+            identifikator = _sigurni_id_za_url(url)
+
+        # fallback prozor (ako ugradnja nije dostupna) - ugasi prethodni prije novog
+        if self.player_proces and self.player_proces.is_alive():
+            try:
+                self.player_proces.terminate()
+            except Exception:
+                pass
+
+        if identifikator != getattr(self, "_zadnji_video_id", None):
+            self.ponisti_isjecak()
+        self._zadnji_video_id = identifikator
+        self._zadnji_url = url
+
+        self._prikazi_sadrzaj("player")
+
+        self.ispisi(self.t("msg_opening_player") if platforma == "youtube" else self.t("msg_fetching_preview"))
+        threading.Thread(target=self._pripremi_i_pokreni, args=(platforma, url, identifikator), daemon=True).start()
+
+    def _fallback_lokalni_pregled(self):
+        """Kad sluzbeni YouTube iframe player javi da je vlasnik onemogucio embed
+        (kod 101/150), player (JS) sam trazi ovo - umjesto sluzbenog iframea,
+        skida se kraci lokalni pregled isto kao za TikTok/Instagram i ucitava
+        se u ISTI prozor playera. Dizajn/izgled playera se uopce ne mijenja,
+        samo nacin dohvata videa za taj konkretan slucaj."""
+        url = getattr(self, "_zadnji_url", None)
+        identifikator = getattr(self, "_zadnji_video_id", None)
+        if not url or not identifikator:
+            return
+        self.ispisi(self.t("msg_embed_disabled_fallback"))
+        threading.Thread(target=self._pripremi_i_pokreni, args=("generic", url, identifikator), daemon=True).start()
+
+    def _pripremi_i_pokreni(self, platforma, url, identifikator):
+        if platforma == "youtube":
+            html = _player_html("youtube", video_id=identifikator, jezik=self.jezik)
+        else:
+            try:
+                naziv_video_fajla = self._skini_generic_preview(url, identifikator)
+            except Exception as err_p:
+                puni_trag = traceback.format_exc()
+                kratka_poruka = str(err_p).strip() or type(err_p).__name__
+                if je_poznati_tiktok_challenge_bug(puni_trag):
+                    kratka_poruka = self.t("msg_tiktok_bug_preview")
+                self.root.after(0, lambda em=kratka_poruka: messagebox.showerror(
+                    self.t("err_naslov"), self.t("err_cant_fetch_preview").format(em)))
+                self.root.after(0, lambda pt=puni_trag: self.ispisi(self.t("msg_preview_failed_log").format(pt)))
+                # BITNO: bez ovoga, player ostaje zauvijek "zaglavljen" na
+                # STAROM (najcesce YouTubeovom vlastitom "Video unavailable")
+                # ekranu, jer se nista nikad ne ucita PREKO njega - korisnik
+                # vidi tudju, zbunjujucu poruku umjesto nase jasne greske.
+                self._ucitaj_u_player(_greska_player_html(kratka_poruka, self.jezik), identifikator)
+                return
+            html = _player_html("generic", video_src=f"/{naziv_video_fajla}", jezik=self.jezik)
+
+        self._ucitaj_u_player(html, identifikator)
+
+    def _ucitaj_u_player(self, html, identifikator):
+        """Zapisuje HTML u privremeni fajl i ucitava ga u player - ugradjeni
+        prozor ako je dostupan, inace zaseban fallback prozor. Dijeljeno
+        izmedju uspjesnog ucitavanja I prikaza greske (obje trebaju isti
+        mehanizam da STVARNO zamijene ono sto je prije bilo prikazano).
+
+        v2.2: URL dobiva jedinstven "?v=<broj>" dodatak SVAKI PUT - bez ovoga,
+        YouTube-ov pokusaj i naknadni lokalni fallback pokusaj dijele ISTI
+        identifikator, pa bi load_url() dobio POTPUNO ISTI URL kao pri prvom
+        pokusaju. WebView2 zna to protumaciti kao "vec sam na ovoj stranici"
+        i NE ponovno stvarno navigirati/nacrtati NOVI sadrzaj fajla (iako se
+        sadrzaj fajla na disku promijenio) - upravo zasto je fallback prikaz
+        znao ostati zaglavljen na STAROM (YouTube-ovom) prikazu."""
+        self._brojac_ucitavanja_playera = getattr(self, "_brojac_ucitavanja_playera", 0) + 1
+        naziv_fajla = f"preview_{identifikator}.html"
+        putanja = os.path.join(self.temp_dir, naziv_fajla)
+        try:
+            with open(putanja, "w", encoding="utf-8") as f:
+                f.write(html)
+        except Exception as err_z:
+            self.root.after(0, lambda em=str(err_z): messagebox.showerror(
+                self.t("err_naslov"), self.t("err_cant_prepare_player").format(em)))
+            return
+
+        preview_url = f"http://127.0.0.1:{self.http_port}/{naziv_fajla}?v={self._brojac_ucitavanja_playera}"
+
+        if EMBED_PLAYERA_DOSTUPAN and self._webview_window is not None:
+            # cekaj (kratko) da je prozor vec ugradjen prvi put, pa mu samo promijeni URL
+            self._webview_spreman.wait(timeout=15)
+            try:
+                self._webview_window.load_url(preview_url)
+                self.root.after(400, self._forsiraj_repaint_playera)
+                self.root.after(0, self.ispisi, self.t("msg_embedded_ready"))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_embed_load_failed").format(em)))
+                self._pokreni_fallback_prozor(preview_url)
+        else:
+            self._pokreni_fallback_prozor(preview_url)
+
+    def _pokreni_fallback_prozor(self, preview_url):
+        """Ako ugradnja nije dostupna (nije Windows / fali pywin32 / nešto je puklo),
+        player se otvara u svom zasebnom prozoru - kao u ranijim verzijama."""
+        self.player_proces = multiprocessing.Process(target=pokreni_webview_proces,
+                                                     args=(preview_url, self.queue_sanjac))
+        self.player_proces.start()
+
+    def _skini_generic_preview(self, url, identifikator):
+        """Skida manju kopiju videa lokalno - TikTokov CDN link trazi ista HTTP
+        zaglavlja kojima ga je yt-dlp izvukao, pa <video src="..."> direktno cesto
+        vrati 403. Lokalna kopija to zaobilazi.
+
+        v2.2: format selektor promijenjen s "best[height<=480]..." (trazi VEC
+        SPOJEN video+zvuk u jednom formatu) na "bestvideo[height<=480]+bestaudio"
+        (trazi odvojene tokove pa ih SAM spoji preko ffmpega, isto kao sto vec
+        radi glavno skidanje). Moderni YouTube za mnoge videe VISE NE NUDI
+        pre-spojene ("progressive") formate iznad ~360p (ponekad nijedan) - stari
+        selektor je davao "Requested format is not available" bas za takve
+        videe, sto je bio pravi uzrok "zaglavljenog" YouTube fallback pregleda."""
+        if not yt_dlp_dostupan():
+            preuzmi_yt_dlp_exe()
+        naziv_fajla = f"preview_{identifikator}.mp4"
+        putanja = os.path.join(self.temp_dir, naziv_fajla)
+        argumenti = [
+            url, "-f", "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+            "--merge-output-format", "mp4",
+            "-o", putanja, "--no-playlist", "--playlist-items", "1", "--quiet", "--no-warnings",
+            "--impersonate", "chrome",
+            *ffmpeg_argumenti(),
+        ]
+        rezultat = pokreni_yt_dlp(argumenti, timeout=180)
+        if rezultat.returncode != 0 or not os.path.exists(putanja):
+            detalji = (rezultat.stdout + "\n" + rezultat.stderr).strip()
+            raise RuntimeError(detalji or f"yt-dlp je završio s greškom (kod {rezultat.returncode}).")
+        return naziv_fajla
+
+    # ------------------------------------------------- pauza / prekid / DL ---
+    def toggle_pauza(self):
+        if self.pause_event.is_set():
+            self.pause_event.clear()
+            self.btn_pause.config(text=self.t("gumb_nastavi"), bg=ACCENT)
+            self._primijeni_pauzu(True)
+        else:
+            self.pause_event.set()
+            self.btn_pause.config(text=self.t("gumb_pauziraj"), bg=PAUSE_BG)
+            self._primijeni_pauzu(False)
+
+    def _primijeni_pauzu(self, pauziraj):
+        proc = self.aktivni_proces
+        if not proc or proc.poll() is not None:
+            return
+        if not PSUTIL_DOSTUPAN:
+            if pauziraj:
+                self.ispisi(self.t("msg_need_psutil_pause"))
+            return
+        try:
+            p = psutil.Process(proc.pid)
+            for dijete in p.children(recursive=True):
+                dijete.suspend() if pauziraj else dijete.resume()
+            p.suspend() if pauziraj else p.resume()
+        except Exception as err:
+            akcija = self.t("akcija_pauzirati") if pauziraj else self.t("akcija_nastaviti")
+            self.ispisi(self.t("msg_cant_pause_resume").format(akcija, err))
+
+    def prekini_preuzimanje(self):
+        if not self.aktivno_preuzimanje:
+            return
+        self.otkazano = True
+        self.pause_event.set()
+        proc = self.aktivni_proces
+        if proc and proc.poll() is None:
+            try:
+                if PSUTIL_DOSTUPAN:
+                    p = psutil.Process(proc.pid)
+                    for dijete in p.children(recursive=True):
+                        # yt-dlp pokrece ffmpeg kao dijete - ubijanje samo roditelja
+                        # ostavi ffmpeg da i dalje melje u pozadini.
+                        dijete.resume()
+                        dijete.kill()
+                    p.resume()
+                proc.kill()
+            except Exception:
+                pass
+        self.ispisi(self.t("msg_cancelled_by_user"))
+
+    def _queue_set_summary(self, finished, total, failed):
+        """UI updates run only on Tk main thread."""
+        self.lbl_queue_summary.config(
+            text=self._novo_t(f"Red čekanja: {finished}/{total} završeno · {failed} neuspjelo", f"Queue: {finished}/{total} completed · {failed} failed"))
+
+    def _queue_retry_button(self):
+        n = len(self._queue_failed_urls)
+        self.btn_retry_failed.config(
+            text=self._novo_t(f"↻ Ponovi neuspjele ({n})", f"↻ Retry failed ({n})"),
+            state="normal" if n and not self.aktivno_preuzimanje else "disabled")
+
+    def _ponovi_neuspjele(self):
+        if self.aktivno_preuzimanje or not self._queue_failed_urls:
+            return
+        linkovi = list(self._queue_failed_urls)
+        self.text_links.delete("1.0", "end")
+        self.text_links.insert("1.0", "\n".join(linkovi))
+        self.pokreni_preuzimanje()
+
+    def pokreni_preuzimanje(self):
+        if self.aktivno_preuzimanje:
+            return
+        sirovi = self.text_links.get("1.0", "end").strip()
+        if not sirovi or sirovi == self._placeholder:
+            messagebox.showwarning(self.t("warn_no_link_naslov"), self.t("warn_no_link_text"))
+            return
+        linkovi = [l.strip() for l in sirovi.splitlines() if l.strip()]
+
+        nacin = self.var_nacin.get()
+        filtered = self._duplicate_preflight(linkovi, nacin)
+        if filtered is None or not filtered:
+            return
+        linkovi = filtered
+
+        # Reset failed queue only after user starts a new batch.
+        self._queue_failed_urls = []
+        self._queue_total = len(linkovi)
+        self._queue_finished = 0
+        self._queue_retry_button()
+        self._queue_set_summary(0, len(linkovi), 0)
+
+        # Ne mijenjaj korisnikov izbor bez potvrde; posebno je vazno kod 4K.
+        trazena_visina = visina_iz_kvalitete(self.var_kvaliteta.get())
+        if nacin in ("video_zvuk", "samo_video") and trazena_visina is not None:
+            for url in linkovi:
+                if (prepoznaj_platformu(url) == "youtube"
+                        and getattr(self, "_quality_scan_url", None) == url
+                        and getattr(self, "_quality_scan_heights", None)):
+                    dostupne = self._quality_scan_heights
+                    if trazena_visina not in dostupne:
+                        najvisa = max(dostupne)
+                        if not messagebox.askyesno(
+                            self._novo_t("Smart Quality — upozorenje", "Smart Quality — warning"),
+                            self._novo_t(f"Izabrano: {trazena_visina}p\n", f"Selected: {trazena_visina}p\n") +
+                            self._novo_t(f"Dostupno: {', '.join(str(h) + 'p' for h in dostupne)}\n\n", f"Available: {', '.join(str(h) + 'p' for h in dostupne)}\n\n") +
+                            self._novo_t(f"Tražena rezolucija nije ponuđena. Najviša je {najvisa}p.\n", f"Requested resolution is unavailable. Highest is {najvisa}p.\n") +
+                            self._novo_t("Želiš li ipak nastaviti?", "Continue anyway?"),
+                        ):
+                            return
+                    break
+
+        if nacin == "slika_instagram":
+            # Slike idu preko gallery-dl, ne yt-dlp/ffmpeg - potpuno odvojen
+            # put, bez provjere ffmpeg-a (slike se ne spajaju/re-enkodiraju).
+            self._spremi_postavke()
+            self.aktivno_preuzimanje = True
+            self.otkazano = False
+            self.pause_event.set()
+            self.btn_download.config(state="disabled", text=self.t("skidam"), bg=PAUSE_BG)
+            self.btn_pause.config(state="normal")
+            self.btn_prekini.config(state="normal")
+            self.azuriraj_progress(0)
+            self._status_light(ACCENT)
+            self._prikazi_sadrzaj("log")
+            threading.Thread(target=self.skini_instagram_slike, args=(linkovi,), daemon=True).start()
+            return
+
+        treba_ffmpeg = (nacin != "samo_video") or (self.od_sek is not None or self.do_sek is not None)
+        if treba_ffmpeg and not ffmpeg_dostupan():
+            if messagebox.askyesno(
+                self.t("ffmpeg_missing_naslov"),
+                self.t("ffmpeg_missing_confirm_text")
+            ):
+                threading.Thread(target=lambda: (self._osiguraj_ffmpeg(), self.root.after(0, self._osvjezi_statusnu_traku)),
+                                 daemon=True).start()
+            return
+
+        self._spremi_postavke()
+        self.aktivno_preuzimanje = True
+        self.otkazano = False
+        self.pause_event.set()
+        self.btn_download.config(state="disabled", text=self.t("skidam"), bg=PAUSE_BG)
+        self.btn_pause.config(state="normal")
+        self.btn_prekini.config(state="normal")
+        self.azuriraj_progress(0)
+        self._status_light(ACCENT)
+        self._prikazi_sadrzaj("log")
+
+        threading.Thread(target=self.skini_sve,
+                         args=(linkovi, self.od_sek, self.do_sek, nacin), daemon=True).start()
+
+    def pokreni_preuzimanje_visestrukih_isjecaka(self, isjecci):
+        """Skida VIŠE isječaka odjednom (svaki iz 'isjecci' kao zaseban fajl), za
+        sve zalijepljene linkove - poziva ga player kad se klikne '⬇ Skini sve
+        isječke' u listi odabira ('isjecci' je lista [od_string, do_string] parova
+        koje je poslao JS, npr. [["0:48","1:12"], ["3:00","3:20"]])."""
+        if self.aktivno_preuzimanje:
+            self.root.after(0, lambda: messagebox.showwarning(
+                self.t("update_in_progress_naslov"), self.t("warn_download_in_progress_text")))
+            return
+        if not isjecci:
+            return
+        sirovi = self.text_links.get("1.0", "end").strip()
+        if not sirovi or sirovi == self._placeholder:
+            self.root.after(0, lambda: messagebox.showwarning(self.t("warn_no_link_naslov"), self.t("warn_no_link_text")))
+            return
+        linkovi = [l.strip() for l in sirovi.splitlines() if l.strip()]
+
+        if not ffmpeg_dostupan():
+            self.root.after(0, lambda: messagebox.showwarning(
+                self.t("ffmpeg_missing_naslov"),
+                self.t("ffmpeg_missing_multi_text")))
+            return
+
+        nacin = self.var_nacin.get()
+        self._spremi_postavke()
+        self.aktivno_preuzimanje = True
+        self.otkazano = False
+        self.pause_event.set()
+        self.btn_download.config(state="disabled", text=self.t("skidam"), bg=PAUSE_BG)
+        self.btn_pause.config(state="normal")
+        self.btn_prekini.config(state="normal")
+        self.azuriraj_progress(0)
+        self._status_light(ACCENT)
+        self._prikazi_sadrzaj("log")
+
+        threading.Thread(target=self._skini_visestruke_isjecke,
+                         args=(linkovi, isjecci, nacin), daemon=True).start()
+
+    def _skini_visestruke_isjecke(self, linkovi, isjecci, nacin):
+        napravi_folder(self.trenutni_folder)
+        self.root.after(0, self._sakrij_status_linkova)  # popis linkova je za skini_sve, ne za ovo
+
+        if not yt_dlp_dostupan():
+            try:
+                preuzmi_yt_dlp_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): messagebox.showerror(
+                    self.t("err_naslov"), self.t("err_cant_download_tool").format(YT_DLP_EXE_NAZIV, em)))
+                self._zavrsi_preuzimanje(0, len(linkovi) * len(isjecci))
+                return
+
+        zajednicki = [
+            "--no-playlist",
+            # "--no-playlist" sprjecava skidanje CIJELE prepoznate playliste, ali
+            # neke stranice (cesto opcenite/adult stranice bez posebnog yt-dlp
+            # "extractora") vracaju stranicu kao gomilu pronadjenih video linkova
+            # (preporuceni/povezani klipovi, reklame...) preko GENERICKOG
+            # extractora - "--playlist-items 1" to dodatno osigurava: cak i tada
+            # se skine SAMO prvi (traženi) video, ne svih ~100 pronađenih.
+            "--playlist-items", "1",
+            "--newline",
+            "--concurrent-fragments", "8",
+            "--http-chunk-size", "10M",
+            "--retries", "10",
+            "--fragment-retries", "10",
+            "--buffer-size", "1M",
+            "--trim-filenames", "120",
+            *ffmpeg_argumenti(),
+        ]
+
+        uspjesni = 0
+        neuspjesni = 0
+        ukupno = len(linkovi) * len(isjecci)
+        brojac = 0
+
+        for idx, par in enumerate(isjecci, start=1):
+            if self.otkazano:
+                break
+            try:
+                od_str, do_str = par
+            except (TypeError, ValueError):
+                continue
+            od_sek = parse_vrijeme(od_str)
+            do_sek = parse_vrijeme(do_str)
+            if od_sek is None or do_sek is None or do_sek <= od_sek:
+                self.root.after(0, self.ispisi,
+                                f"⚠ Isječak {idx}. preskočen — neispravan raspon ({od_str} → {do_str}).")
+                neuspjesni += len(linkovi)
+                continue
+
+            raspon = ["--download-sections", f"*{od_sek}-{do_sek}", "--force-keyframes-at-cuts"]
+            sufiks = f" (isječak {idx}, {formatiraj_trajanje(od_sek)}-{formatiraj_trajanje(do_sek)})"
+
+            for url in linkovi:
+                brojac += 1
+                if self.otkazano:
+                    break
+                self.root.after(0, self.ispisi,
+                                f"\n[{brojac}/{ukupno}] Isječak {idx}. "
+                                f"({formatiraj_trajanje(od_sek)}–{formatiraj_trajanje(do_sek)}): {url}")
+                platforma = prepoznaj_platformu(url)
+                argumenti_url = [url, *self._argumenti_za_nacin(nacin, platforma, sufiks=sufiks),
+                                 *zajednicki, *raspon]
+                if platforma != "youtube":
+                    argumenti_url += ["--format-sort", "res,fps,tbr,vbr,size", "--impersonate", "chrome"]
+
+                vrijeme_prije = time.time()
+                uspjelo, zadnja_greska = self._skini_jedan(argumenti_url, nacin, platforma, vrijeme_prije)
+                if uspjelo:
+                    uspjesni += 1
+                elif not self.otkazano:
+                    neuspjesni += 1
+                    self.root.after(0, lambda em=zadnja_greska: self.ispisi(self.t("msg_error_generic").format(em)))
+
+        self._zavrsi_preuzimanje(uspjesni, neuspjesni)
+
+    def _argumenti_za_nacin(self, nacin, platforma, sufiks=""):
+        """Slaze dio yt-dlp argumenata koji ovisi o odabranom nacinu skidanja.
+        'sufiks' (npr. ' (isječak 2, 0:48-1:12)') se ubacuje u naziv fajla -
+        koristi se kod skidanja VIŠE isječaka iz istog videa odjednom, da se
+        ne prepisuju međusobno."""
+        visina = visina_iz_kvalitete(self.var_kvaliteta.get())
+        h264 = self.var_h264.get()
+        format_str = izgradi_format_string(platforma, nacin, visina, h264)
+        argumenti = ["-f", format_str]
+
+        if nacin == "samo_zvuk":
+            odabir = self.var_audio_format.get()
+            if not odabir.startswith("original"):
+                argumenti += ["-x", "--audio-format", odabir, "--audio-quality", "0"]
+            if self.var_metapodaci.get():
+                argumenti += ["--embed-thumbnail", "--embed-metadata"]
+            predlozak = f"%(title)s{sufiks}.%(ext)s"
+        elif nacin == "samo_video":
+            # Nijemi zapis - nema sto spajati (nema audio streama), ali kontejner
+            # (mp4/mkv/webm/mov) i dalje mozemo promijeniti - "remux" samo
+            # presloji video u drugi kontejner bez ponovnog kodiranja (brzo,
+            # bez gubitka kvalitete); ako izvorni kodek nije kompatibilan s
+            # odabranim kontejnerom, yt-dlp ce prijaviti gresku pri tom koraku.
+            video_format = self.var_video_format.get()
+            # 4K YouTube video-only streams are commonly VP9/AV1 in WebM.
+            # Forcing these streams into MP4 via remux can fail on some FFmpeg
+            # builds even though the download itself is valid. Keep the original
+            # container for 1440p/4K (and "Najbolja", which may be 4K) when MP4
+            # was selected, so the high-resolution video-only download succeeds.
+            # This is a stream-copy only; no quality is lost.
+            visina_trazena = visina_iz_kvalitete(self.var_kvaliteta.get())
+            sacuvaj_originalni_kontejner = (
+                (visina_trazena is None or visina_trazena >= 1440)
+                and platforma == "youtube"
+            )
+            if not video_format.startswith("original") and not sacuvaj_originalni_kontejner:
+                argumenti += ["--remux-video", video_format]
+            elif sacuvaj_originalni_kontejner:
+                # Ne forsirati MP4: yt-dlp ostavlja izvorni WebM/MP4 kontejner.
+                pass
+            predlozak = f"%(title)s{sufiks} [bez zvuka].%(ext)s"
+        else:
+            video_format = self.var_video_format.get()
+            if not video_format.startswith("original"):
+                argumenti += ["--merge-output-format", video_format]
+            if self.var_metapodaci.get():
+                argumenti += ["--embed-metadata"]
+            predlozak = f"%(title)s{sufiks}.%(ext)s"
+
+        argumenti += ["-o", os.path.join(self.trenutni_folder, predlozak)]
+        return argumenti
+
+    def skini_sve(self, linkovi, od_sek, do_sek, nacin):
+        napravi_folder(self.trenutni_folder)
+
+        if not yt_dlp_dostupan():
+            try:
+                preuzmi_yt_dlp_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): messagebox.showerror(
+                    self.t("err_naslov"), self.t("err_cant_download_tool").format(YT_DLP_EXE_NAZIV, em)))
+                self._zavrsi_preuzimanje(0, len(linkovi))
+                return
+
+        zajednicki = [
+            "--no-playlist",
+            "--playlist-items", "1",
+            "--newline",
+            "--concurrent-fragments", "8",
+            "--http-chunk-size", "10M",
+            "--retries", "10",
+            "--fragment-retries", "10",
+            "--buffer-size", "1M",
+            "--trim-filenames", "120",   # duga TikTok imena zna probiti Windows limit putanje
+            *ffmpeg_argumenti(),
+        ]
+
+        raspon = []
+        if od_sek is not None or do_sek is not None:
+            pocetak = od_sek if od_sek is not None else 0
+            kraj = do_sek if do_sek is not None else 999999999
+            # "--force-keyframes-at-cuts" je BITAN - bez njega yt-dlp/ffmpeg samo
+            # "zalijepi" na najblizi keyframe (brzo, ali fajl u sebi ponekad
+            # zadrzi POGRESNO (originalno, puno duze) trajanje u zaglavlju/
+            # metapodacima - zato je pisalo npr. "2h" za isjecak od 3 minute i
+            # nije se moglo premotavati). S ovom zastavicom ffmpeg stvarno
+            # re-enkodira tocno na rezove, pa izlazni fajl ima ISPRAVNO trajanje.
+            raspon = ["--download-sections", f"*{pocetak}-{kraj}", "--force-keyframes-at-cuts"]
+
+        uspjesni = 0
+        neuspjesni = 0
+        self.root.after(0, self._prikazi_status_linkova, linkovi)
+
+        for i, url in enumerate(linkovi, start=1):
+            if self.otkazano:
+                break
+            self.root.after(0, self.ispisi, f"\n[{i}/{len(linkovi)}] {url}")
+            self.root.after(0, self._azuriraj_status_link, i - 1, "skida")
+            platforma = prepoznaj_platformu(url)
+
+            argumenti_url = [url, *self._argumenti_za_nacin(nacin, platforma), *zajednicki, *raspon]
+            if platforma != "youtube":
+                argumenti_url += ["--format-sort", "res,fps,tbr,vbr,size", "--impersonate", "chrome"]
+
+            vrijeme_prije = time.time()
+            uspjelo, zadnja_greska = self._skini_jedan(argumenti_url, nacin, platforma, vrijeme_prije)
+
+            if uspjelo:
+                uspjesni += 1
+                self._history_save_success(url, nacin, platforma, self.trenutni_folder)
+                self.root.after(0, self._azuriraj_status_link, i - 1, "uspjeh")
+            elif not self.otkazano:
+                neuspjesni += 1
+                self._queue_failed_urls.append(url)
+                self.root.after(0, self._azuriraj_status_link, i - 1, "neuspjeh")
+                self.root.after(0, lambda em=zadnja_greska: self.ispisi(self.t("msg_error_generic").format(em)))
+            self.root.after(0, self._queue_set_summary,
+                            uspjesni + neuspjesni, len(linkovi), neuspjesni)
+
+        self._zavrsi_preuzimanje(uspjesni, neuspjesni)
+
+    def skini_instagram_slike(self, linkovi):
+        """Zaseban put za 'Slika (Instagram)' nacin - koristi gallery-dl (NE
+        yt-dlp, koji slike uopce ne podrzava - vidi komentar uz GALLERY_DL_*
+        na vrhu fajla) preko kolacica posudjenih iz vec ulogiranog browsera.
+        Namjerno odvojeno od skini_sve() - drugaciji alat, drugaciji format
+        izlaza za parsiranje, nema ffmpeg/isjecke/kvalitetu u igri."""
+        napravi_folder(self.trenutni_folder)
+
+        if not gallery_dl_dostupan():
+            try:
+                preuzmi_gallery_dl_exe(callback_status=lambda p: self.root.after(0, self.ispisi, p))
+            except Exception as err:
+                self.root.after(0, lambda em=str(err): messagebox.showerror(
+                    self.t("err_naslov"), self.t("err_cant_download_tool").format(GALLERY_DL_EXE_NAZIV, em)))
+                self._zavrsi_preuzimanje(0, len(linkovi))
+                return
+
+        # v3.1: DVA moguca izvora kolacica - direktno iz browsera (zahtijeva
+        # da bude ZATVOREN, vidi cookies_browser_napomena) ili gotov
+        # cookies.txt fajl (izvezen preko ekstenzije, browser ostaje otvoren).
+        if self.var_cookies_izvor.get() == "fajl":
+            cookies_fajl = self.var_cookies_fajl.get().strip()
+            if not cookies_fajl or not os.path.isfile(cookies_fajl):
+                self.root.after(0, lambda: messagebox.showwarning(
+                    self.t("warn_naslov"), self.t("warn_cookies_fajl_missing")))
+                self._zavrsi_preuzimanje(0, len(linkovi))
+                return
+            cookies_argumenti = ["--cookies", cookies_fajl]
+        else:
+            cookies_argumenti = ["--cookies-from-browser", self.var_cookies_browser.get().lower()]
+
+        uspjesni = 0
+        neuspjesni = 0
+        self.root.after(0, self._prikazi_status_linkova, linkovi)
+
+        for i, url in enumerate(linkovi, start=1):
+            if self.otkazano:
+                break
+            self.root.after(0, self.ispisi, f"\n[{i}/{len(linkovi)}] {url}")
+            self.root.after(0, self._azuriraj_status_link, i - 1, "skida")
+
+            if not je_instagram_link(url):
+                neuspjesni += 1
+                self.root.after(0, self._azuriraj_status_link, i - 1, "neuspjeh")
+                self.root.after(0, lambda u=url: self.ispisi(self.t("msg_not_instagram_link").format(u)))
+                continue
+
+            argumenti = [*cookies_argumenti, "--directory", self.trenutni_folder, url]
+            uspjelo, poruka = self._skini_ig_slike_jedan(argumenti)
+            if uspjelo:
+                uspjesni += 1
+                self._history_save_success(url, "slika_instagram", "instagram", self.trenutni_folder)
+                self.root.after(0, self._azuriraj_status_link, i - 1, "uspjeh")
+            elif not self.otkazano:
+                neuspjesni += 1
+                self.root.after(0, self._azuriraj_status_link, i - 1, "neuspjeh")
+                self.root.after(0, lambda em=poruka: self.ispisi(self.t("msg_error_generic").format(em)))
+
+        self._zavrsi_preuzimanje(uspjesni, neuspjesni)
+
+    def _skini_ig_slike_jedan(self, argumenti):
+        try:
+            proc = pokreni_gallery_dl_popen(argumenti)
+        except Exception as err:
+            return False, self.t("err_cant_start_tool").format(GALLERY_DL_EXE_NAZIV, err)
+
+        self.aktivni_proces = proc
+        if not self.pause_event.is_set():
+            self._primijeni_pauzu(True)
+
+        broj_slika = 0
+        izlaz_redovi = []
+        # gallery-dl (za razliku od yt-dlp) nema strukturirane postotke - samo
+        # ispise punu putanju svakog skinutog fajla, jedan po redu, cim
+        # zavrsi. Brojimo te redove kao "uspjesno skinuto N slika" umjesto
+        # prave postotne trake.
+        for redak in proc.stdout:
+            redak = redak.rstrip("\n")
+            if not redak:
+                continue
+            izlaz_redovi.append(redak)
+            donji = redak.lower()
+            if donji.startswith(("[", "warning", "error")):
+                continue
+            broj_slika += 1
+            self.root.after(0, self.ispisi, f"  ✓ {os.path.basename(redak)}")
+            self.root.after(0, self.azuriraj_progress, min(broj_slika * 20, 100))
+
+        proc.wait()
+        self.aktivni_proces = None
+        puni_izlaz = "\n".join(izlaz_redovi)
+        donji_izlaz = puni_izlaz.lower()
+
+        if self.otkazano:
+            return False, "prekinuto"
+
+        if proc.returncode == 0:
+            if broj_slika == 0:
+                return False, self.t("msg_ig_no_images_found")
+            self.root.after(0, self.azuriraj_progress, 100)
+            return True, None
+
+        if proc.returncode == 6 or "login" in donji_izlaz or "authenticat" in donji_izlaz or "401" in donji_izlaz:
+            # BITNO: prije se ovdje stvarni izlaz gallery-dl-a ODBACIO - ako je
+            # nasa pretpostavka kriva (npr. je stvarni uzrok da Chromium
+            # zakljuca bazu kolacica DOK JE BROWSER OTVOREN, ne da korisnik
+            # nije prijavljen), korisnik NIKAD ne bi vidio pravi razlog. Sad
+            # se puni izlaz UVIJEK ispise u log, cak i kad damo svoju "ljepsu"
+            # pretpostavku iznad njega.
+            self.root.after(0, lambda pi=puni_izlaz: self.ispisi(self.t("msg_full_error_details").format(pi)))
+            return False, self.t("msg_ig_login_required")
+        self.root.after(0, lambda pi=puni_izlaz: self.ispisi(self.t("msg_full_error_details").format(pi)))
+        return False, puni_izlaz.strip() or f"gallery-dl — kod {proc.returncode}"
+
+    def _skini_jedan(self, argumenti_url, nacin, platforma, vrijeme_prije):
+        MAX_POKUSAJA = 3
+        zadnja_greska_tekst = None
+
+        # PO Token provider: prvi YouTube download ga postavlja automatski.
+        # Ako instalacija ne uspije, nastavljamo bez providera umjesto da
+        # blokiramo korisnika ili ostale platforme.
+        if platforma == "youtube":
+            _osiguraj_po_token_provider(
+                callback_status=lambda poruka: self.root.after(0, self.ispisi, poruka)
+            )
+
+        # Dijagnostika za 4K/1440p: YouTube bez JS runtimea (Deno) daje samo
+        # ogranicene formate (~1080p). Ispisi radi li Deno - najvazniji uvjet.
+        if platforma == "youtube" and nacin != "samo_zvuk":
+            if time.time() - getattr(self, "_zadnji_js_log", 0) > 120:
+                self._zadnji_js_log = time.time()
+                dv = deno_verzija()
+                self.root.after(0, self.ispisi,
+                                self.t("msg_js_runtime_ok").format(dv) if dv else self.t("msg_js_runtime_missing"))
+
+        for pokusaj in range(1, MAX_POKUSAJA + 1):
+            if self.otkazano:
+                return False, "prekinuto"
+            self.root.after(0, self.azuriraj_progress, 0)
+            izlaz_redovi = []
+            upozorenja_prikazano = 0
+            try:
+                proc = pokreni_yt_dlp_popen(argumenti_url)
+            except Exception as err_pokretanje:
+                return False, self.t("err_cant_start_tool").format(YT_DLP_EXE_NAZIV, err_pokretanje)
+
+            self.aktivni_proces = proc
+            if not self.pause_event.is_set():
+                self._primijeni_pauzu(True)
+
+            for redak in proc.stdout:
+                redak = redak.rstrip("\n")
+                if not redak:
+                    continue
+                izlaz_redovi.append(redak)
+                m = re.search(r"\[download\]\s+([\d.]+)%", redak)
+                if m:
+                    try:
+                        self.root.after(0, self.azuriraj_progress, min(float(m.group(1)), 100.0))
+                    except ValueError:
+                        pass
+                    brzina = re.search(r"at\s+([\d.]+\s*\w+/s)", redak)
+                    eta = re.search(r"ETA\s+([\d:]+)", redak)
+                    opis = []
+                    if brzina:
+                        opis.append(brzina.group(1))
+                    if eta:
+                        opis.append(f"preostalo {eta.group(1)}")
+                    if opis:
+                        self.root.after(0, self.azuriraj_brzinu, "  ·  ".join(opis))
+                elif "[Merger]" in redak or "Merging formats" in redak:
+                    self.root.after(0, self.ispisi, self.t("msg_merging"))
+                elif "[ExtractAudio]" in redak:
+                    self.root.after(0, self.ispisi, self.t("msg_extracting_audio"))
+                elif re.search(r"Downloading \d+ format\(s\):", redak):
+                    # npr. "[info] abc123: Downloading 1 format(s): 313+251" -
+                    # 313 = 4K VP9, 137 = 1080p H.264. Bez ovoga se nikad ne vidi
+                    # sto je yt-dlp STVARNO odabrao.
+                    self.root.after(0, self.ispisi,
+                                    self.t("msg_format_chosen").format(redak.split("format(s):", 1)[1].strip()))
+                elif (redak.startswith("WARNING:") and upozorenja_prikazano < 6 and any(
+                        k in redak.lower() for k in ("javascript", "js runtime", "deno", "po token",
+                                                     "format", "challenge", "signature", "sabr", "client"))):
+                    upozorenja_prikazano += 1
+                    self.root.after(0, self.ispisi, f"⚠ {redak}")
+
+            proc.wait()
+            self.aktivni_proces = None
+            self.root.after(0, self.azuriraj_brzinu, "")
+            puni_izlaz = "\n".join(izlaz_redovi)
+
+            if self.otkazano:
+                return False, "prekinuto"
+
+            if proc.returncode == 0:
+                if nacin != "samo_zvuk":
+                    self._ispisi_skinutu_rezoluciju(vrijeme_prije, platforma)
+                if nacin == "samo_video":
+                    self.root.after(0, self.ispisi, self.t("msg_silent_video_done"))
+                if nacin != "samo_zvuk" and platforma != "youtube" and self.var_h264.get():
+                    self._osiguraj_h264(vrijeme_prije)
+                if nacin != "samo_zvuk":
+                    self._primijeni_omjer_slike(vrijeme_prije)
+                # BITNO: popravak trajanja/metapodataka MORA biti ZADNJI korak
+                # koji dira sam video fajl - i H.264 konverzija i rezanje
+                # omjera slike su SVOJI ffmpeg re-encode prolazi koji (bez
+                # ove garancije redoslijeda) mogu PONOVNO uneseti pogresne
+                # metapodatke/vremenske oznake koje je ovaj korak vec popravio
+                # da ih VLC ispravno cita.
+                if nacin != "samo_zvuk" and "--download-sections" in argumenti_url:
+                    self._popravi_trajanje_isjecka(vrijeme_prije)
+                self.root.after(0, self.azuriraj_progress, 100)
+                return True, None
+
+            zadnja_greska_tekst = puni_izlaz.strip() or f"{YT_DLP_EXE_NAZIV} je završio s kodom {proc.returncode}"
+            donji = zadnja_greska_tekst.lower()
+
+            # TikTok nekad uopce nema odvojeni video stream - tada 'samo_video' pada
+            # na "requested format is not available". Rjesenje: skini normalno pa
+            # ffmpegom izbaci audio zapis.
+            if nacin == "samo_video" and "requested format" in donji:
+                if platforma == "youtube":
+                    # YouTube ima odvojene video streamove; ako nisu dostupni,
+                    # cesto je problem u ekstrakciji/PO tokenu. NE skidaj
+                    # automatski progressive 360p/480p kao navodni 4K.
+                    poruka = ("YouTube nije ponudio odvojeni video stream za odabranu "
+                              "kvalitetu. Preuzimanje nize rezolucije je zaustavljeno. "
+                              "Provjeri yt-dlp/JS/PO Token upozorenja u STATUS logu.")
+                    self.root.after(0, self.ispisi, "⚠ " + poruka)
+                    self.root.after(0, lambda pt=puni_izlaz: self.ispisi(
+                        self.t("msg_full_error_details").format(pt)))
+                    return False, poruka
+                self.root.after(0, self.ispisi, self.t("msg_no_separate_video_stream"))
+                return self._skini_pa_ukloni_zvuk(argumenti_url, vrijeme_prije)
+
+            if je_poznati_tiktok_challenge_bug(puni_izlaz):
+                self.root.after(0, lambda: self.ispisi(self.t("msg_tiktok_bug_download")))
+                return False, zadnja_greska_tekst
+
+            prolazna = any(t in donji for t in [
+                "unable to extract", "rehydration", "webpage video data",
+                "http error 5", "timed out", "timeout", "connection",
+                "http error 403", "forbidden",
+                # HTTP 403 na YouTube-u je gotovo uvijek ISTEKAO potpisani link
+                # (googlevideo.com URL-ovi vrijede ograniceno, ponekad kratko) -
+                # ne stvarna zabrana pristupa. Ponovni pokusaj IZNOVA izvuce
+                # svjez link (nova "Extracting URL" faza), sto gotovo uvijek
+                # rijesi problem - upravo zasto "drugi put radi" bez ikakve
+                # izmjene s korisnikove strane.
+            ])
+            if prolazna and pokusaj < MAX_POKUSAJA:
+                self.root.after(0, lambda p=pokusaj: self.ispisi(self.t("msg_retry_attempt").format(p)))
+                time.sleep(2)
+                continue
+            self.root.after(0, lambda pt=puni_izlaz: self.ispisi(self.t("msg_full_error_details").format(pt)))
+            return False, zadnja_greska_tekst
+
+        return False, zadnja_greska_tekst
+
+    def _skini_pa_ukloni_zvuk(self, argumenti_url, vrijeme_prije):
+        """Fallback za 'samo video' kad izvor nema odvojeni video stream."""
+        argumenti = list(argumenti_url)
+        if "-f" in argumenti:
+            idx = argumenti.index("-f")
+            argumenti[idx + 1] = "best"
+        rezultat = pokreni_yt_dlp(argumenti, timeout=3600)
+        if rezultat.returncode != 0:
+            return False, (rezultat.stdout + rezultat.stderr).strip()
+        putanja = self._zadnji_fajl(vrijeme_prije)
+        if not putanja:
+            return True, None
+        ffmpeg = ffmpeg_putanja()
+        if not ffmpeg:
+            self.root.after(0, self.ispisi, self.t("msg_no_ffmpeg_kept_audio"))
+            return True, None
+        bez_zvuka = putanja + ".nijemi.mp4"
+        subprocess.run([ffmpeg, "-y", "-i", putanja, "-c", "copy", "-an", bez_zvuka],
+                       capture_output=True, timeout=1800, **_SUBPROCESS_FLAGS)
+        if os.path.exists(bez_zvuka) and os.path.getsize(bez_zvuka) > 0:
+            os.remove(putanja)
+            korijen, nastavak = os.path.splitext(putanja)
+            putanja = f"{korijen} [bez zvuka]{nastavak}"
+            os.rename(bez_zvuka, putanja)
+            self.root.after(0, self.ispisi, self.t("msg_audio_removed"))
+        self._primijeni_omjer_slike(vrijeme_prije)
+        if "--download-sections" in argumenti_url:
+            self._popravi_trajanje_isjecka(vrijeme_prije)
+        return True, None
+
+    def _popravi_trajanje_isjecka(self, vrijeme_prije):
+        """Nakon rezanja isjecka (--download-sections) izlazni fajl ZNA u sebi
+        zadrzati POGRESNO (izvorno, puno duze) trajanje - iz VISE mogucih razloga
+        koje razliciti playeri razlicito citaju:
+          1) u STRUKTURNOM zaglavlju kontejnera (mvhd/moov) - ovo popravlja
+             sam remux (ffmpeg ga UVIJEK ispravno izracuna iz stvarnih paketa
+             pri remuxanju).
+          2) u UGRADJENOJ METAPODATAK OZNACI "duration" koju je yt-dlp upisao
+             JOS PRIJE rezanja (odrazava ORIGINALNI, neodrezani video) - obican
+             '-c copy' remux tu oznaku PO DEFAULTU prenese netaknutu u novi
+             fajl (ffmpeg kopira metapodatke ako mu se izricito ne kaze da ne
+             kopira). Rjesava se s '-map_metadata -1'.
+          3) VREMENSKE OZNAKE (timestamps) unutar samog isjecka mogu ostati na
+             ORIGINALNIM vrijednostima s pocetka rezanja (npr. isjecak od
+             48. do 51. minute originala moze u sebi zadrzati brojeve 48:00-
+             51:00 umjesto da se resetiraju na 0:00-3:00) - neki playeri
+             (VLC) trajanje racunaju iz NAJVECE pronadjene vremenske oznake,
+             pa prikazu "traje do 51. minute" iako je stvarni sadrzaj samo 3
+             minute dug. Rjesava se s '-fflags +genpts -avoid_negative_ts
+             make_zero', koji tjera ffmpeg da PONOVNO IZGRADI vremenske
+             oznake od nule za ovaj (novi, odrezani) fajl."""
+        ffmpeg = ffmpeg_putanja()
+        if not ffmpeg:
+            return
+        putanja = self._zadnji_fajl(vrijeme_prije)
+        if not putanja:
+            return
+        privremena = putanja + ".popravljeno" + os.path.splitext(putanja)[1]
+        try:
+            rezultat = subprocess.run(
+                [ffmpeg, "-y", "-fflags", "+genpts", "-i", putanja, "-map", "0", "-c", "copy",
+                 "-map_metadata", "-1", "-avoid_negative_ts", "make_zero",
+                 "-movflags", "+faststart", privremena],
+                capture_output=True, timeout=600, **_SUBPROCESS_FLAGS
+            )
+            if rezultat.returncode == 0 and os.path.exists(privremena) and os.path.getsize(privremena) > 0:
+                os.remove(putanja)
+                os.rename(privremena, putanja)
+                self.root.after(0, self.ispisi, self.t("msg_duration_fixed"))
+            elif os.path.exists(privremena):
+                os.remove(privremena)
+        except Exception:
+            if os.path.exists(privremena):
+                try:
+                    os.remove(privremena)
+                except OSError:
+                    pass
+            # "best effort" popravak - ako ne uspije, fajl ostaje kakav je bio
+            # (sadrzaj je i dalje tocno odrezan, samo zaglavlje moze biti krivo)
+
+    def _ispisi_skinutu_rezoluciju(self, vrijeme_prije, platforma):
+        """Ispise stvarnu rezoluciju skinutog fajla (ffprobe) i - ako je
+        korisnik trazio vise nego je dobio - jasan savjet. Dijagnostika za
+        'odaberem 4K a dobijem 1080p'."""
+        try:
+            ffprobe = ffprobe_putanja()
+            putanja = self._zadnji_fajl(vrijeme_prije)
+            if not ffprobe or not putanja:
+                return
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=width,height", "-of", "csv=p=0", putanja],
+                capture_output=True, text=True, timeout=30, **_SUBPROCESS_FLAGS)
+            dijelovi = r.stdout.strip().split(",")
+            if len(dijelovi) < 2:
+                return
+            sirina, visina = int(dijelovi[0]), int(dijelovi[1])
+            self.root.after(0, self.ispisi, self.t("msg_resolution_downloaded").format(sirina, visina))
+            trazena = visina_iz_kvalitete(self.var_kvaliteta.get())
+            if platforma == "youtube" and trazena and trazena >= 1440 and visina < trazena * 0.9:
+                self.root.after(0, self.ispisi, self.t("msg_resolution_hint").format(trazena, visina))
+        except Exception:
+            pass
+
+    def _zadnji_fajl(self, vrijeme_prije):
+        try:
+            kandidati = [
+                os.path.join(self.trenutni_folder, f)
+                for f in os.listdir(self.trenutni_folder)
+                if f.lower().endswith((".mp4", ".mkv", ".webm", ".mov"))
+            ]
+            kandidati = [f for f in kandidati if os.path.getmtime(f) >= vrijeme_prije - 1]
+            return max(kandidati, key=os.path.getmtime) if kandidati else None
+        except Exception:
+            return None
+
+    def _osiguraj_h264(self, vrijeme_prije):
+        """Nakon skidanja provjeri je li video zapis H.264. Ako je izvor dao HEVC/AV1,
+        Premiere ga na Windowsima bez dodatnih kodeka ne cita - pa transkodiramo."""
+        ffprobe = ffprobe_putanja()
+        ffmpeg = ffmpeg_putanja()
+        if not ffprobe or not ffmpeg:
+            self.root.after(0, self.ispisi, self.t("msg_codec_check_skipped"))
+            return
+        try:
+            putanja = self._zadnji_fajl(vrijeme_prije)
+            if not putanja:
+                return
+            rezultat = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", putanja],
+                capture_output=True, text=True, timeout=20, **_SUBPROCESS_FLAGS
+            )
+            kodek = rezultat.stdout.strip().lower()
+            if kodek in ("h264", "avc1", ""):
+                return
+            self.root.after(0, self.ispisi, self.t("msg_converting_codec").format(kodek.upper()))
+            privremena = putanja + ".h264.mp4"
+            subprocess.run(
+                [ffmpeg, "-y", "-fflags", "+genpts", "-i", putanja, "-c:v", "libx264", "-crf", "18",
+                 "-preset", "medium", "-c:a", "aac", "-b:a", "192k",
+                 "-map_metadata", "-1", "-avoid_negative_ts", "make_zero", privremena],
+                capture_output=True, timeout=3600, **_SUBPROCESS_FLAGS
+            )
+            if os.path.exists(privremena) and os.path.getsize(privremena) > 0:
+                os.remove(putanja)
+                os.rename(privremena, putanja)
+                self.root.after(0, self.ispisi, self.t("msg_codec_converted"))
+            else:
+                self.root.after(0, self.ispisi, self.t("msg_codec_convert_failed"))
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_codec_check_failed").format(em)))
+
+    def _primijeni_omjer_slike(self, vrijeme_prije):
+        """Nakon skidanja, ako je korisnik odabrao ciljni omjer slike (npr. 9:16
+        za TikTok/Reels/Shorts umjesto izvornog 16:9), video se prereze preko
+        ffmpega da TOCNO popuni taj omjer - crop na sredini, BEZ crnih traka.
+        Ovisno je li izvor "sirok" ili "uzak" u odnosu na ciljni omjer, malo
+        se odsijece ili s lijeva/desna ili s vrha/dna (nikad oboje)."""
+        omjer = _omjer_u_wh(self.var_omjer_slike.get())
+        if omjer is None:
+            return  # "Original" - ne diraj nista
+        ffmpeg = ffmpeg_putanja()
+        if not ffmpeg:
+            self.root.after(0, self.ispisi, self.t("msg_codec_check_skipped"))
+            return
+        try:
+            putanja = self._zadnji_fajl(vrijeme_prije)
+            if not putanja:
+                return
+            tw, th = omjer
+            # Ako je izvor VEC u trazenom omjeru (npr. 16:9 video, odabran 16:9),
+            # nema sto rezati - preskoci umjesto bespotrebnog re-enkodiranja
+            # (koje je u tom slucaju znalo i pasti s greskom).
+            try:
+                ffprobe = ffprobe_putanja()
+                if ffprobe:
+                    rp = subprocess.run(
+                        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                         "stream=width,height", "-of", "csv=p=0", putanja],
+                        capture_output=True, text=True, timeout=30, **_SUBPROCESS_FLAGS)
+                    sir, vis = [int(x) for x in rp.stdout.strip().split(",")[:2]]
+                    if vis > 0 and abs(sir / vis - tw / th) < 0.02:
+                        self.root.after(0, self.ispisi, self.t("msg_aspect_already").format(f"{tw}:{th}"))
+                        return
+            except Exception:
+                pass  # ako provjera ne uspije, nastavi s rezanjem kao i prije
+            self.root.after(0, self.ispisi, self.t("msg_cropping_aspect").format(f"{tw}:{th}"))
+            # "a" je ffmpegov ugradjeni izraz za trenutni omjer slike (iw/ih)
+            # unutar crop filtera. Ako je izvor SIRI od ciljnog omjera, drzi
+            # visinu i odsijeci sirinu; inace drzi sirinu i odsijeci visinu.
+            #
+            # BITNO (popravak buga - omjer slike se dosad UOPCE nije
+            # primjenjivao, uvijek je ostajao original/16:9): zarezi UNUTAR
+            # if(...) izraza MORAJU biti escape-ani ("\,") jer inace ih
+            # ffmpegov VANJSKI filter-graf parser (koji zarez koristi za
+            # ULANCAVANJE VISE filtera, npr. "crop=...,scale=...") pogresno
+            # protumaci kao kraj/pocetak NOVOG filtera, umjesto kao dio
+            # argumenta funkcije if(). Bez ovoga ffmpeg pukne s "No such
+            # filter" i cijeli korak se preskoci, a original ostaje netaknut.
+            # Potvrdjeno testom: bez escapea vraca "No such filter: '9/16)'";
+            # s escapeom, 1920x1080->9:16 daje tocnih 608x1080.
+            crop_w = f"if(gt(a\\,{tw}/{th})\\,ih*{tw}/{th}\\,iw)"
+            crop_h = f"if(gt(a\\,{tw}/{th})\\,ih\\,iw*{th}/{tw})"
+            privremena = putanja + ".omjer.mp4"
+            subprocess.run(
+                [ffmpeg, "-y", "-fflags", "+genpts", "-i", putanja, "-vf", f"crop={crop_w}:{crop_h}",
+                 "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-c:a", "copy",
+                 "-map_metadata", "-1", "-avoid_negative_ts", "make_zero", privremena],
+                capture_output=True, timeout=3600, **_SUBPROCESS_FLAGS
+            )
+            if os.path.exists(privremena) and os.path.getsize(privremena) > 0:
+                os.remove(putanja)
+                os.rename(privremena, putanja)
+                self.root.after(0, self.ispisi, self.t("msg_aspect_done"))
+            else:
+                self.root.after(0, self.ispisi, self.t("msg_aspect_failed"))
+        except Exception as err:
+            self.root.after(0, lambda em=str(err): self.ispisi(self.t("msg_aspect_error").format(em)))
+
+    def _zavrsi_preuzimanje(self, uspjesni, neuspjesni):
+        if self.otkazano:
+            self.root.after(0, self.ispisi, self.t("msg_download_cancelled"))
+            self.root.after(0, lambda: self._status_light(SUBTEXT))
+        elif uspjesni and not neuspjesni:
+            self.root.after(0, self.ispisi, self.t("msg_all_done_log").format(self.trenutni_folder))
+            self.root.after(0, lambda: messagebox.showinfo(self.t("done_naslov"), self.t("msg_all_done_text")))
+            self.root.after(0, self._status_blink_uspjeh)
+        elif uspjesni and neuspjesni:
+            self.root.after(0, self.ispisi, self.t("msg_partial_log").format(uspjesni, neuspjesni))
+            self.root.after(0, lambda u=uspjesni, n=neuspjesni: messagebox.showwarning(
+                self.t("partial_naslov"), self.t("msg_partial_text").format(u, n)))
+            self.root.after(0, lambda: self._status_light(DANGER))
+        elif neuspjesni:
+            self.root.after(0, self.ispisi, self.t("msg_all_failed_log"))
+            self.root.after(0, lambda: messagebox.showerror(
+                self.t("failed_naslov"), self.t("msg_all_failed_text")))
+            self.root.after(0, lambda: self._status_light(DANGER))
+
+        self.root.after(0, lambda: self.btn_download.config(state="normal", bg=ACCENT))
+        self.root.after(0, self._osvjezi_stanje_nacina)
+        self.root.after(0, lambda: self.btn_pause.config(state="disabled", text=self.t("gumb_pauziraj"), bg=PAUSE_BG))
+        self.root.after(0, lambda: self.btn_prekini.config(state="disabled"))
+        self.root.after(0, lambda: setattr(self, "aktivno_preuzimanje", False))
+        self.root.after(0, self._queue_retry_button)
+        self.root.after(0, lambda: setattr(self, "otkazano", False))
+        self.root.after(0, self.ponisti_isjecak)
+        self.root.after(0, self.azuriraj_brzinu, "")
+
+
+if __name__ == "__main__":
+    _log_pokretanja("=== novo pokretanje ===")
+    multiprocessing.freeze_support()
+    _log_pokretanja("multiprocessing.freeze_support() gotovo")
+
+    def _pokreni_tkinter():
+        """Stvara root prozor I pokreće mainloop() u ISTOJ niti - Tcl/Tk interpreter
+        je na Windowsima vezan uz COM 'apartman' niti u kojoj je stvoren, pa se root
+        NE SMIJE stvoriti u jednoj niti a mainloop() zvati u drugoj (to je davalo
+        'Calling Tcl from different apartment' / 'main thread is not in main loop').
+        Ovoj niti ne treba biti baš OS glavna nit procesa - samo mora biti DOSLJEDNO
+        ista nit za sve Tk pozive, što ovdje i jest."""
+        _log_pokretanja("_pokreni_tkinter() ušao (nova nit)")
+        root = tk.Tk()
+        _log_pokretanja("tk.Tk() gotovo")
+        try:
+            App(root)
+            _log_pokretanja("App(root) gotovo")
+        except Exception:
+            # Ako pokretanje app-a (App.__init__) pukne iz BILO KOJEG razloga,
+            # ovo je JEDINA prilika da korisnik uopce vidi zasto - bez ovoga,
+            # ako se app pokrene dvoklikom (bez konzole), prozor se samo ugasi
+            # bez ikakve poruke i korisnik nema nista sto bi nam poslao. Prikazi
+            # PUNU gresku u obicnom Tkinter dijalogu (radi cak i ako App sam
+            # nije uspio ni krenuti) i zapisi je u fajl pored skripte/exe-a.
+            puna_greska = traceback.format_exc()
+            _log_pokretanja(f"App(root) PUKAO:\n{puna_greska}")
+            try:
+                putanja_loga = os.path.join(_bazni_folder(), "mister_muscle_greska.txt")
+                with open(putanja_loga, "w", encoding="utf-8") as f:
+                    f.write(puna_greska)
+            except Exception:
+                putanja_loga = None
+            try:
+                messagebox.showerror(
+                    "Mister Muscle Downloader — greška pri pokretanju",
+                    "Aplikacija se nije uspjela pokrenuti.\n\n"
+                    + puna_greska
+                    + (f"\n\n(Ovo je i spremljeno u: {putanja_loga})" if putanja_loga else "")
+                )
+            except Exception:
+                pass
+            raise
+        _log_pokretanja("root.mainloop() kreće")
+        root.mainloop()
+        _log_pokretanja("root.mainloop() završio (prozor zatvoren)")
+
+    if PYWEBVIEW_DOSTUPAN and EMBED_PLAYERA_DOSTUPAN:
+        # 'webview.start()' mora biti pozvan iz GLAVNE niti (ograničenje same
+        # biblioteke - inače puca "pywebview must be run on a main thread").
+        # Zato CIJELI Tkinter (stvaranje root prozora + mainloop, zajedno) ide u
+        # posebnu nit koju nam webview sam pokrene preko 'func' parametra.
+        #
+        # VAŽNO (v17.0.2): noviji pywebview (>= verzija koja se sad skida s PyPI-ja)
+        # zahtijeva da PRIJE poziva 'webview.start()' već postoji BAREM JEDAN
+        # stvoren prozor - inače odmah puca:
+        #   webview.errors.WebViewException: You must create a window first
+        #   before calling this function
+        # Stvarni prozor za ugrađeni player stvara se tek KASNIJE, iz pozadinske
+        # niti (App._pripremi_ugradjeni_webview), pošto Tkinter app uopće krene -
+        # u trenutku ovog poziva još ne postoji nijedan prozor pa je pucalo odmah,
+        # prije nego što bi 'func' (Tkinter) stigao i pokrenuti. Rješenje: napravimo
+        # mali nevidljiv "čuvar mjesta" prozor SAMO da zadovoljimo taj uvjet -
+        # stvarni, vidljivi player-prozor i dalje nastaje kako je bilo, kasnije.
+        _log_pokretanja("PYWEBVIEW_DOSTUPAN i EMBED_PLAYERA_DOSTUPAN - pravim guard prozor")
+        webview.create_window(
+            "MisterMuscle_Init", url="about:blank", width=1, height=1, hidden=True
+        )
+        _log_pokretanja("guard prozor registriran - pozivam webview.start(func=_pokreni_tkinter)")
+        webview.start(func=_pokreni_tkinter, debug=False)
+        _log_pokretanja("webview.start() vratio kontrolu (app se gasi)")
+    else:
+        _log_pokretanja("PYWEBVIEW/EMBED nedostupno - pokrecem obican _pokreni_tkinter() direktno")
+        _pokreni_tkinter()

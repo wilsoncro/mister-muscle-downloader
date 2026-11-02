@@ -1,3 +1,4 @@
+; Stable installer: preserves the existing Mister Muscle Downloader upgrade identity.
 ; ============================================================================
 ;  MisterMuscle_Setup.iss
 ;  Inno Setup skripta koja od VEĆ IZGRAĐENE dist\MisterMuscle\ mape
@@ -29,7 +30,7 @@
 ; ============================================================================
 
 #define MyAppName "Mister Muscle Downloader"
-#define MyAppVersion "5.2.16"
+#define MyAppVersion "5.3.0"
 #define MyAppPublisher "Mister Muscle"
 #define MyAppExeName "MisterMuscle.exe"
 

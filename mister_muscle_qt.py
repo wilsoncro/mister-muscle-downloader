@@ -23,7 +23,9 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.2.16'
+APP_VERSION = '5.3.0'
+APP_IS_BETA = False
+DISPLAY_VERSION = APP_VERSION
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -34,9 +36,18 @@ TOOLS_DIR=APP_DIR/'tools'
 if getattr(sys, 'frozen', False):
     os.environ['PATH']=str(TOOLS_DIR)+os.pathsep+os.environ.get('PATH','')
 YTDLP_EXE=str(TOOLS_DIR/'yt-dlp.exe') if getattr(sys, 'frozen', False) else sys.executable
+def find_media_tool(name):
+    """Find a bundled FFmpeg tool before searching the system PATH."""
+    executable=name+'.exe' if sys.platform=='win32' else name
+    for folder in (TOOLS_DIR, BASE/'tools', APP_DIR, BASE):
+        candidate=folder/executable
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(name)
+
 def ytdlp_args(args):
     return args[2:] if getattr(sys, 'frozen', False) and args[:2]==['-m','yt_dlp'] else args
-DATA=Path(os.environ.get('APPDATA',str(Path.home()))) / 'MisterMuscleQt'
+DATA=Path(os.environ.get('APPDATA',str(Path.home()))) / ('MisterMuscleQt_BETA' if APP_IS_BETA else 'MisterMuscleQt')
 DATA.mkdir(parents=True,exist_ok=True)
 HISTORY=DATA/'history.json'
 SESSION=DATA/'session.json'
@@ -154,10 +165,14 @@ class OriginalPlayerBridge(QObject):
     @Slot(float)
     def oznaci_pocetak(self, seconds):
         self.app.cut_from.setText(self.app.format_seconds(seconds))
+        if hasattr(self.app,'pro_timeline'):
+            self.app.pro_timeline.start=max(0.,float(seconds));self.app.pro_timeline.update()
 
     @Slot(float)
     def oznaci_kraj(self, seconds):
         self.app.cut_to.setText(self.app.format_seconds(seconds))
+        if hasattr(self.app,'pro_timeline'):
+            self.app.pro_timeline.end=max(0.,float(seconds));self.app.pro_timeline.update()
 
     @Slot(float, float)
     def skini_shorts_iz_player(self, start, end):
@@ -195,8 +210,9 @@ if WEB_ENGINE_AVAILABLE:
             else:
                 numeric=getattr(level,'value',level)
                 level_name={0:'INFO',1:'WARN',2:'ERROR'}.get(numeric,'INFO')
-            if level_name=='WARN' and ('Failed to create WebGPU Context Provider' in message
-                                        or "Unrecognized feature: 'web-share'" in message):
+            if ('Failed to create WebGPU Context Provider' in message
+                    or 'compute-pressure is not allowed' in message
+                    or "Unrecognized feature: 'web-share'" in message):
                 level_name='DEBUG'
             # YouTube/DoubleClick conversion tracking CORS failures do not affect playback.
             if ('doubleclick.net/pagead/' in message or 'youtube.com/pagead/viewthroughconversion/' in message) and ('CORS' in message or 'Access to fetch' in message):
@@ -234,7 +250,7 @@ class UpdateCheckWorker(QThread):
                 installer = next((a for a in assets if str(a.get('name','')).lower().endswith('.exe')
                                   and str(a.get('browser_download_url','')).startswith('https://github.com/')), None)
                 asset_url = installer.get('browser_download_url', '') if installer else ''
-                results.append(('Mister Muscle Downloader', APP_VERSION, tag, newer(tag, APP_VERSION), asset_url))
+                results.append(('Mister Muscle Downloader', APP_VERSION, tag, (not APP_IS_BETA and newer(tag, APP_VERSION)), asset_url if not APP_IS_BETA else ''))
             else:
                 results.append(('Mister Muscle Downloader', APP_VERSION, 'Unknown', False, ''))
         except Exception as exc:
@@ -488,15 +504,15 @@ class BugReportWorker(QThread):
 
 class Main(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle('Mister Muscle Downloader — v' + APP_VERSION)
+        super().__init__();self.setWindowTitle('Mister Muscle Downloader — v' + DISPLAY_VERSION)
         self.resize(1360,850);self.setMinimumSize(990,640)
-        self._auto_reporting_enabled=True
+        self._auto_reporting_enabled=not APP_IS_BETA
         self._auto_reports=[]
         self._auto_worker=None
         self._auto_last_sent={}
         self._auto_next_attempt=0
         try:
-            self._auto_reporting_enabled=bool(json.loads(AUTO_REPORT_SETTINGS.read_text(encoding='utf-8')).get('enabled',True))
+            self._auto_reporting_enabled=bool(json.loads(AUTO_REPORT_SETTINGS.read_text(encoding='utf-8')).get('enabled',not APP_IS_BETA))
         except (OSError,ValueError,AttributeError):pass
         try:
             pending=json.loads(AUTO_REPORT_QUEUE.read_text(encoding='utf-8'))
@@ -596,7 +612,7 @@ class Main(QMainWindow):
         self.restore_session()
         self._language_timer=QTimer(self)
         self._language_timer.timeout.connect(self.refresh_language)
-        self._language_timer.start(450)
+        self._language_timer.start(1800) if APP_LANGUAGE=='hr' else None
         self.refresh_language()
         self._original_preview_url=''
         self._auto_player_timer=QTimer(self)
@@ -609,7 +625,7 @@ class Main(QMainWindow):
         self.log('INFO','APP','Mister Muscle Downloader v' + APP_VERSION + ' started')
         self.log('INFO','APP',f'Python {sys.version.split()[0]} | Qt WebEngine: {WEB_ENGINE_AVAILABLE}')
         self.log('INFO','APP',f'Log file: {self._log_path}')
-        self.log('INFO','APP',f'FFmpeg: {shutil.which("ffmpeg") or "not found in PATH"}')
+        self.log('INFO','APP',f'FFmpeg: {find_media_tool("ffmpeg") or "not found"}')
         if self.urls.toPlainText().strip():
             self._auto_player_timer.start()
         QTimer.singleShot(1200, self.check_updates)
@@ -643,6 +659,7 @@ class Main(QMainWindow):
         try: LANGUAGE_FILE.write_text(json.dumps({'language':APP_LANGUAGE}),encoding='utf-8')
         except OSError as exc:self.log('WARN','LANGUAGE',str(exc))
         self.refresh_language()
+        self._language_timer.start(1800) if APP_LANGUAGE=='hr' else self._language_timer.stop()
         # Embedded player HTML is generated in the selected language on next load.
         self._original_preview_url=''
         if getattr(self,'_studio_local',None):self.open_local_path_in_studio(self._studio_local)
@@ -655,6 +672,9 @@ class Main(QMainWindow):
             self._original_preview_url = ''
             self._studio_local = None
             self.hide_studio_player()
+            if hasattr(self,'pro_timeline'):
+                self.pro_timeline.set_source('No source loaded')
+                self.pro_timeline.hide()
         else:
             self._auto_player_timer.start()
 
@@ -683,7 +703,7 @@ class Main(QMainWindow):
         if width<200:return
         # 16:9 video plus timeline, toolbar and multi-cut selection area.
         # The parent QScrollArea handles the extra vertical space.
-        desired=max(680,min(1800,round(width*9/16)+340))
+        desired=max(240,min(1100,round(width*9/16)+12))
         if abs(self.original_web.height()-desired)>4:
             self.original_web.setFixedHeight(desired)
 
@@ -995,7 +1015,7 @@ class Main(QMainWindow):
     def make_download(self):
         w,v=self.column()
         v.setSpacing(13)
-        v.addWidget(heading('New Download','Paste a link, choose your format and start — all in one workspace.'))
+        v.addWidget(heading('New Download','Choose your format, paste a link, and download — extra tools stay one click away.'))
         row=QHBoxLayout();row.setSpacing(14)
         left=QVBoxLayout();left.setSpacing(14)
         right=QVBoxLayout();right.setSpacing(14)
@@ -1008,7 +1028,7 @@ class Main(QMainWindow):
         self.urls.setFixedHeight(62)
         sl.addWidget(self.urls)
         actions=QHBoxLayout();actions.setSpacing(7)
-        for label,fn in [('Paste',self.paste),('Clear',self.urls.clear),
+        for label,fn in [('Paste',self.paste),('Import .txt',self.import_links_txt),('Clear',self.urls.clear),
                          ('Inspect',self.inspect_link),('▶ Preview',self.preview_link)]:
             b=button(label,fn);actions.addWidget(b)
         sl.addLayout(actions)
@@ -1018,7 +1038,7 @@ class Main(QMainWindow):
         left.addWidget(source)
 
         options,ol=card()
-        eyebrow=QLabel('02  FORMAT & QUALITY');eyebrow.setObjectName('eyebrow');ol.addWidget(eyebrow)
+        eyebrow=QLabel('02  ADVANCED DOWNLOAD OPTIONS');eyebrow.setObjectName('eyebrow');ol.addWidget(eyebrow)
         choices=QHBoxLayout();choices.setSpacing(12)
         modebox=QVBoxLayout();modebox.addWidget(QLabel('File type'))
         self.mode=QComboBox();self.mode.addItems(['Video + audio','Video only','Audio only','Instagram Photos'])
@@ -1027,7 +1047,22 @@ class Main(QMainWindow):
         self.quality=QComboBox();self.quality.addItems(['Best available','2160p','1440p','1080p','720p','480p','360p'])
         qualitybox.addWidget(self.quality)
         choices.addLayout(modebox,1);choices.addLayout(qualitybox,1)
-        ol.addLayout(choices)
+        # Primary download choices stay visible; detailed options are collapsible.
+        quick_options,quick_layout=card()
+        quick_layout.addWidget(QLabel('02  FORMAT & QUALITY'))
+        visible_formats_note=QLabel('Choose a download type, output format and resolution before downloading.')
+        visible_formats_note.setObjectName('sub')
+        visible_formats_note.setWordWrap(True)
+        quick_layout.addWidget(visible_formats_note)
+        speedrow=QHBoxLayout()
+        speedrow.addWidget(QLabel('Download speed limit'))
+        self.speed_limit=QComboBox()
+        self.speed_limit.addItems(['Unlimited','512 KB/s','1 MB/s','2 MB/s','5 MB/s','10 MB/s'])
+        self.speed_limit.setToolTip('Limits yt-dlp transfer speed for each download. Does not affect Instagram Photos.')
+        speedrow.addWidget(self.speed_limit,1)
+        self.speed_limit.setCurrentText(getattr(self,'_restored_speed_limit','Unlimited'))
+        self.speed_limit.currentTextChanged.connect(lambda _value:self.persist_session())
+        ol.addLayout(speedrow)
         exportrow=QHBoxLayout();exportrow.setSpacing(12)
         vc=QVBoxLayout()
         self.format_label=QLabel('Output format');vc.addWidget(self.format_label)
@@ -1037,7 +1072,10 @@ class Main(QMainWindow):
         self._previous_mode=0
         self.mode.currentIndexChanged.connect(self.update_mode_formats)
         self.update_mode_formats(0)
-        exportrow.addLayout(vc,1)
+        # Output format is a primary feature, alongside mode and resolution.
+        # Keep all three controls visible even when Advanced settings is closed.
+        choices.insertLayout(1,vc,1)
+        quick_layout.addLayout(choices)
         ac2=QVBoxLayout();ac2.addWidget(QLabel('Clip aspect ratio'))
         self.aspect=QComboBox();self.aspect.addItems(['Original','16:9 (YouTube)','9:16 (TikTok / Reels / Shorts)','1:1 (Square)','4:5 (Instagram)','3:4 (Portrait)','21:9 (Ultrawide)','4:3 (Classic)'])
         ac2.addWidget(self.aspect);exportrow.addLayout(ac2,1)
@@ -1108,19 +1146,76 @@ class Main(QMainWindow):
 
         playercard,pc=card()
         eyebrow=QLabel('04  MEDIA STUDIO');eyebrow.setObjectName('eyebrow');pc.addWidget(eyebrow)
-        pc.addWidget(QLabel('Original timeline • precise clipping • multi-selection'))
-        description=QLabel('Drag the timeline handles, mark Start / End, or add multiple selections — your original editing workflow.')
-        description.setWordWrap(True);description.setObjectName('sub')
-        pc.addWidget(description)
+        # Keep the media workspace clean: the player and timeline communicate their own state.
         localrow=QHBoxLayout();localrow.setSpacing(8)
         localrow.addWidget(button('📂  Open Local Video',self.open_local_in_studio))
         localrow.addWidget(button('✂  Export local clip',self.export_local_clip))
-        pc.addLayout(localrow)
+        # Local actions are placed below the preview, alongside the timeline.
         self.original_player_note=QLabel('Paste a link or open a local video to use the original timeline.')
         self.original_player_note.setObjectName('sub')
         self.original_player_note.setWordWrap(True)
         pc.addWidget(self.original_player_note)
-        pc.addWidget(button('✂  Export marked clip in original quality',self.export_studio_clip,True))
+        # Export control follows the timeline, not above the preview.
+        # Compact native V1/A1 timeline, styled to match the original dark GUI.
+        from pro_timeline import ProTimeline
+        self.pro_timeline=ProTimeline()
+        self.pro_timeline.rangeChanged.connect(self._pro_timeline_range)
+        self.pro_timeline.seekRequested.connect(self._pro_timeline_seek)
+        self.pro_timeline.togglePlaybackRequested.connect(self._pro_toggle_playback)
+        self.pro_timeline.hide()  # shown after a source is loaded
+        timeline_toolbar=QHBoxLayout()
+        timeline_toolbar.addWidget(QLabel('V1 / A1  TIMELINE'))
+        timeline_toolbar.addStretch()
+        self.timeline_tools_toggle=QPushButton('Timeline tools  ▾')
+        self.timeline_tools_toggle.setCheckable(True)
+        self.timeline_tools_toggle.setToolTip('Show frame stepping, IN/OUT markers, zoom and loading quality')
+        timeline_toolbar.addWidget(self.timeline_tools_toggle)
+        timeline_advanced=QFrame()
+        timeline_advanced_layout=QHBoxLayout(timeline_advanced)
+        timeline_advanced_layout.setContentsMargins(0,0,0,0)
+        timeline_advanced_layout.addStretch()
+        self.timeline_mode=QComboBox()
+        self.timeline_mode.addItems(['Light','Smart','Full'])
+        self.timeline_mode.setCurrentText(self.pro_timeline.mode)
+        self.timeline_mode.setToolTip('Light: audio only / Smart: capped V1 frames + audio / Full: more frames')
+        self.timeline_mode.currentTextChanged.connect(self.pro_timeline.set_mode)
+        timeline_advanced_layout.addWidget(QLabel('Loading'))
+        timeline_advanced_layout.addWidget(self.timeline_mode)
+        timeline_advanced_layout.addWidget(button('−',lambda:self.pro_timeline.set_zoom(self.pro_timeline.zoom/1.4)))
+        timeline_advanced_layout.addWidget(button('+',lambda:self.pro_timeline.set_zoom(self.pro_timeline.zoom*1.4)))
+        timeline_advanced_layout.addWidget(button('◀',lambda:self.pro_timeline.step_frames(-1)))
+        timeline_advanced_layout.addWidget(button('▶',lambda:self.pro_timeline.step_frames(1)))
+        timeline_advanced_layout.addWidget(button('IN',lambda:self._pro_mark_in()))
+        timeline_advanced_layout.addWidget(button('OUT',lambda:self._pro_mark_out()))
+        pc.addLayout(timeline_toolbar)
+        timeline_advanced.hide()
+        self.timeline_tools_toggle.toggled.connect(timeline_advanced.setVisible)
+        self.timeline_tools_toggle.toggled.connect(lambda enabled:self.timeline_tools_toggle.setText('Timeline tools  ▴' if enabled else 'Timeline tools  ▾'))
+        pc.addWidget(timeline_advanced)
+        # Visible multi-clip controls for users who do not know keyboard shortcuts.
+        # Keep these on their own compact row to avoid crowding the playback tools.
+        clip_toolbar=QHBoxLayout()
+        clip_toolbar.addWidget(QLabel('CLIP SELECTIONS'))
+        self.clip_selection_count=QLabel('0 selected')
+        self.clip_selection_count.setObjectName('sub')
+        clip_toolbar.addWidget(self.clip_selection_count)
+        clip_toolbar.addStretch()
+        add_clip_btn=button('+ Add clip',self.pro_timeline.add_selection)
+        add_clip_btn.setToolTip('Save the currently marked IN/OUT range as another clip (M)')
+        clip_toolbar.addWidget(add_clip_btn)
+        remove_clip_btn=button('Remove last',self.pro_timeline.remove_last_selection)
+        remove_clip_btn.setToolTip('Remove the most recently saved clip (Delete)')
+        clip_toolbar.addWidget(remove_clip_btn)
+        clear_clips_btn=button('Clear all',self.pro_timeline.clear_selections)
+        clear_clips_btn.setToolTip('Remove all saved clip selections (Ctrl+Backspace)')
+        clip_toolbar.addWidget(clear_clips_btn)
+        export_all_btn=button('✂ Export all clips',self.export_all_timeline_clips,True)
+        export_all_btn.setToolTip('Export every saved selection as a separate MP4 in one operation')
+        clip_toolbar.addWidget(export_all_btn)
+        self.pro_timeline.selectionsChanged.connect(
+            lambda selections:self.clip_selection_count.setText(
+                f'{len(selections)} selected' if len(selections)!=1 else '1 selected'))
+        pc.addLayout(clip_toolbar)
         if WEB_ENGINE_AVAILABLE:
             self.original_web=QWebEngineView()
             self.original_page=LoggedWebPage(self.original_web.page().profile(),self.original_web,self.log)
@@ -1147,13 +1242,49 @@ class Main(QMainWindow):
                 self.original_web.settings().WebAttribute.PlaybackRequiresUserGesture,False)
         else:
             pc.addWidget(QLabel('Install PySide6 QtWebEngine to use the original embedded player.'))
-        # Source and download options stay compact at the top. The original
-        # timeline player spans the entire content area below both columns.
-        # Stack Source and Download on the left; Format & Quality on the right.
-        # This removes the large blank area beneath Source.
-        row.addLayout(left,7)
-        row.addLayout(right,5)
-        v.addLayout(row)
+        pc.addWidget(self.pro_timeline)
+        self._embedded_sync_timer=QTimer(self)
+        self._embedded_sync_timer.setInterval(500)
+        self._embedded_sync_timer.timeout.connect(self._sync_embedded_player_timeline)
+        self._embedded_sync_timer.start()
+        # Rare local-video and single-clip actions are available on demand.
+        local_tools=QFrame()
+        local_tools_layout=QVBoxLayout(local_tools)
+        local_tools_layout.setContentsMargins(0,0,0,0)
+        local_tools_layout.addLayout(localrow)
+        local_tools_layout.addWidget(button('✂  Export marked clip in original quality',self.export_studio_clip,True))
+        local_tools.hide()
+        local_toggle=QPushButton('More export options  ▾')
+        local_toggle.setCheckable(True)
+        local_toggle.toggled.connect(local_tools.setVisible)
+        local_toggle.toggled.connect(lambda enabled:local_toggle.setText('More export options  ▴' if enabled else 'More export options  ▾'))
+        pc.addWidget(local_toggle)
+        pc.addWidget(local_tools)
+        # Clear hierarchy: source + download action, optional advanced settings,
+        # then the full-width player and V1/A1 timeline. Existing widgets and
+        # signals are preserved, only their placement changes.
+        top=QHBoxLayout();top.setSpacing(12)
+        left.removeWidget(source)
+        left.removeWidget(actioncard)
+        right.removeWidget(options)
+        top.addWidget(source,7)
+        top.addWidget(actioncard,3)
+        v.addLayout(top)
+        v.addWidget(quick_options)
+
+        self.download_settings_toggle=QPushButton('⚙  Advanced download settings  ▾')
+        self.download_settings_toggle.setCheckable(True)
+        self.download_settings_toggle.setChecked(False)
+        self.download_settings_toggle.setToolTip('Show speed limit, clip aspect ratio, save folder, compatibility and Instagram settings')
+        self.download_settings_toggle.setMinimumHeight(36)
+        self.download_settings_toggle.setStyleSheet('QPushButton {text-align:left;padding:7px 14px;}')
+        v.addWidget(self.download_settings_toggle)
+        options.setVisible(False)
+        self.download_settings_toggle.toggled.connect(options.setVisible)
+        self.download_settings_toggle.toggled.connect(
+            lambda expanded:self.download_settings_toggle.setText(
+                '⚙  Advanced download settings  ▴' if expanded else '⚙  Advanced download settings  ▾'))
+        v.addWidget(options)
         v.addWidget(playercard,1)
         return w
 
@@ -1225,7 +1356,108 @@ class Main(QMainWindow):
             html=_player_html('generic',video_src='/local-video',jezik=APP_LANGUAGE)
             self.serve_original_player_html(html)
         self.original_player_note.setText('Local video: '+Path(path).name)
+        self.pro_timeline.set_source(Path(path).name,path)
+        self.pro_timeline.show()
         self.log('INFO','PLAYER','Local file loaded: '+path)
+
+    def _timeline_media_duration(self,ms):
+        if ms>0 and hasattr(self,'pro_timeline') and getattr(self,'_studio_local',None):
+            self.pro_timeline.duration=ms/1000
+            self.pro_timeline.update()
+
+    def _pro_timeline_range(self,start,end):
+        self.cut_from.setText(self.format_seconds(start))
+        self.cut_to.setText(self.format_seconds(end))
+
+    def _pro_mark_in(self):
+        timeline=self.pro_timeline
+        timeline.set_range(min(timeline.playhead,timeline.end),timeline.end)
+        self._pro_timeline_range(timeline.start,timeline.end)
+
+    def _pro_mark_out(self):
+        timeline=self.pro_timeline
+        timeline.set_range(timeline.start,max(timeline.playhead,timeline.start))
+        self._pro_timeline_range(timeline.start,timeline.end)
+
+    def _pro_toggle_playback(self):
+        if WEB_ENGINE_AVAILABLE and hasattr(self,'original_web') and self.original_web.isVisible():
+            js="""(function(){try{if(window.player && typeof player.getPlayerState==='function'){
+              if(player.getPlayerState()===1)player.pauseVideo();else player.playVideo();return true;
+            }if(window.player && typeof player.paused==='boolean'){
+              if(player.paused)player.play();else player.pause();return true;
+            }}catch(e){}return false;})()"""
+            self.original_web.page().runJavaScript(js)
+        elif getattr(self,'_studio_local',None):
+            if self.player.playbackState()==QMediaPlayer.PlayingState:self.player.pause()
+            else:self.player.play()
+
+    def _pro_timeline_seek(self,seconds):
+        # Seek the *visible* original WebEngine player, not the hidden Qt player.
+        if WEB_ENGINE_AVAILABLE and hasattr(self,'original_web') and self.original_web.isVisible():
+            js=f"(function(){{try{{if(window.player && typeof player.seekTo==='function'){{player.seekTo({float(seconds)!r},true);return true;}}}}catch(e){{}}return false;}})()"
+            self.original_web.page().runJavaScript(js)
+        elif getattr(self,'_studio_local',None):
+            self.player.setPosition(int(seconds*1000))
+
+    def _sync_embedded_player_timeline(self):
+        if not (WEB_ENGINE_AVAILABLE and hasattr(self,'original_web') and self.original_web.isVisible()):
+            return
+        # Original player JS exposes `player` for both YouTube IFrame and HTML5.
+        # Read current time/duration without changing playback state.
+        js="""(function(){try{if(window.player && typeof player.getCurrentTime==='function'){
+          var t=Number(player.getCurrentTime()), d=Number(player.getDuration());
+          if(Number.isFinite(t)&&Number.isFinite(d)&&d>0)return [t,d];
+        }}catch(e){}return null;})()"""
+        self.original_web.page().runJavaScript(js,self._embedded_position_received)
+
+    def _embedded_position_received(self,result):
+        if not (isinstance(result,list) and len(result)==2):return
+        try:
+            t,d=float(result[0]),float(result[1])
+            if not (0<=t<=d and d>0):return
+            timeline=self.pro_timeline
+            if abs(timeline.duration-d)>0.2:
+                old_duration=timeline.duration
+                timeline.duration=d
+                if timeline.end>=old_duration-0.01:timeline.end=d
+                else:timeline.end=min(timeline.end,d)
+            timeline.set_playhead(t)
+        except (TypeError,ValueError,AttributeError):pass
+
+    def export_all_timeline_clips(self):
+        """Export every saved timeline selection in one batch, online or local."""
+        if self.remote_proc and self.remote_proc.state()!=QProcess.NotRunning:
+            QMessageBox.information(self,'Busy','Wait for the current export.');return
+        ranges=list(self.pro_timeline.selections)
+        if not ranges:
+            QMessageBox.information(self,'No clips selected','Mark IN/OUT and click + Add clip for each clip first.');return
+        if any(a<0 or b<=a or (self.pro_timeline.duration>0 and b>self.pro_timeline.duration+0.25) for a,b in ranges):
+            QMessageBox.warning(self,'Invalid clips','Some clip selections are outside the video duration.');return
+        if getattr(self,'_studio_local',None):
+            self.export_local_selections(ranges)
+        else:
+            self.export_multiple_selections([(self.format_seconds(a),self.format_seconds(b)) for a,b in ranges])
+
+    def export_local_selections(self,ranges):
+        """Use existing FFmpeg batch export without downloading a local source again."""
+        source=Path(self._studio_local)
+        if not source.is_file():
+            QMessageBox.warning(self,'Missing video','Local video could not be found.');return
+        ffmpeg=find_media_tool('ffmpeg')
+        if not ffmpeg:
+            QMessageBox.warning(self,'FFmpeg missing','FFmpeg is required for clip export.');return
+        folder=QFileDialog.getExistingDirectory(self,'Choose folder for all exported clips',self.folder)
+        if not folder:return
+        self._multi_ranges=list(ranges)
+        self._multi_folder=folder
+        self._multi_index=0
+        self._multi_active=True
+        self._clip_source_title=source.stem
+        self.remote_source=source
+        self.remote_tmp=None
+        self.remote_start,self.remote_end=self._multi_ranges[0]
+        self.remote_output=self.available_clip_filename(str(Path(folder)/(self.safe_clip_title(source.stem)+'_clip_001.mp4')))
+        self._start_next_batch_export()
 
     def export_studio_clip(self):
         if getattr(self,'_studio_local',None):self.export_local_clip()
@@ -1245,8 +1477,8 @@ class Main(QMainWindow):
         if Path(output).resolve()==Path(self._studio_local).resolve():
             QMessageBox.warning(self,'Unsafe output','Do not overwrite the source video.');return
         if Path(output).exists() and QMessageBox.question(self,'Overwrite?','Replace existing output?')!=QMessageBox.Yes:return
-        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
-        if not Path(ffmpeg).is_file() and not shutil.which('ffmpeg'):
+        ffmpeg=find_media_tool('ffmpeg')
+        if not ffmpeg:
             QMessageBox.warning(self,'FFmpeg missing','FFmpeg is required for exporting.');return
         self._multi_active=False
         self.remote_source=Path(self._studio_local)
@@ -1289,8 +1521,12 @@ class Main(QMainWindow):
         self._original_preview_url=url
         self.log('INFO','PLAYER',f'Auto-load requested for {url}')
         if 'instagram.com' in urllib.parse.urlsplit(url).netloc.lower() and self.mode.currentIndex()==3:
+            self.pro_timeline.set_source('Instagram photos')
+            self.pro_timeline.hide()
             self.original_player_note.setText('Instagram photos/carousel: use Download to save all items. Video preview is not needed.')
             return
+        self.pro_timeline.set_remote_source(url)
+        self.pro_timeline.show()
         if not WEB_ENGINE_AVAILABLE:
             self.original_player_note.setText('QtWebEngine is unavailable; use Preview Link instead.')
             return
@@ -1607,7 +1843,13 @@ class Main(QMainWindow):
     def make_queue(self):
         w,v=self.column();v.addWidget(heading('Queue','Pending links waiting to be downloaded.'))
         self.queue_list=QListWidget();self.queue_list.setSelectionMode(QListWidget.ExtendedSelection);self.queue_list.setMinimumHeight(330);v.addWidget(self.queue_list)
-        r=QHBoxLayout();r.addWidget(button('Start / Resume',self.start_pending,True));r.addWidget(button('Remove selected',self.remove_selected_queue));r.addWidget(button('Move up',lambda:self.move_queue(-1)));r.addWidget(button('Move down',lambda:self.move_queue(1)));r.addWidget(button('Clear pending',self.clear_queue));v.addLayout(r);return w
+        r=QHBoxLayout();r.addWidget(button('Start / Resume',self.start_pending,True));r.addWidget(button('Remove selected',self.remove_selected_queue));r.addWidget(button('Move up',lambda:self.move_queue(-1)));r.addWidget(button('Move down',lambda:self.move_queue(1)));r.addWidget(button('Clear pending',self.clear_queue));v.addLayout(r)
+        # Integrated queue: no separate process or top-level window.
+        from phase4_lab import Lab
+        self.integrated_queue=Lab()
+        self.integrated_queue.setWindowFlags(Qt.Widget)
+        v.addWidget(self.integrated_queue)
+        return w
     def make_history(self):
         w,v=self.column();v.addWidget(heading('History','Successfully downloaded files in this Qt version.'))
         self.history_list=QListWidget();self.history_list.setSelectionMode(QListWidget.ExtendedSelection);self.history_list.setMinimumHeight(400);v.addWidget(self.history_list)
@@ -1622,6 +1864,8 @@ class Main(QMainWindow):
         r=QHBoxLayout();r.addWidget(button('Open local video',self.open_video));r.addWidget(button('Open last download',self.open_last_download));r.addWidget(button('▶ / ❚❚',self.toggle_play));cl.addLayout(r)
         self.seek=QSlider(Qt.Horizontal);self.seek.setRange(0,1000);self.seek.sliderMoved.connect(self.seek_video);cl.addWidget(self.seek)
         self.player.positionChanged.connect(self.update_position);self.player.durationChanged.connect(self.update_duration)
+        self.player.positionChanged.connect(lambda ms:self.pro_timeline.set_playhead(ms/1000) if hasattr(self,'pro_timeline') and getattr(self,'_studio_local',None) else None)
+        self.player.durationChanged.connect(lambda ms:self._timeline_media_duration(ms))
         self.local_path=None
         r=QHBoxLayout();self.cut_from=QLineEdit('00:00:00');self.cut_to=QLineEdit('00:00:10')
         r.addWidget(QLabel('From'));r.addWidget(self.cut_from);r.addWidget(QLabel('To'));r.addWidget(self.cut_to);cl.addLayout(r)
@@ -1638,13 +1882,13 @@ class Main(QMainWindow):
             last_seen=WHATS_NEW_MARKER.read_text(encoding='utf-8').strip() if WHATS_NEW_MARKER.exists() else ''
         except OSError:
             last_seen=''
-        if last_seen != APP_VERSION:
+        if last_seen != DISPLAY_VERSION:
             self.show_whats_new()
 
     def show_whats_new(self):
         """Animated release highlights for the newest and preceding versions."""
         dialog=QDialog(self)
-        dialog.setWindowTitle(('Što je novo' if APP_LANGUAGE=='hr' else 'What’s New') + ' — Mister Muscle Downloader v' + APP_VERSION)
+        dialog.setWindowTitle(('Što je novo' if APP_LANGUAGE=='hr' else 'What’s New') + ' — Mister Muscle Downloader v' + DISPLAY_VERSION)
         dialog.resize(680, 540)
         dialog.setMinimumSize(560, 430)
         dialog.setStyleSheet('''QDialog {background:#10121d;color:#f4f4fa;}
@@ -1658,7 +1902,7 @@ class Main(QMainWindow):
         badge=QLabel('✦  MISTER MUSCLE DOWNLOADER')
         badge.setStyleSheet('color:#b8a7ff;font-size:11px;font-weight:800;letter-spacing:1px;')
         outer.addWidget(badge)
-        title=QLabel(('Što je novo u v' if APP_LANGUAGE=='hr' else 'What’s new in v')+APP_VERSION)
+        title=QLabel(('Što je novo u v' if APP_LANGUAGE=='hr' else 'What’s new in v')+DISPLAY_VERSION)
         title.setStyleSheet('font-size:26px;font-weight:800;color:#ffffff;')
         outer.addWidget(title)
         subtitle=QLabel('Brže, jednostavnije i pouzdanije preuzimanje.' if APP_LANGUAGE=='hr' else 'A smoother, faster and more reliable download experience.')
@@ -1674,24 +1918,15 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.2.16 - What's New Display Fix
-- Fixed the What's New window to show the two latest release entries.
-- Updated the embedded release notes for packaged Windows installations.
-- Preserved the enhanced automatic error diagnostics from v5.2.15.
+        fallback_notes = """## v5.3.0 - New Download and Media Studio
+- File type, output format and resolution are always visible on New Download.
+- Unified video player with V1 thumbnails, A1 waveform and multi-clip export.
+- Faster preview processing, cancellable jobs and more reliable local exports.
+- Queue, session recovery and update functionality remain available.
 
-## v5.2.15 - Enhanced Automatic Error Diagnostics
-- Added redacted Preview process error details, including relevant yt-dlp/FFmpeg failures.
-- Added recent event categories and error occurrence counts.
-- Included basic application environment and sanitized diagnostic summaries.
-- Kept user-controlled automatic reporting, retry queue and duplicate protection.
-- No automatic screenshots, complete logs, download URLs or local filenames.
-
-## v5.2.14 - Automatic Error Reporting
-- Enabled automatic error reporting by default for new installations.
-- Added a Settings switch to disable automatic reports.
-- Added sanitized reports to Mister Muscle Bug Center.
-- Added offline retry and duplicate-report protection.
-- No automatic screenshots or full diagnostic logs.
+## v5.2.16 - What's New Display Fix
+- What's New displays the latest two versions.
+- Improved embedded release notes and preserved diagnostics.
 """
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):
@@ -1703,7 +1938,7 @@ class Main(QMainWindow):
                         break
             except OSError:
                 pass
-        heading_re = re.compile(r'(?m)^\s{0,3}#{1,3}\s*\[?v?(\d+\.\d+(?:\.\d+)?)\]?\b[^\r\n]*$')
+        heading_re = re.compile(r'(?m)^\s{0,3}#{1,3}\s*\[?v?(\d+\.\d+\.\d+(?:-beta\.\d+)?)\]?\b[^\r\n]*$')
         headings = list(heading_re.finditer(notes))
         releases = []
         for i, match in enumerate(headings[:2]):
@@ -1712,6 +1947,7 @@ class Main(QMainWindow):
             entries = [line.strip()[2:].strip() for line in section.splitlines()
                        if line.strip().startswith(('- ', '* '))]
             if entries:
+                entries = entries[:6] if i == 0 else entries[:3]
                 label = ('NAJNOVIJE' if i == 0 else 'PRETHODNA VERZIJA') if APP_LANGUAGE == 'hr' else ('LATEST RELEASE' if i == 0 else 'PREVIOUS RELEASE')
                 releases.append(('v' + match.group(1), label, entries))
         animated=[]
@@ -1751,7 +1987,7 @@ class Main(QMainWindow):
             QTimer.singleShot(110+index*170, animation.start)
         dialog.exec()
         try:
-            WHATS_NEW_MARKER.write_text(APP_VERSION,encoding='utf-8')
+            WHATS_NEW_MARKER.write_text(DISPLAY_VERSION,encoding='utf-8')
         except OSError as exc:
             self.log('WARN','UPDATE',f'Could not save What’s New state: {exc}')
 
@@ -2065,12 +2301,12 @@ class Main(QMainWindow):
         cl.addLayout(language_row)
         self.auto_reporting_check=QCheckBox('Automatically send error reports to the developer')
         self.auto_reporting_check.setChecked(self._auto_reporting_enabled)
-        self.auto_reporting_check.setToolTip('Enabled by default. Sends redacted error summaries, app version and OS; no screenshots or full logs. Queues reports offline. You can disable it anytime; pending reports will be cleared.')
+        self.auto_reporting_check.setToolTip('Sends sanitized error reports automatically when enabled. Does not attach screenshots or full logs.')
         cl.addWidget(self.auto_reporting_check)
-        auto_note=QLabel('Enabled by default: when an ERROR is logged, a short redacted report is sent to the developer. Includes error summary, app version and OS only; no screenshots or full logs. You can turn this off at any time to clear pending reports.')
+        auto_note=QLabel('Automatic error reporting is enabled by default for new installations. You can disable it here. Reports are sanitized; no screenshots or full logs are attached automatically.')
         auto_note.setObjectName('sub');auto_note.setWordWrap(True);cl.addWidget(auto_note)
         self.auto_reporting_check.toggled.connect(self.set_auto_reporting)
-        cl.addWidget(button('View What’s New in v' + APP_VERSION,self.show_whats_new))
+        cl.addWidget(button('View What’s New in v' + DISPLAY_VERSION,self.show_whats_new))
         cl.addWidget(button('Change download folder',self.choose_folder))
         cl.addWidget(QLabel('UPDATE CENTER  •  Automatically checks on startup'))
         self.update_status=QLabel('Update check will start shortly…')
@@ -2082,7 +2318,7 @@ class Main(QMainWindow):
         self.install_update_button=button('Install downloaded update',self.install_downloaded_update,True)
         self.install_update_button.setEnabled(False)
         cl.addWidget(self.install_update_button)
-        update_note=QLabel('Updates download to AppData/MisterMuscleQt/updates. When a new installer is ready, you can approve installation and restart. FFmpeg is checked locally only.')
+        update_note=QLabel('Checks for application and tool updates on startup. Available application updates can be downloaded and installed; FFmpeg is checked locally.')
         update_note.setObjectName('sub');update_note.setWordWrap(True);cl.addWidget(update_note)
         cl.addWidget(QLabel('All cutting controls are now in New Download → Media Studio.'));v.addWidget(c);return w
     def login_instagram(self):
@@ -2134,6 +2370,28 @@ class Main(QMainWindow):
         existing=set(x.strip() for x in self.urls.toPlainText().splitlines())
         new=[u for u in links if u not in existing]
         if new:self.urls.insertPlainText(('\n' if self.urls.toPlainText().strip() else '')+'\n'.join(new))
+    def import_links_txt(self):
+        """Import plain-text URLs into the existing batch input, without starting downloads."""
+        filename,_=QFileDialog.getOpenFileName(self,'Import video links',str(Path.home()),'Text files (*.txt);;All files (*)')
+        if not filename:return
+        try:
+            path=Path(filename)
+            if path.stat().st_size>2_000_000:
+                QMessageBox.warning(self,'Import too large','Choose a text file smaller than 2 MB.');return
+            content=path.read_text(encoding='utf-8-sig')
+        except (OSError,UnicodeError) as exc:
+            QMessageBox.warning(self,'Import failed',str(exc));return
+        existing=set(extract_media_links(self.urls.toPlainText()))
+        links=[u for u in extract_media_links(content) if u not in existing]
+        if not links:
+            QMessageBox.information(self,'No new links','No new supported links were found.');return
+        if len(links)>1000:
+            QMessageBox.warning(self,'Too many links','Only the first 1000 new links will be imported.')
+            links=links[:1000]
+        current=self.urls.toPlainText().strip()
+        self.urls.setPlainText((current+'\n' if current else '')+'\n'.join(links))
+        self.status.setText(f'Imported {len(links)} links. Review them before starting.')
+
     def choose_folder(self):
         p=QFileDialog.getExistingDirectory(self,'Download folder',self.folder)
         if p:self.folder=p;self.folder_label.setText(p);self.persist_session()
@@ -2154,6 +2412,8 @@ class Main(QMainWindow):
         known={task[0] for task in self.queue}
         if active_url:known.add(active_url)
         added=0
+        if len(self.queue)+len(links)>1000:
+            QMessageBox.warning(self,'Queue limit','Queue can hold at most 1000 pending links. Remove some first.');return
         for u in links:
             if u in known:
                 self.log('INFO','DOWNLOAD','Skipped duplicate active/pending URL: '+u)
@@ -2247,6 +2507,9 @@ class Main(QMainWindow):
             self.persist_session();self.refresh_queue();self.refresh_center()
             return
         fmt={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[quality]
+        speed_value=self.speed_limit.currentText()
+        speed_rates={'Unlimited':None,'512 KB/s':'512K','1 MB/s':'1M','2 MB/s':'2M','5 MB/s':'5M','10 MB/s':'10M'}
+        speed_rate=speed_rates.get(speed_value)
         args=['-m','yt_dlp','--newline','--continue','--no-playlist','--print','after_move:filepath','--print-to-file','after_move:filepath',str(self._premiere_path_record),'-P',self.folder,'-o','%(title)s.%(ext)s']
         if self._premiere_for_download:
             output_format='mp4';self.current_output_format='mp4'
@@ -2258,6 +2521,7 @@ class Main(QMainWindow):
         else:
             args+=['-f',f'bestvideo[height<={fmt}]+bestaudio/best[height<={fmt}]' if fmt else 'bestvideo+bestaudio/best']
             if not self._premiere_for_download:args+=['--merge-output-format',output_format,'--remux-video',output_format]
+        if speed_rate:args+=['--limit-rate',speed_rate]
         if self._premiere_for_download:
             # Prefer H.264 at the SAME selected resolution, never downgrade 4K.
             # Resolution remains the primary yt-dlp sort key.
@@ -2345,7 +2609,8 @@ class Main(QMainWindow):
         if self.proc and self.proc.state()!=QProcess.NotRunning:
             current=[self.current_url,self.current_mode,self.current_quality,self.current_output_format]
         data={'version':2,'folder':self.folder,'queue':[list(x) for x in self.queue],
-              'failed':self.failed_items,'paused':self.paused,'active':current}
+              'failed':self.failed_items,'paused':self.paused,'active':current,
+              'speed_limit':self.speed_limit.currentText() if hasattr(self,'speed_limit') else 'Unlimited'}
         try:
             temp=SESSION.with_suffix('.tmp')
             temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -2366,6 +2631,9 @@ class Main(QMainWindow):
             active=self.normalize_task(data.get('active'))
             if active:queue.insert(0,active)
             self.queue=queue
+            speed=data.get('speed_limit','Unlimited')
+            if hasattr(self,'speed_limit') and speed in [self.speed_limit.itemText(i) for i in range(self.speed_limit.count())]:
+                self.speed_limit.setCurrentText(speed)
             failed=data.get('failed',[])
             self.failed_items=[x for x in failed[:1000] if isinstance(x,dict) and isinstance(x.get('url'),str)]
             self.paused=bool(self.queue)
@@ -2495,9 +2763,9 @@ class Main(QMainWindow):
             self._premiere_conversion_error=True
             self.log('ERROR','PREMIERE','Downloaded video not found; original download preserved')
             return None
-        ffprobe=shutil.which('ffprobe') or str(TOOLS_DIR/'ffprobe.exe')
-        ffmpeg=shutil.which('ffmpeg') or str(TOOLS_DIR/'ffmpeg.exe')
-        if not Path(ffprobe).is_file() or not Path(ffmpeg).is_file():
+        ffprobe=find_media_tool('ffprobe')
+        ffmpeg=find_media_tool('ffmpeg')
+        if not ffprobe or not ffmpeg:
             self._premiere_conversion_error=True
             self.log('ERROR','PREMIERE','FFmpeg or ffprobe missing; original preserved')
             return None
@@ -2981,8 +3249,8 @@ class Main(QMainWindow):
             return
         if self.preview_proc and self.preview_proc.state()!=QProcess.NotRunning:
             QMessageBox.information(self,'Preview busy','A preview is already being prepared.');return
-        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
-        if not (shutil.which('ffmpeg') or Path(ffmpeg).is_file()):
+        ffmpeg=find_media_tool('ffmpeg')
+        if not ffmpeg:
             QMessageBox.warning(self,'FFmpeg missing','A working FFmpeg installation is required for preview conversion.');return
         # Keep previous preview files alive while the player might still reference them.
         if not hasattr(self,'_preview_dirs'):self._preview_dirs=[]
@@ -3013,6 +3281,9 @@ class Main(QMainWindow):
                 html=_player_html('generic',video_src='/preview.mp4',jezik=APP_LANGUAGE)
                 self.serve_original_player_html(html,video_directory=self.preview_dir.name)
                 self.original_player_note.setText('Original Mister Muscle timeline • local preview loaded automatically')
+                self._studio_local=self.preview_file
+                self.pro_timeline.set_source('Online preview',self.preview_file)
+                self.pro_timeline.show()
                 self.switch(0)
             else:
                 self.switch(4)
@@ -3101,8 +3372,8 @@ class Main(QMainWindow):
             self.remote_start,self.remote_end=self.parse_cut_times()
         except ValueError:
             QMessageBox.warning(self,'Invalid time','Enter valid start and end times, with end after start.');return
-        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
-        if not (shutil.which('ffmpeg') or Path(ffmpeg).is_file()):
+        ffmpeg=find_media_tool('ffmpeg')
+        if not ffmpeg:
             QMessageBox.warning(self,'FFmpeg missing','Install FFmpeg before cutting.');return
         self._clip_source_title=self.media_info.get(links[0],{}).get('title','')
         suggested=self.safe_clip_title(self._clip_source_title) if self._clip_source_title else 'MisterMuscle_original_cut'
@@ -3192,7 +3463,7 @@ class Main(QMainWindow):
         # after an expensive source fetch. For batch output, avoid collisions.
         if getattr(self,'_multi_active',False) and Path(self.remote_output).exists():
             self.remote_output=self.available_clip_filename(self.remote_output)
-        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
+        ffmpeg=find_media_tool('ffmpeg')
         self.remote_proc=QProcess(self)
         self.remote_proc.setProgram(ffmpeg)
         self.remote_proc.setArguments(self.clip_ffmpeg_args(self.remote_source,self.remote_output,self.remote_start,self.remote_end))
@@ -3204,7 +3475,7 @@ class Main(QMainWindow):
         self.remote_proc.start()
 
     def _start_next_batch_export(self):
-        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
+        ffmpeg=find_media_tool('ffmpeg')
         self.remote_proc=QProcess(self)
         self.remote_proc.setProgram(ffmpeg)
         self.remote_proc.setArguments(self.clip_ffmpeg_args(self.remote_source,self.remote_output,self.remote_start,self.remote_end))
@@ -3259,8 +3530,8 @@ class Main(QMainWindow):
         if not self.local_path or not Path(self.local_path).is_file():
             QMessageBox.information(self,'No video','Open a local video first.');return
         if self.cut_proc and self.cut_proc.state()!=QProcess.NotRunning:return
-        ffmpeg=shutil.which('ffmpeg') or str(BASE/'ffmpeg.exe')
-        if not (shutil.which('ffmpeg') or Path(ffmpeg).is_file()):
+        ffmpeg=find_media_tool('ffmpeg')
+        if not ffmpeg:
             QMessageBox.warning(self,'FFmpeg missing','Install FFmpeg or place ffmpeg.exe next to this app.');return
         try:
             def secs(t):
@@ -3323,6 +3594,12 @@ class Main(QMainWindow):
             if QMessageBox.question(self,'Clip export active','Cancel the clip export and quit?')!=QMessageBox.Yes:
                 event.ignore();return
             self.cut_proc.kill();self.cut_proc.waitForFinished(3000)
+        if hasattr(self,'pro_timeline') and not self.pro_timeline.stop_background_tasks(wait_ms=1500):
+            # A short-running ffprobe/frame read may still be finishing.
+            # Do not destroy live QThreads; retry closing once they exit.
+            event.ignore()
+            QTimer.singleShot(1500,self.close)
+            return
         if self.remote_tmp:self.remote_tmp.cleanup()
         self.persist_session()
         self.log('INFO','APP','Application closing')

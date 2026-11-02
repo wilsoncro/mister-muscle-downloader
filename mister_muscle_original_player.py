@@ -466,6 +466,13 @@ def _player_html(platform, video_id=None, video_src=None, jezik="en"):
 
       #status-bar {{ margin-top: 10px; font-size: 12px; font-weight: 600; color: {SUCCESS}; text-align: center; min-height: 16px; flex-shrink: 0; }}
 
+      /* Integrated timeline is the only editing UI. Keep the embedded video
+         and its volume control, but hide the old duplicate editor controls.
+         Elements remain in the DOM because the player JS uses their IDs. */
+      #timeline-container, .timeline-hint, .info-red, .kontrole,
+      .shorts-panel, #multi-panel, #status-bar {{ display: none !important; }}
+      #omot {{ justify-content: flex-start; }}
+      #player-wrap {{ flex: 1 1 auto; min-height: 0; }}
       #volume-wrap {{
         position: absolute; bottom: 12px; right: 12px; display:flex; align-items:center;
         gap: 6px; background: rgba(10,11,24,0.55); padding: 7px 12px; border-radius: 999px;

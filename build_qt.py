@@ -1,11 +1,26 @@
-"""Build a fully self-contained Windows application. Requires Python 3.12/3.13 x64."""
+"""Build a fully self-contained Windows application. Requires 64-bit Python and Windows."""
 import os,sys,subprocess,shutil
 from pathlib import Path
 root=Path(__file__).resolve().parent
 if sys.platform!='win32': raise SystemExit('Build must run on Windows x64.')
 if sys.maxsize<2**32: raise SystemExit('64-bit Python required.')
+# Resolve required standalone tools from tools/, the repository root, or PATH.
+# Keep executables in tools/ before packaging so new installations work offline.
+(root/'tools').mkdir(exist_ok=True)
 for name in ('yt-dlp.exe','ffmpeg.exe','ffprobe.exe'):
-    if not (root/'tools'/name).is_file(): raise SystemExit(f'Missing tools\\{name}. See README_RELEASE.txt')
+    destination = root/'tools'/name
+    if not destination.is_file():
+        candidate = next((item for item in (root/name,) if item.is_file()), None)
+        if candidate is None:
+            found = shutil.which(name)
+            candidate = Path(found) if found else None
+        if candidate is None or not candidate.is_file():
+            raise SystemExit(f'Missing {name}. Put it in tools/ (or repository root) or add it to PATH before publishing.')
+        shutil.copy2(candidate, destination)
+# Deno is optional for the build itself; include it when available for supported sources.
+if not (root/'tools'/'deno.exe').is_file():
+    found = (root/'deno.exe') if (root/'deno.exe').is_file() else shutil.which('deno.exe')
+    if found: shutil.copy2(found, root/'tools'/'deno.exe')
 # gallery-dl: download official standalone executable during build if missing.
 if not (root/'tools'/'gallery-dl.exe').is_file():
     import json, urllib.request
@@ -32,16 +47,23 @@ except ImportError as exc: raise SystemExit(f'Missing PySide6 component: {exc}')
 try: import PyInstaller
 except ImportError: raise SystemExit('Install PyInstaller: py -m pip install pyinstaller')
 cmd=[sys.executable,'-m','PyInstaller','--noconfirm','--windowed','--onedir',
- '--name','MisterMuscle','--icon',str(root/'ikona.ico'),'--distpath',str(root/'dist'),'--workpath',str(root/'build'),
+ '--name','MisterMuscle','--distpath',str(root/'dist'),'--workpath',str(root/'build'),
  '--specpath',str(root), '--collect-all','PySide6.QtWebEngineCore',
  '--collect-all','PySide6.QtWebEngineWidgets','--collect-all','PySide6.QtWebChannel',
  '--collect-all','PySide6.QtMultimedia','--collect-all','PySide6.QtMultimediaWidgets',
- '--add-data',str(root/'assets')+os.pathsep+'assets',
- '--hidden-import','mister_muscle_original_player',str(root/'mister_muscle_qt.py')]
+ '--hidden-import','mister_muscle_original_player',
+ '--hidden-import','pro_timeline',
+ '--hidden-import','phase4_lab', '--hidden-import','phase3_engine',
+ '--hidden-import','beta_studio']
+if (root/'ikona.ico').is_file():cmd+=['--icon',str(root/'ikona.ico')]
+if (root/'assets').is_dir():cmd+=['--add-data',str(root/'assets')+os.pathsep+'assets']
+if (root/'CHANGELOG.md').is_file():cmd+=['--add-data',str(root/'CHANGELOG.md')+os.pathsep+'.']
+cmd.append(str(root/'mister_muscle_qt.py'))
 subprocess.run(cmd,cwd=root,check=True)
 out=root/'dist'/'MisterMuscle'
 (out/'tools').mkdir(exist_ok=True)
-for name in ('yt-dlp.exe','ffmpeg.exe','ffprobe.exe','gallery-dl.exe'): shutil.copy2(root/'tools'/name,out/'tools'/name)
+for name in ('yt-dlp.exe','ffmpeg.exe','ffprobe.exe','gallery-dl.exe','deno.exe'):
+    if (root/'tools'/name).is_file():shutil.copy2(root/'tools'/name,out/'tools'/name)
 if not (out/'MisterMuscle.exe').is_file(): raise SystemExit('EXE missing')
 compiler=shutil.which('ISCC.exe')
 if not compiler:
