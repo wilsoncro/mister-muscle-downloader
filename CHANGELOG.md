@@ -1,3 +1,11 @@
+## v5.3.4 - Reliable Audio Preview and Scroll Fix
+
+- Fixed missing-file (`[Errno 2]`) errors when generating the online audio waveform after the v5.3.3 permission fix.
+- Kept the preview process temporary directory stable in a writable user-local folder, separate from per-job media outputs that are deleted after processing.
+- Set yt-dlp output and temporary-media paths explicitly; added a one-time retry in a fresh output directory for transient missing-file errors, using sequential fragments on retry.
+- Disabled mouse-wheel changes on format, resolution, Light/Smart/Full and other dropdown menus so normal page scrolling cannot change options accidentally. Mouse and keyboard selection still work.
+- Retained the silent background processes, preview speed improvements, cache optimization, and the v5.3.1 multiple-window fix.
+
 ## v5.3.3 - Audio Preview Permission Fix
 
 - Fixed audio waveform preview errors (`Permission denied`) when the app is installed in `C:\Program Files`.

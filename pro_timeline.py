@@ -26,9 +26,16 @@ def _preview_temp_root():
 
 
 def _preview_process_env(directory):
-    """Force yt-dlp and its helpers to create temporary files in our sandbox."""
+    """Use a persistent writable scratch folder for external helper processes.
+
+    TEMP/TMP must NOT point into the per-download directory: yt-dlp may spawn
+    additional helpers that still need scratch files after a preview task ends.
+    The persistent root survives cancellation and rapid Light/Smart/Full changes.
+    The *output* directory stays unique for each worker (its cwd/--paths).
+    """
+    root = _preview_temp_root()
     env = os.environ.copy()
-    env.update({'TEMP': str(directory), 'TMP': str(directory), 'TMPDIR': str(directory)})
+    env.update({'TEMP': root, 'TMP': root, 'TMPDIR': root})
     return env
 
 
@@ -138,36 +145,53 @@ class RemoteAudioWorker(QThread):
         super().__init__(); self.url=url; self.mode=mode; self.temp=None; self.process=None; self._handed_off=False
         self._stop_requested=threading.Event()
     def run(self):
-        try:
-            self.temp=tempfile.TemporaryDirectory(prefix='mm_wave_', dir=_preview_temp_root())
-            tools=_tools_dir()
-            cmd=_yt_dlp_command()
-            ffmpeg=tools/'ffmpeg.exe'
-            if ffmpeg.is_file(): cmd+=['--ffmpeg-location',str(tools)]
-            # The online waveform is only a visual preview: prefer a smaller
-            # audio stream, never an unnecessarily high bitrate. Do not throttle
-            # the user's connection with artificial --limit-rate values.
-            cmd+=['--no-playlist','--no-part','--no-overwrites','--no-progress',
-                  '--socket-timeout','15','--retries','2','--max-filesize','100M',
-                  '-N','4','-f','worstaudio/bestaudio/best',
-                  '-o',str(Path(self.temp.name)/'audio.%(ext)s'),
-                  '--',self.url]
-            if self._stop_requested.is_set():return
-            self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
-                                          cwd=self.temp.name, env=_preview_process_env(self.temp.name),**_NO_CONSOLE)
-            if self._stop_requested.is_set():self.stop()
-            try: _,err=self.process.communicate(timeout=180)
-            except subprocess.TimeoutExpired:
-                self.process.kill();self.process.communicate();raise RuntimeError('Audio preview timed out (180 s)')
-            if self._stop_requested.is_set():return
-            if self.process.returncode:
-                detail=err.decode('utf-8','replace')[-300:].strip()
-                raise RuntimeError('Audio preview unavailable: '+detail)
-            paths=[f for f in Path(self.temp.name).iterdir() if f.is_file() and f.stat().st_size>0]
-            if not paths:raise RuntimeError('Audio stream was not downloaded')
-            self.ready.emit(str(max(paths,key=lambda f:f.stat().st_size)))
-        except Exception as exc:
-            if not self._stop_requested.is_set():self.error.emit(str(exc))
+        # Retry once on a transient missing-file error. A new job directory
+        # avoids reusing a partially written output after a failed transfer.
+        for attempt in range(2):
+            if self._stop_requested.is_set(): return
+            try:
+                self.temp=tempfile.TemporaryDirectory(prefix='mm_wave_', dir=_preview_temp_root())
+                folder=Path(self.temp.name)
+                folder.mkdir(parents=True,exist_ok=True)
+                tools=_tools_dir()
+                cmd=_yt_dlp_command()
+                ffmpeg=tools/'ffmpeg.exe'
+                if ffmpeg.is_file(): cmd+=['--ffmpeg-location',str(tools)]
+                # Put the output and yt-dlp's own temporary media files in
+                # explicit writable folders, never the installation directory.
+                # Use a relative template rather than a Windows absolute path.
+                cmd+=['--no-playlist','--no-part','--no-overwrites','--no-progress',
+                      '--socket-timeout','15','--retries','2','--max-filesize','100M',
+                      '-N',('4' if attempt==0 else '1'), '-f','worstaudio/bestaudio/best',
+                      '-P',str(folder), '-P','temp:'+str(folder),
+                      '-o','audio.%(ext)s', '--',self.url]
+                if self._stop_requested.is_set():return
+                self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                                              cwd=str(folder),env=_preview_process_env(str(folder)),**_NO_CONSOLE)
+                if self._stop_requested.is_set():self.stop()
+                try: _,err=self.process.communicate(timeout=180)
+                except subprocess.TimeoutExpired:
+                    self.process.kill();self.process.communicate()
+                    raise RuntimeError('Audio preview timed out (180 s)')
+                if self._stop_requested.is_set():return
+                if self.process.returncode:
+                    detail=err.decode('utf-8','replace')[-600:].strip()
+                    if attempt==0 and ('[Errno 2]' in detail or 'No such file or directory' in detail):
+                        self.process=None
+                        self.temp.cleanup(); self.temp=None
+                        continue
+                    raise RuntimeError('Audio preview unavailable: '+detail)
+                paths=[f for f in folder.iterdir() if f.is_file() and f.stat().st_size>0]
+                if not paths:raise RuntimeError('Audio stream was not downloaded')
+                self.ready.emit(str(max(paths,key=lambda f:f.stat().st_size)))
+                return
+            except Exception as exc:
+                if not self._stop_requested.is_set():self.error.emit(str(exc))
+                return
+            finally:
+                # On success the GUI owns cleanup until waveform extraction ends.
+                # On failure _remote_finished() will clean the last directory.
+                self.process=None
     def stop(self):
         self._stop_requested.set()
         if self.process and self.process.poll() is None:
@@ -215,7 +239,8 @@ class RemoteThumbnailWorker(QThread):
                 cmd+=['--no-playlist','--no-part','--no-progress','--socket-timeout','12',
                       '--retries','2','--max-filesize',('100M' if self.mode=='Smart' else '200M'),
                       '-N','4','-f',preview_format,
-                      '-o',str(Path(directory)/'video.%(ext)s'),'--',self.url]
+                      '-P',directory, '-P','temp:'+directory,
+                      '-o','video.%(ext)s','--',self.url]
                 if self._stop_requested.is_set():return
                 self.process=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
                                               cwd=directory, env=_preview_process_env(directory),**_NO_CONSOLE)

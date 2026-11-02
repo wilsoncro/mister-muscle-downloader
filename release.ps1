@@ -115,7 +115,7 @@ if (-not $Publish) { Write-Host 'DRY RUN: no GitHub changes. Use -Publish after 
 Write-Host 'Publishing release...' -ForegroundColor Cyan
 # Commit only release source files. Never stage the entire repository.
 # Thousands of deleted node_modules/build files can be left unstaged safely.
-$paths = @('mister_muscle_qt.py','mister_muscle_original_player.py','pro_timeline.py','phase3_engine.py','phase4_lab.py','beta_studio.py','legacy_downloader.py','build_qt.py','release.ps1','objavi.bat','MisterMuscle_Setup.iss','README_RELEASE.txt','README_RELEASE_5_3_1.txt','README_RELEASE_5_3_2.txt','README_RELEASE_5_3_3.txt','CHANGELOG.md','assets','ikona.ico')
+$paths = @('mister_muscle_qt.py','mister_muscle_original_player.py','pro_timeline.py','phase3_engine.py','phase4_lab.py','beta_studio.py','legacy_downloader.py','build_qt.py','release.ps1','objavi.bat','MisterMuscle_Setup.iss','README_RELEASE.txt','README_RELEASE_5_3_1.txt','README_RELEASE_5_3_2.txt','README_RELEASE_5_3_3.txt','README_RELEASE_5_3_4.txt','CHANGELOG.md','assets','ikona.ico')
 $existing = @($paths | Where-Object { Test-Path -LiteralPath (Join-Path $PSScriptRoot $_) })
 # Do not accidentally include changes that were staged before this script ran.
 $preStaged = Invoke-Native git @('diff','--cached','--name-only') -Quiet

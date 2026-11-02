@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.3'
+APP_VERSION = '5.3.4'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -155,6 +155,22 @@ def heading(title,subtitle):
 def card():
     f=QFrame();f.setObjectName('card');v=QVBoxLayout(f);v.setContentsMargins(22,20,22,20);v.setSpacing(14)
     return f,v
+
+
+class NoWheelComboBox(QComboBox):
+    """Avoid changing format/settings while scrolling the main page.
+
+    Wheel events are ignored and propagate to the containing QScrollArea;
+    items remain selectable normally by click and keyboard. The popup list
+    has its own view and can still scroll when opened.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):
+        event.ignore()
+
 
 class OriginalPlayerBridge(QObject):
     """Translate callbacks from the original pywebview timeline to Qt."""
@@ -893,7 +909,7 @@ class Main(QMainWindow):
         w,v=self.column()
         v.addWidget(heading('Status Log','Live yt-dlp, FFmpeg, player and application diagnostics.'))
         toolbar=QHBoxLayout()
-        self.log_filter=QComboBox()
+        self.log_filter=NoWheelComboBox()
         self.log_filter.addItems(['All events','Errors only','Warnings + errors'])
         self.log_filter.currentIndexChanged.connect(self.refresh_log_view)
         toolbar.addWidget(self.log_filter)
@@ -1041,10 +1057,10 @@ class Main(QMainWindow):
         eyebrow=QLabel('02  ADVANCED DOWNLOAD OPTIONS');eyebrow.setObjectName('eyebrow');ol.addWidget(eyebrow)
         choices=QHBoxLayout();choices.setSpacing(12)
         modebox=QVBoxLayout();modebox.addWidget(QLabel('File type'))
-        self.mode=QComboBox();self.mode.addItems(['Video + audio','Video only','Audio only','Instagram Photos'])
+        self.mode=NoWheelComboBox();self.mode.addItems(['Video + audio','Video only','Audio only','Instagram Photos'])
         modebox.addWidget(self.mode)
         qualitybox=QVBoxLayout();qualitybox.addWidget(QLabel('Resolution'))
-        self.quality=QComboBox();self.quality.addItems(['Best available','2160p','1440p','1080p','720p','480p','360p'])
+        self.quality=NoWheelComboBox();self.quality.addItems(['Best available','2160p','1440p','1080p','720p','480p','360p'])
         qualitybox.addWidget(self.quality)
         choices.addLayout(modebox,1);choices.addLayout(qualitybox,1)
         # Primary download choices stay visible; detailed options are collapsible.
@@ -1056,7 +1072,7 @@ class Main(QMainWindow):
         quick_layout.addWidget(visible_formats_note)
         speedrow=QHBoxLayout()
         speedrow.addWidget(QLabel('Download speed limit'))
-        self.speed_limit=QComboBox()
+        self.speed_limit=NoWheelComboBox()
         self.speed_limit.addItems(['Unlimited','512 KB/s','1 MB/s','2 MB/s','5 MB/s','10 MB/s'])
         self.speed_limit.setToolTip('Limits yt-dlp transfer speed for each download. Does not affect Instagram Photos.')
         speedrow.addWidget(self.speed_limit,1)
@@ -1066,7 +1082,7 @@ class Main(QMainWindow):
         exportrow=QHBoxLayout();exportrow.setSpacing(12)
         vc=QVBoxLayout()
         self.format_label=QLabel('Output format');vc.addWidget(self.format_label)
-        self.video_container=QComboBox();vc.addWidget(self.video_container)
+        self.video_container=NoWheelComboBox();vc.addWidget(self.video_container)
         self._mode_formats={0:['MP4','MKV','WEBM'],1:['MP4','MKV','WEBM'],2:['MP3','M4A','WAV','FLAC','OPUS','OGG','AAC'],3:['Original']}
         self._saved_formats={0:'MP4',1:'MP4',2:'MP3',3:'Original'}
         self._previous_mode=0
@@ -1077,7 +1093,7 @@ class Main(QMainWindow):
         choices.insertLayout(1,vc,1)
         quick_layout.addLayout(choices)
         ac2=QVBoxLayout();ac2.addWidget(QLabel('Clip aspect ratio'))
-        self.aspect=QComboBox();self.aspect.addItems(['Original','16:9 (YouTube)','9:16 (TikTok / Reels / Shorts)','1:1 (Square)','4:5 (Instagram)','3:4 (Portrait)','21:9 (Ultrawide)','4:3 (Classic)'])
+        self.aspect=NoWheelComboBox();self.aspect.addItems(['Original','16:9 (YouTube)','9:16 (TikTok / Reels / Shorts)','1:1 (Square)','4:5 (Instagram)','3:4 (Portrait)','21:9 (Ultrawide)','4:3 (Classic)'])
         ac2.addWidget(self.aspect);exportrow.addLayout(ac2,1)
         ol.addLayout(exportrow)
         self.premiere_compatible=QCheckBox('Premiere Compatible — H.264 / AAC (keep 4K)')
@@ -1097,10 +1113,10 @@ class Main(QMainWindow):
         self.instagram_options=QFrame()
         ig_layout=QVBoxLayout(self.instagram_options)
         ig_layout.addWidget(QLabel('Instagram login / Cookies (from old downloader)'))
-        self.ig_cookie_source=QComboBox()
+        self.ig_cookie_source=NoWheelComboBox()
         self.ig_cookie_source.addItems(['Logged-in browser','cookies.txt file'])
         ig_layout.addWidget(self.ig_cookie_source)
-        self.ig_browser=QComboBox()
+        self.ig_browser=NoWheelComboBox()
         self.ig_browser.addItems(['Chrome','Edge','Firefox','Brave','Opera','Vivaldi'])
         ig_layout.addWidget(self.ig_browser)
         self.ig_cookie_path=QLineEdit()
@@ -1174,7 +1190,7 @@ class Main(QMainWindow):
         timeline_advanced_layout=QHBoxLayout(timeline_advanced)
         timeline_advanced_layout.setContentsMargins(0,0,0,0)
         timeline_advanced_layout.addStretch()
-        self.timeline_mode=QComboBox()
+        self.timeline_mode=NoWheelComboBox()
         self.timeline_mode.addItems(['Light','Smart','Full'])
         self.timeline_mode.setCurrentText(self.pro_timeline.mode)
         self.timeline_mode.setToolTip('Light: audio only / Smart: capped V1 frames + audio / Full: more frames')
@@ -1918,16 +1934,16 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.3 - Audio Preview Permission Fix
-- Fixed Permission denied errors for audio waveform previews in Program Files installations.
-- Audio and video preview workers now use user-writable temporary folders and temporary-file environment variables.
-- Preserved quiet background processes, fast Light / Smart / Full previews, and the critical extra-window fix.
+        fallback_notes = """## v5.3.4 - Reliable Audio Preview and Scroll Fix
+- Fixed missing-file audio preview errors after rapid source or timeline mode changes.
+- Kept yt-dlp's helper temporary files in a persistent user-writable location and added a retry for transient missing-file errors.
+- Prevented mouse-wheel scrolling from changing download format, resolution and other dropdown selections.
+- Preserved silent background tools, fast previews, cache and the extra-window fix.
 
-## v5.3.2 - Silent Tools and Faster Media Studio Previews
-- Fixed CMD windows flashing when changing Light, Smart and Full modes.
-- Removed artificial download speed limits for audio and video previews.
-- Preferred small preview streams and enabled parallel fragment transfers where supported.
-- Reused cached Full-mode thumbnails in Smart mode to avoid extra downloads.
+## v5.3.3 - Audio Preview Permission Fix
+- Fixed Permission denied errors in the Windows Program Files installation.
+- Used writable user-local folders for online waveform and video thumbnail previews.
+- Preserved the Light / Smart / Full preview speed optimizations.
 """
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):
@@ -2124,7 +2140,7 @@ class Main(QMainWindow):
         v.addWidget(heading('Report a Bug','Send a problem report directly to the developer. No account needed.'))
         c,cl=card()
         cl.addWidget(QLabel('Problem category'))
-        self.bug_category=QComboBox()
+        self.bug_category=NoWheelComboBox()
         self.bug_category.addItems(['Player / Media Studio','Downloads','Instagram Photos','Auto-Paste','Updates','Other'])
         cl.addWidget(self.bug_category)
         cl.addWidget(QLabel('Describe the problem (at least 10 characters)'))
@@ -2292,7 +2308,7 @@ class Main(QMainWindow):
         info.setWordWrap(True);info.setObjectName('sub');cl.addWidget(info)
         language_row=QHBoxLayout()
         self.language_label=QLabel('Language / Jezik')
-        self.language_select=QComboBox()
+        self.language_select=NoWheelComboBox()
         self.language_select.addItem('English','en')
         self.language_select.addItem('Hrvatski','hr')
         self.language_select.setCurrentIndex(0 if APP_LANGUAGE=='en' else 1)
