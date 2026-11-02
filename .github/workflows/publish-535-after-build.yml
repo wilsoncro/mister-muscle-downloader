@@ -1,0 +1,89 @@
+name: Publish v5.3.5 after successful Windows build
+on:
+  workflow_run:
+    workflows:
+      - Build Mister Muscle on Windows
+    types:
+      - completed
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-mister-muscle-v5.3.5
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify source and version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          head_sha="$(gh api "repos/$repo/branches/main" --jq '.commit.sha')"
+          # Permit the already running, independently verified build of the
+          # initial source commit, even if this workflow was added afterward.
+          initial_535_sha="7390febcf8a2a338a43ddad04b6c66b4b318fafe"
+          if [[ "$SOURCE_SHA" != "$head_sha" && "$SOURCE_SHA" != "$initial_535_sha" ]]; then
+            echo "Build is not from the current release source. Skipping release."
+            exit 1
+          fi
+          notes="$(gh api "repos/$repo/contents/CHANGELOG.md?ref=$SOURCE_SHA" -H "Accept: application/vnd.github.raw+json")"
+          if [[ "$notes" != '## v5.3.5'* ]]; then
+            echo "Not v5.3.5 source. Refusing release."
+            exit 1
+          fi
+          if gh release view v5.3.5 --repo "$repo" >/dev/null 2>&1; then
+            echo 'Release v5.3.5 already exists; refusing to replace it.'
+            exit 1
+          fi
+          echo 'Verified successful v5.3.5 Windows build.'
+
+      - name: Download validated Windows outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name 'MisterMuscle-v5.3.5-Windows' --dir release-assets
+          test -s release-assets/MisterMuscle_Setup.exe
+          test -s release-assets/MisterMuscle_Portable_v5.3.5.zip
+          ls -lh release-assets
+
+      - name: Publish v5.3.5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          ## v5.3.5 - Full waveform and integrated media cutting
+
+          - The audio waveform now covers the entire recording, not just the first 15 minutes.
+          - Integrated IN/OUT selection and split-at-playhead for media clips.
+          - Export Video + Audio, Video Only, or Audio Only directly from Media Studio.
+          - Open local audio files, and export audio selections as M4A.
+          - Includes previous Windows preview and scroll fixes.
+          - Built and checked with GitHub Actions on Windows.
+          NOTES
+          gh release create v5.3.5 \
+            release-assets/MisterMuscle_Setup.exe \
+            release-assets/MisterMuscle_Portable_v5.3.5.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title 'Mister Muscle Downloader v5.3.5' \
+            --notes-file release-notes.md \
+            --latest
