@@ -158,7 +158,7 @@ class RemoteAudioWorker(QThread):
         for attempt in range(2):
             if self._stop_requested.is_set(): return
             try:
-                self.temp=tempfile.TemporaryDirectory(prefix='mm_wave_', dir=_preview_temp_root())
+                self.temp=tempfile.TemporaryDirectory(prefix='mm_wave_', dir=_preview_temp_root(), ignore_cleanup_errors=True)
                 folder=Path(self.temp.name)
                 folder.mkdir(parents=True,exist_ok=True)
                 tools=_tools_dir()
@@ -186,7 +186,9 @@ class RemoteAudioWorker(QThread):
                     detail=err.decode('utf-8','replace')[-600:].strip()
                     if attempt==0 and ('[Errno 2]' in detail or 'No such file or directory' in detail):
                         self.process=None
-                        self.temp.cleanup(); self.temp=None
+                        try:self.temp.cleanup()
+                        except PermissionError:pass  # Windows may still hold a yt-dlp fragment briefly.
+                        self.temp=None
                         continue
                     raise RuntimeError('Audio preview unavailable: '+detail)
                 paths=[f for f in folder.iterdir() if f.is_file() and f.stat().st_size>0]
@@ -206,7 +208,10 @@ class RemoteAudioWorker(QThread):
             try:self.process.terminate()
             except OSError:pass
     def cleanup(self):
-        if self.temp:self.temp.cleanup();self.temp=None
+        if self.temp:
+            try:self.temp.cleanup()
+            except PermissionError:pass  # Never treat a locked scratch file as a playback error.
+            self.temp=None
 
 class RemoteThumbnailWorker(QThread):
     """Fetch a small low-resolution video representation, then extract a few frames.
@@ -223,7 +228,7 @@ class RemoteThumbnailWorker(QThread):
             try:self.process.terminate()
             except OSError:pass
     def run(self):
-        with tempfile.TemporaryDirectory(prefix='mm_v1_', dir=_preview_temp_root()) as directory:
+        with tempfile.TemporaryDirectory(prefix='mm_v1_', dir=_preview_temp_root(), ignore_cleanup_errors=True) as directory:
             try:
                 tools=_tools_dir()
                 cmd=_yt_dlp_command()

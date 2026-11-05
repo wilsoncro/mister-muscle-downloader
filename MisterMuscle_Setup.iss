@@ -30,7 +30,7 @@
 ; ============================================================================
 
 #define MyAppName "Mister Muscle Downloader"
-#define MyAppVersion "5.3.6"
+#define MyAppVersion "5.3.7"
 #define MyAppPublisher "Mister Muscle"
 #define MyAppExeName "MisterMuscle.exe"
 
@@ -38,6 +38,9 @@
 AppId={{7C1E9F2A-4B3D-4E7A-9C2F-6A1D8E5B3F90}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+; Exactly one version prefix in the Windows installer and installed-app listing.
+AppVerName={#MyAppName} v{#MyAppVersion}
+UninstallDisplayName={#MyAppName} v{#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppSupportURL=https://github.com/wilsoncro/mister-muscle-downloader
 DefaultDirName={autopf}\{#MyAppName}

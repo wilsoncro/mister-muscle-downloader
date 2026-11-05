@@ -10,8 +10,12 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 SOURCE=(ROOT/'mister_muscle_qt.py').read_text(encoding='utf-8')
 TIMELINE=(ROOT/'pro_timeline.py').read_text(encoding='utf-8')
-assert "APP_VERSION = '5.3.6'" in SOURCE
-assert '#define MyAppVersion "5.3.6"' in (ROOT/'MisterMuscle_Setup.iss').read_text(encoding='utf-8')
+import re
+version=re.search(r"(?m)^APP_VERSION = '(\d+\.\d+\.\d+)'", SOURCE)
+assert version is not None
+major, minor, patch=map(int, version.group(1).split('.'))
+assert (major, minor, patch) >= (5,3,6)
+assert '#define MyAppVersion "'+version.group(1)+'"' in (ROOT/'MisterMuscle_Setup.iss').read_text(encoding='utf-8')
 
 def method_from_ast(text, cls, name):
     tree=ast.parse(text)

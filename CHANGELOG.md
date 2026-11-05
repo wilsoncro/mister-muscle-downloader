@@ -1,3 +1,13 @@
+## v5.3.7 - Windows Player HTTP and Temporary File Cleanup Hotfix
+
+- Treat browser-initiated HTTP stream disconnects (WinError 10054, 10053, 10058 and broken pipes) as normal player events, not errors or automatic crash reports. Keep unexpected server failures visible in the Status Log.
+- Stop Qt media playback and WebEngine navigation before closing the local player HTTP server; join the listener thread before removing temporary playback files.
+- Make preview, original-player and source-cut temporary folders resilient to WinError 32 when Windows is still holding a media file, with bounded cleanup retries and non-fatal warnings.
+- Clean only app-owned abandoned media scratch folders older than seven days on startup; never delete original downloaded video/audio files.
+- Make remote A1 audio and V1 thumbnail preview scratch cleanup tolerate Windows file-lock races.
+- Normalize setup and installed-app version labels to exactly one v prefix; keep the actual version number numeric in the program and installer.
+- Preserve the independent A1/V1 audio/video cut markers, full waveform and all existing download features.
+
 ## v5.3.6 - Independent A1 Audio Markers and Track Cutting
 
 - Added separate turquoise A1 IN/OUT drag handles beneath the purple V1 handles in Media Studio.

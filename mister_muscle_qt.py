@@ -23,9 +23,9 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.6'
+APP_VERSION = '5.3.7'
 APP_IS_BETA = False
-DISPLAY_VERSION = APP_VERSION
+DISPLAY_VERSION = APP_VERSION.lstrip('v')  # render only one v in setup/update labels
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
 DONATE_URL = 'https://paypal.me/MrMuscle1995'  # Preserved from the original application
 
@@ -47,6 +47,50 @@ def find_media_tool(name):
 
 def ytdlp_args(args):
     return args[2:] if getattr(sys, 'frozen', False) and args[:2]==['-m','yt_dlp'] else args
+
+
+def _is_expected_player_disconnect(error):
+    """Chromium closing a media request is normal during seeking or navigation."""
+    return (isinstance(error, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError))
+            or getattr(error, 'winerror', None) in (10053, 10054, 10058))
+
+
+def _cleanup_temporary_directory(directory, attempts=5, pause=0.12):
+    """Best effort: a Windows media handle can outlive its Qt owner briefly.
+
+    TemporaryDirectory(ignore_cleanup_errors=True) prevents a second, noisy
+    WinError 32 in weakref._exitfunc when Chromium still owns a media file.
+    Retry after releasing the player and HTTP handles. Never delete source files.
+    """
+    if directory is None:
+        return True
+    name = getattr(directory, 'name', None)
+    for attempt in range(max(1, attempts)):
+        try:
+            directory.cleanup()
+        except (OSError, PermissionError):
+            pass
+        if not name or not Path(name).exists():
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(pause)
+    return False
+
+
+def _prune_old_media_temp_directories():
+    """Remove only stale app-owned temporary folders left locked on prior exits."""
+    root = Path(tempfile.gettempdir())
+    minimum_age = 7 * 86400
+    for prefix in ('mm_original_player_', 'mm_preview_', 'mm_source_cut_'):
+        for directory in root.glob(prefix + '*'):
+            try:
+                if (directory.is_symlink() or not directory.is_dir()
+                        or time.time() - directory.stat().st_mtime < minimum_age):
+                    continue
+                shutil.rmtree(directory)
+            except OSError:
+                # Another process may legitimately still be using the folder.
+                pass
 DATA=Path(os.environ.get('APPDATA',str(Path.home()))) / ('MisterMuscleQt_BETA' if APP_IS_BETA else 'MisterMuscleQt')
 DATA.mkdir(parents=True,exist_ok=True)
 HISTORY=DATA/'history.json'
@@ -1714,12 +1758,14 @@ class Main(QMainWindow):
     def serve_original_player_html(self,html,video_directory=None):
         directory=Path(video_directory) if video_directory else None
         if not hasattr(self,'_original_player_dir'):
-            self._original_player_dir=tempfile.TemporaryDirectory(prefix='mm_original_player_')
+            self._original_player_dir=tempfile.TemporaryDirectory(prefix='mm_original_player_', ignore_cleanup_errors=True)
         root=directory or Path(self._original_player_dir.name)
         if getattr(self,'_original_server_root',None)!=str(root):
             if hasattr(self,'_original_server'):
                 self._original_server.shutdown()
                 self._original_server.server_close()
+                if hasattr(self, '_original_server_thread'):
+                    self._original_server_thread.join(timeout=1.5)
             # PyInstaller --windowed sets sys.stderr to None. The default
             # SimpleHTTPRequestHandler writes every request to stderr, which
             # can raise inside the HTTP request handler before headers are sent.
@@ -1735,6 +1781,17 @@ class Main(QMainWindow):
                         if local and Path(local).is_file():
                             return str(Path(local).resolve())
                     return super().translate_path(path)
+                def copyfile(self, source, outputfile):
+                    # WebEngine routinely resets /preview.mp4 requests when
+                    # seeking or navigating. It is not an application error.
+                    try:
+                        return super().copyfile(source, outputfile)
+                    except OSError as exc:
+                        if not _is_expected_player_disconnect(exc):
+                            raise
+                        self.log_message('Player stream closed by browser (normal)')
+                        return
+
                 def log_message(self, fmt, *args):
                     try:
                         app_logger('DEBUG', 'PLAYER HTTP', fmt % args)
@@ -1751,8 +1808,13 @@ class Main(QMainWindow):
                 allow_reuse_address = True
                 def handle_error(self, request, client_address):
                     try:
-                        app_logger('ERROR', 'PLAYER HTTP',
-                                   'Request handler crashed: ' + traceback.format_exc())
+                        error = sys.exc_info()[1]
+                        if _is_expected_player_disconnect(error):
+                            app_logger('DEBUG', 'PLAYER HTTP',
+                                       'Browser closed local media request during navigation or seek.')
+                        else:
+                            app_logger('ERROR', 'PLAYER HTTP',
+                                       'Request handler crashed: ' + traceback.format_exc())
                     except Exception:
                         pass
             self._original_server=PlayerHTTPServer(('127.0.0.1',0),PlayerHTTPHandler)
@@ -2070,19 +2132,17 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.6 - Independent Audio and Video Markers
-- A1 audio has its own turquoise IN and OUT handles; V1 video keeps purple markers.
-- Drag A1 markers or use A IN / A OUT to trim audio separately.
-- Link A/V keeps both tracks synced when wanted; touching A1 automatically unlinks them.
-- Export Audio Only from the A1 range, Video Only from V1, or Video + Audio with independent ranges.
-- Save, split, remove and export multiple A1-only selections without changing V1.
-- Original source files are never modified.
+        fallback_notes = """## v5.3.7 - Windows Preview Cleanup and Player HTTP Reliability
+- Prevent false error reports for normal localhost player HTTP stream disconnections (WinError 10054).
+- Release local player and media handles before deleting temporary preview files.
+- Retry locked preview scratch cleanup, defer safely if Windows holds a file, and clean old app-owned scratch folders.
+- Normalize the displayed version and installer label to a single v prefix.
+- Keep the complete waveform and independent A1/V1 cutting from v5.3.6.
 
-## v5.3.5 - Complete Audio Waveform and Direct Track Cutting
-- Audio waveform covers the entire recording, including long videos.
-- Added Video + Audio, Video Only and Audio Only export options.
-- Added direct IN/OUT video cutting and local audio clip export.
-- Retained hidden background CMD windows and Windows preview fixes."""
+## v5.3.6 - Independent A1 Audio and Video Markers
+- Separate A1 and V1 IN/OUT handles with a Link A/V toggle.
+- Save and split audio-only selections; export A1 and V1 cuts independently.
+- Preserve all earlier download and timeline fixes."""
         notes = fallback_notes
         for candidate in (APP_DIR / 'CHANGELOG.md', BASE / 'CHANGELOG.md'):
             try:
@@ -3409,7 +3469,7 @@ class Main(QMainWindow):
             QMessageBox.warning(self,'FFmpeg missing','A working FFmpeg installation is required for preview conversion.');return
         # Keep previous preview files alive while the player might still reference them.
         if not hasattr(self,'_preview_dirs'):self._preview_dirs=[]
-        self.preview_dir=tempfile.TemporaryDirectory(prefix='mm_preview_')
+        self.preview_dir=tempfile.TemporaryDirectory(prefix='mm_preview_', ignore_cleanup_errors=True)
         self._preview_dirs.append(self.preview_dir)
         self.preview_file=str(Path(self.preview_dir.name)/'preview.mp4')
         self._preview_diagnostics=[]
@@ -3558,7 +3618,7 @@ class Main(QMainWindow):
         self.remote_format=self.quality.currentText()
         # Clip output is independent of the main Download mode. For an
         # audio-only export fetch an audio stream, not a whole video file.
-        self.remote_tmp=tempfile.TemporaryDirectory(prefix='mm_source_cut_')
+        self.remote_tmp=tempfile.TemporaryDirectory(prefix='mm_source_cut_', ignore_cleanup_errors=True)
         source_dir=Path(self.remote_tmp.name)
         max_height={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,
                     '720p':720,'480p':480,'360p':360}[self.remote_format]
@@ -3678,7 +3738,8 @@ class Main(QMainWindow):
         self.remote_proc=None
         self.remote_cut_button.setEnabled(True)
         if self.remote_tmp:
-            self.remote_tmp.cleanup()
+            if not _cleanup_temporary_directory(self.remote_tmp):
+                self.log('WARN', 'TEMP', 'Source-cut temporary files are still in use; cleanup deferred.')
             self.remote_tmp=None
         self.remote_stage=None
         if hasattr(self,'_clip_diagnostic_timer'):self._clip_diagnostic_timer.stop()
@@ -3763,16 +3824,42 @@ class Main(QMainWindow):
             event.ignore()
             QTimer.singleShot(1500,self.close)
             return
-        if self.remote_tmp:self.remote_tmp.cleanup()
-        self.persist_session()
-        self.log('INFO','APP','Application closing')
-        if hasattr(self,'_original_server'):
+        # Disconnect both Qt media backends before removing player-owned files.
+        # Chromium often holds /preview.mp4 during asynchronous navigation.
+        if WEB_ENGINE_AVAILABLE and hasattr(self, 'original_web'):
+            try:
+                self.original_web.stop()
+                self.original_web.setUrl(QUrl('about:blank'))
+            except RuntimeError:
+                pass
+        if hasattr(self, 'player'):
+            try:
+                self.player.stop()
+                self.player.setSource(QUrl())
+            except RuntimeError:
+                pass
+        if hasattr(self, '_original_server'):
             self._original_server.shutdown()
             self._original_server.server_close()
-            self._original_player_dir.cleanup()
+            if hasattr(self, '_original_server_thread'):
+                self._original_server_thread.join(timeout=2)
+        # A locked temp file is a non-fatal cleanup warning, not a traceback.
+        for directory in ([getattr(self, 'remote_tmp', None)]
+                          + list(getattr(self, '_preview_dirs', []))
+                          + [getattr(self, '_original_player_dir', None)]):
+            if directory and not _cleanup_temporary_directory(directory):
+                self.log('WARN', 'TEMP', 'A media preview file is still locked; temporary cleanup deferred.')
+        self.remote_tmp=None
+        if hasattr(self, '_preview_dirs'):
+            self._preview_dirs.clear()
+        self.persist_session()
+        self.log('INFO','APP','Application closing')
         super().closeEvent(event)
 
 if __name__=='__main__':
+    # Best-effort deletion of our own abandoned 7-day-old temp directories.
+    # This stays off the UI thread, and ignores any file still held by Windows.
+    threading.Thread(target=_prune_old_media_temp_directories, daemon=True).start()
     app=QApplication(sys.argv);app.setStyle('Fusion');app.setStyleSheet(STYLE)
     win=Main()
     def report_exception(exc_type,exc_value,exc_tb):
