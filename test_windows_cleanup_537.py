@@ -16,8 +16,11 @@ MAIN = (ROOT / 'mister_muscle_qt.py').read_text(encoding='utf-8')
 TIMELINE = (ROOT / 'pro_timeline.py').read_text(encoding='utf-8')
 INSTALLER = (ROOT / 'MisterMuscle_Setup.iss').read_text(encoding='utf-8')
 
-assert "APP_VERSION = '5.3.7'" in MAIN
-assert '#define MyAppVersion "5.3.7"' in INSTALLER
+import re
+version=re.search(r"(?m)^APP_VERSION = '(\d+\.\d+\.\d+)'", MAIN)
+assert version is not None
+assert tuple(map(int,version.group(1).split('.'))) >= (5,3,7)
+assert '#define MyAppVersion "'+version.group(1)+'"' in INSTALLER
 assert 'AppVerName={#MyAppName} v{#MyAppVersion}' in INSTALLER
 assert 'UninstallDisplayName={#MyAppName} v{#MyAppVersion}' in INSTALLER
 assert 'DISPLAY_VERSION = APP_VERSION.lstrip(' in MAIN

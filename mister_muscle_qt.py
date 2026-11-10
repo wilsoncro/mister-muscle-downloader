@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.7'
+APP_VERSION = '5.3.8'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION.lstrip('v')  # render only one v in setup/update labels
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -47,6 +47,18 @@ def find_media_tool(name):
 
 def ytdlp_args(args):
     return args[2:] if getattr(sys, 'frozen', False) and args[:2]==['-m','yt_dlp'] else args
+
+
+def car_multimedia_video_filter():
+    """Conservative car USB profile: ≤720p without upscaling; 30 FPS CFR."""
+    return "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30,format=yuv420p"
+
+
+def car_multimedia_video_args():
+    """Portable H.264 Baseline Level 3.1 with limited peak bitrate."""
+    return ['-c:v','libx264','-preset','fast','-crf','20',
+            '-profile:v','baseline','-level:v','3.1','-bf','0','-refs','2','-g','60',
+            '-maxrate','3500k','-bufsize','7000k']
 
 
 def _is_expected_player_disconnect(error):
@@ -1101,7 +1113,8 @@ class Main(QMainWindow):
         eyebrow=QLabel('02  ADVANCED DOWNLOAD OPTIONS');eyebrow.setObjectName('eyebrow');ol.addWidget(eyebrow)
         choices=QHBoxLayout();choices.setSpacing(12)
         modebox=QVBoxLayout();modebox.addWidget(QLabel('File type'))
-        self.mode=NoWheelComboBox();self.mode.addItems(['Video + audio','Video only','Audio only','Instagram Photos'])
+        self.mode=NoWheelComboBox();self.mode.addItems(['Video + audio','Video only','Audio only','Instagram Photos','Car Multimedia (MP4)'])
+        self.mode.setItemData(4,'For older car USB media players: H.264 Baseline / AAC stereo / max 720p 30 FPS',Qt.ToolTipRole)
         modebox.addWidget(self.mode)
         qualitybox=QVBoxLayout();qualitybox.addWidget(QLabel('Resolution'))
         self.quality=NoWheelComboBox();self.quality.addItems(['Best available','2160p','1440p','1080p','720p','480p','360p'])
@@ -1127,8 +1140,8 @@ class Main(QMainWindow):
         vc=QVBoxLayout()
         self.format_label=QLabel('Output format');vc.addWidget(self.format_label)
         self.video_container=NoWheelComboBox();vc.addWidget(self.video_container)
-        self._mode_formats={0:['MP4','MKV','WEBM'],1:['MP4','MKV','WEBM'],2:['MP3','M4A','WAV','FLAC','OPUS','OGG','AAC'],3:['Original']}
-        self._saved_formats={0:'MP4',1:'MP4',2:'MP3',3:'Original'}
+        self._mode_formats={0:['MP4','MKV','WEBM'],1:['MP4','MKV','WEBM'],2:['MP3','M4A','WAV','FLAC','OPUS','OGG','AAC'],3:['Original'],4:['MP4']}
+        self._saved_formats={0:'MP4',1:'MP4',2:'MP3',3:'Original',4:'MP4'}
         self._previous_mode=0
         self.mode.currentIndexChanged.connect(self.update_mode_formats)
         self.update_mode_formats(0)
@@ -1144,6 +1157,7 @@ class Main(QMainWindow):
         self.premiere_compatible.setToolTip('Download the original best-resolution stream first; convert only if needed. This may take time and disk space.')
         ol.addWidget(self.premiere_compatible)
         self.premiere_compatible.stateChanged.connect(self.update_premiere_controls)
+        self.update_premiere_controls()
         aspect_note=QLabel('Aspect ratio is applied to clip exports. Full-video downloads retain their original framing.')
         aspect_note.setObjectName('sub');aspect_note.setWordWrap(True);ol.addWidget(aspect_note)
         folderrow=QHBoxLayout()
@@ -1402,14 +1416,17 @@ class Main(QMainWindow):
         self.video_container.blockSignals(False)
         self._previous_mode=mode
         self.quality.setEnabled(mode in (0,1))
+        if mode==4:
+            self.quality.setCurrentText('Best available')  # Best quality up to 720p in the car preset.
         self.instagram_options.setVisible(mode==3) if hasattr(self,'instagram_options') else None
         self.update_premiere_controls()
 
     def update_premiere_controls(self, *_):
         if not hasattr(self, 'premiere_compatible'):return
-        eligible=self.mode.currentIndex() in (0,1)
+        selected=self.mode.currentIndex()
+        eligible=selected in (0,1)
         self.premiere_compatible.setEnabled(eligible)
-        if eligible and self.premiere_compatible.isChecked():
+        if (eligible and self.premiere_compatible.isChecked()) or selected==4:
             self.video_container.setCurrentText('MP4')
             self.video_container.setEnabled(False)
         else:
@@ -1427,7 +1444,7 @@ class Main(QMainWindow):
         if quality not in ('Best available','2160p','1440p','1080p','720p','480p','360p'):return None
         if len(item)==4:
             fmt=str(item[3]).lower()
-            if mode not in (0,1,2,3) or fmt not in ({0:('mp4','mkv','webm'),1:('mp4','mkv','webm'),2:('mp3','m4a','wav','flac','opus','ogg','aac'),3:('original',)}[mode]):return None
+            if mode not in (0,1,2,3,4) or fmt not in ({0:('mp4','mkv','webm'),1:('mp4','mkv','webm'),2:('mp3','m4a','wav','flac','opus','ogg','aac'),3:('original',),4:('mp4',)}[mode]):return None
         else:
             if mode not in range(9):return None
             old_audio={2:'mp3',3:'m4a',4:'wav',5:'flac',6:'opus',7:'aac',8:'ogg'}
@@ -2132,7 +2149,14 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.7 - Windows Preview Cleanup and Player HTTP Reliability
+        fallback_notes = """## v5.3.8 - Car Multimedia MP4 Compatibility
+- Added Car Multimedia (MP4) in the File type dropdown (no checkbox).
+- Selecting it always makes an H.264/AAC MP4 from the best available source up to 720p; the mode is retained when queued or resumed.
+- Encodes selected downloads to H.264 Baseline, AAC stereo, max 720p/30fps for older USB car players.
+- Limits peak bitrate and validates output; original Best-quality mode is still available.
+- Preserves independent A1/V1 cutting and all previous Windows hotfixes.
+
+## v5.3.7 - Windows Preview Cleanup and Player HTTP Reliability
 - Prevent false error reports for normal localhost player HTTP stream disconnections (WinError 10054).
 - Release local player and media handles before deleting temporary preview files.
 - Retry locked preview scratch cleanup, defer safely if Windows holds a file, and clean old app-owned scratch folders.
@@ -2690,7 +2714,7 @@ class Main(QMainWindow):
         if self.proc and self.proc.state()!=QProcess.NotRunning:return
         if not self.queue:
             self.status.setText('Queue completed.');self.refresh_center();return
-        self.current_url,mode,quality,output_format=self.queue.pop(0);self._download_finishing=False;self._premiere_finalizing=False;self._premiere_path_record=DATA/'premiere_last_download_path.txt';self._premiere_path_record.unlink(missing_ok=True);self._premiere_for_download=(mode in (0,1) and self.premiere_compatible.isChecked());self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
+        self.current_url,mode,quality,output_format=self.queue.pop(0);self._download_finishing=False;self._premiere_finalizing=False;self._premiere_path_record=DATA/'premiere_last_download_path.txt';self._premiere_path_record.unlink(missing_ok=True);self._car_for_download=(mode==4);self._premiere_for_download=(self._car_for_download or (mode in (0,1) and self.premiere_compatible.isChecked()));self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
         # Capture output folder state to identify the exact new file if yt-dlp omits its final path.
         self._premiere_before_files={}
         if self._premiere_for_download:
@@ -2721,7 +2745,7 @@ class Main(QMainWindow):
             self.start_btn.setEnabled(False)
             self.persist_session();self.refresh_queue();self.refresh_center()
             return
-        fmt={'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[quality]
+        fmt=(720 if mode==4 else {'Best available':None,'2160p':2160,'1440p':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[quality])
         speed_value=self.speed_limit.currentText()
         speed_rates={'Unlimited':None,'512 KB/s':'512K','1 MB/s':'1M','2 MB/s':'2M','5 MB/s':'5M','10 MB/s':'10M'}
         speed_rate=speed_rates.get(speed_value)
@@ -2897,9 +2921,9 @@ class Main(QMainWindow):
         ok=(exitcode==0 and status==QProcess.NormalExit)
         if ok and getattr(self,'_premiere_for_download',False):
             self.resolve_premiere_source()
-        if ok and getattr(self,'_premiere_for_download',False) and self.current_mode in (0,1):
+        if ok and getattr(self,'_premiere_for_download',False) and self.current_mode in (0,1,4):
             self.download_percent=99
-            self.download_detail='Download finished; converting and validating Premiere MP4...'
+            self.download_detail=('Download finished; converting and validating car MP4...' if getattr(self,'_car_for_download',False) else 'Download finished; converting and validating Premiere MP4...')
             self.progress.setValue(99)
             self.refresh_center()
             if self.begin_premiere_conversion():
@@ -2999,8 +3023,11 @@ class Main(QMainWindow):
             # A clean MP4 remux rebuilds the container and timestamps without quality loss.
             pix_fmt=video.get('pix_fmt')
             audio_streams=[x for x in streams if x.get('codec_type')=='audio']
-            self._premiere_audio_copy=(self.current_mode==0 and all(x.get('codec_name')=='aac' for x in audio_streams))
-            self._premiere_stream_copy=(video.get('codec_name')=='h264' and
+            car_mode=bool(getattr(self,'_car_for_download',False))
+            # Car downloads must be re-encoded to bounded Baseline/AAC even
+            # if the source happens to be an H.264 MP4 with 4K or 60 FPS.
+            self._premiere_audio_copy=(not car_mode and self.current_mode in (0,4) and all(x.get('codec_name')=='aac' for x in audio_streams))
+            self._premiere_stream_copy=(not car_mode and video.get('codec_name')=='h264' and
                 pix_fmt=='yuv420p' and
                 (self.current_mode==1 or all(x.get('codec_name')=='aac' for x in audio_streams)))
             # Match legacy instant-completion behavior: do not launch FFmpeg at all
@@ -3011,10 +3038,11 @@ class Main(QMainWindow):
                 self.status.setText('Premiere compatible — ready instantly')
                 return False
             self.log('INFO','PREMIERE', 'Compatible H.264/AAC detected; fast remux without re-encoding' if self._premiere_stream_copy else 'Transcoding required; GPU/CPU encoder detection enabled')
-            target=source.with_name(source.stem+' - Premiere H264.mp4')
+            suffix=' - Car Compatible' if car_mode else ' - Premiere H264'
+            target=source.with_name(source.stem+suffix+'.mp4')
             n=2
             while target.exists():
-                target=source.with_name(source.stem+f' - Premiere H264 ({n}).mp4');n+=1
+                target=source.with_name(source.stem+suffix+f' ({n}).mp4');n+=1
             temp=target.with_name(target.stem+'.converting.mp4')
             if temp.exists():temp.unlink()
             self._premiere_source=source
@@ -3058,7 +3086,8 @@ class Main(QMainWindow):
                                      test.stderr.decode('utf-8',errors='replace')[-220:])
                     except (OSError,subprocess.TimeoutExpired) as test_exc:
                         self.log('WARN','PREMIERE',enc+' test failed: '+str(test_exc))
-            self._premiere_encoders=(['copy'] if self._premiere_stream_copy else working+['libx264'])
+            self._premiere_encoders=(['libx264'] if car_mode else
+                                    (['copy'] if self._premiere_stream_copy else working+['libx264']))
             self.log('INFO','PREMIERE','Encoder plan: '+', '.join(self._premiere_encoders))
             self._premiere_encoder_index=0
             self._premiere_progress_buffer=''
@@ -3066,15 +3095,23 @@ class Main(QMainWindow):
             self._premiere_video_dimensions=(video.get('width'),video.get('height'))
             self._premiere_args_base=['-hide_banner','-nostdin','-y','-fflags','+genpts',
                 '-i',str(source),'-map','0:v:0']
-            if self.current_mode==0:self._premiere_args_base+=['-map','0:a:0?']
-            self._premiere_args_end=['-pix_fmt','yuv420p','-tag:v','avc1']
-            if self.current_mode==0:
-                if self._premiere_audio_copy:
-                    self._premiere_args_end+=['-c:a','copy']
-                else:
-                    self._premiere_args_end+=['-c:a','aac','-b:a','192k','-ar','48000',
-                        '-af','aresample=async=1:first_pts=0']
-            else:self._premiere_args_end+=['-an']
+            if self.current_mode in (0,4):self._premiere_args_base+=['-map','0:a:0?']
+            if car_mode:
+                self._premiere_args_end=[
+                    '-vf',car_multimedia_video_filter(),
+                    '-pix_fmt','yuv420p','-tag:v','avc1',
+                    '-c:a','aac','-profile:a','aac_low','-b:a','160k',
+                    '-ar','44100','-ac','2',
+                    '-af','aresample=async=1:first_pts=0']
+            else:
+                self._premiere_args_end=['-pix_fmt','yuv420p','-tag:v','avc1']
+                if self.current_mode==0:
+                    if self._premiere_audio_copy:
+                        self._premiere_args_end+=['-c:a','copy']
+                    else:
+                        self._premiere_args_end+=['-c:a','aac','-b:a','192k','-ar','48000',
+                            '-af','aresample=async=1:first_pts=0']
+                else:self._premiere_args_end+=['-an']
             self._premiere_args_end+=['-avoid_negative_ts','make_zero','-movflags','+faststart',
                 '-max_muxing_queue_size','4096',str(temp)]
             self.start_premiere_encoder()
@@ -3088,6 +3125,7 @@ class Main(QMainWindow):
     def start_premiere_encoder(self):
         """Try an encoder; failure retries the next option without completing the job."""
         encoder=self._premiere_encoders[self._premiere_encoder_index]
+        car_mode=bool(getattr(self,'_car_for_download',False))
         try:self._premiere_temp.unlink(missing_ok=True)
         except OSError:pass
         settings={
@@ -3097,13 +3135,15 @@ class Main(QMainWindow):
             'h264_amf':['-c:v','h264_amf','-quality','quality','-rc','cqp','-qp_i','18','-qp_p','20'],
             'libx264':['-c:v','libx264','-preset','fast','-crf','18','-profile:v','high'],
         }
+        if car_mode:
+            settings['libx264']=car_multimedia_video_args()
         self._premiere_proc=QProcess(self)
         self._premiere_proc.setProcessChannelMode(QProcess.MergedChannels)
         self._premiere_proc.readyReadStandardOutput.connect(self.premiere_conversion_output)
         self._premiere_proc.finished.connect(self.premiere_conversion_finished)
         self._premiere_progress_buffer=''
         self._premiere_progress_seconds=0.0
-        self.status.setText('Premiere conversion ('+encoder+', original resolution)…')
+        self.status.setText(('Car MP4 encoding (max 720p, 30fps) — '+encoder if car_mode else 'Premiere conversion ('+encoder+', original resolution)')+'…')
         self.download_percent=90
         self.download_detail='Converting 0% | Encoder: '+encoder+(' (GPU)' if encoder not in ('libx264','copy') else (' (CPU)' if encoder=='libx264' else ' (no re-encode)'))
         self.refresh_center()
@@ -3144,7 +3184,7 @@ class Main(QMainWindow):
                 percent=min(99,int(self._premiere_progress_seconds/duration*100)) if duration>0 else 0
                 self.download_percent=90+min(9,int(percent*0.09))
                 self.download_detail=f'Converting {percent}% | Encoder: {label}'
-                self.status.setText(f'Premiere conversion {percent}% — {label}')
+                self.status.setText(f'{"Car MP4" if getattr(self,"_car_for_download",False) else "Premiere conversion"} {percent}% — {label}')
                 self.refresh_center()
             elif 'Error' in line or 'error' in line:
                 self.log('WARN','PREMIERE',line[-300:])
@@ -3164,7 +3204,7 @@ class Main(QMainWindow):
         if good:
             try:
                 probe=subprocess.run([self._premiere_ffprobe,'-v','error',
-                    '-show_entries','stream=codec_type,codec_name,pix_fmt,width,height',
+                    '-show_entries','stream=codec_type,codec_name,pix_fmt,width,height,profile,level,avg_frame_rate,sample_rate,channels',
                     '-of','json',str(self._premiere_temp)],capture_output=True,text=True,
                     timeout=25,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 if probe.returncode:raise RuntimeError(probe.stderr[-400:])
@@ -3175,9 +3215,29 @@ class Main(QMainWindow):
                     raise RuntimeError('Output is not H.264/yuv420p')
                 if any(x.get('codec_name')!='aac' for x in audios):
                     raise RuntimeError('Output contains non-AAC audio')
+                if getattr(self,'_car_for_download',False):
+                    if v.get('profile') not in ('Baseline','Constrained Baseline'):
+                        raise RuntimeError('Car MP4 requires H.264 Baseline profile')
+                    if (int(v.get('level') or 999)>31 or
+                            int(v.get('width') or 99999)>1280 or
+                            int(v.get('height') or 99999)>720):
+                        raise RuntimeError('Car MP4 exceeds H.264 level 3.1 / 720p')
+                    fps=str(v.get('avg_frame_rate') or '0/1')
+                    parts=fps.split('/',1)
+                    try:
+                        frame_rate=float(parts[0])/max(1.0,float(parts[1])) if len(parts)==2 else float(parts[0])
+                    except ValueError:
+                        frame_rate=999
+                    if not 0<frame_rate<=30.01:
+                        raise RuntimeError('Car MP4 exceeds 30 FPS')
+                    if len(audios)!=1 or any(
+                            int(a.get('channels') or 99)>2 or
+                            int(a.get('sample_rate') or 99999)>44100 or
+                            a.get('profile')!='LC' for a in audios):
+                        raise RuntimeError('Car MP4 requires AAC-LC stereo at 44.1 kHz')
                 # FFprobe verifies container/streams; a full decode would duplicate the entire processing time.
-                self.download_detail='Validating Premiere MP4 | Encoder: '+self._premiere_encoders[self._premiere_encoder_index]
-                self.status.setText('Validating Premiere MP4…')
+                self.download_detail=('Validating car multimedia MP4' if getattr(self,'_car_for_download',False) else 'Validating Premiere MP4')+' | Encoder: '+self._premiere_encoders[self._premiere_encoder_index]
+                self.status.setText('Validating car MP4…' if getattr(self,'_car_for_download',False) else 'Validating Premiere MP4…')
                 self.refresh_center()
                 self._premiere_temp.replace(self._premiere_target)
                 self.last_file=str(self._premiere_target)
@@ -3189,7 +3249,7 @@ class Main(QMainWindow):
                         self.log('INFO','PREMIERE','Removed original intermediate video after verified conversion')
                 except OSError as cleanup_exc:
                     self.log('WARN','PREMIERE','Premiere MP4 is ready, but original could not be removed: '+str(cleanup_exc))
-                self.log('INFO','PREMIERE','Validated H.264 MP4 ready: '+self.last_file)
+                self.log('INFO','PREMIERE',('Validated car multimedia H.264/AAC MP4: ' if getattr(self,'_car_for_download',False) else 'Validated Premiere H.264 MP4 ready: ')+self.last_file)
             except Exception as exc:
                 good=False
                 self.log('ERROR','PREMIERE','Validation failed: '+str(exc))
@@ -3200,6 +3260,7 @@ class Main(QMainWindow):
         if getattr(self,'_premiere_finalizing',False):return
         self._premiere_finalizing=True
         self._premiere_for_download=False
+        self._car_for_download=False
         self._premiere_busy=False
         self._premiere_proc=None
         # Finalize the existing task exactly once; don't recursively re-enter a

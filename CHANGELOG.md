@@ -1,3 +1,13 @@
+## v5.3.8 - Car Multimedia MP4 Compatibility
+
+- Fixed a common car multimedia playback issue: selecting Video + Audio / MP4 / Best available could produce an MP4 container containing AV1, VP9, Opus, 4K or 60 FPS streams unsupported by many USB players.
+- Added Car Multimedia (MP4) as a fifth choice in the File type dropdown. No separate checkbox: existing best-quality downloads remain unchanged.
+- Car mode downloads the source normally, then transcodes video to H.264 Baseline Level 3.1 with yuv420p, max 1280x720 and constant 30 FPS, plus AAC-LC stereo 44.1 kHz audio; MP4 has faststart enabled.
+- Limit peak video bitrate to 3.5 Mbps, use predictable CPU libx264 rather than unknown GPU profiles, and never upscale lower-resolution source videos.
+- Car mode is a separate File type choice; it forces MP4 output and the best available source up to 720p. The mode persists in the queued task for pause/resume and crash recovery.
+- Validate final video profile, frame rate, dimensions, codec and audio streams with ffprobe before treating the download as successful.
+- Preserve the original source if conversion or validation fails. Warn that some car models still need a different resolution, filesystem or USB format.
+
 ## v5.3.7 - Windows Player HTTP and Temporary File Cleanup Hotfix
 
 - Treat browser-initiated HTTP stream disconnects (WinError 10054, 10053, 10058 and broken pipes) as normal player events, not errors or automatic crash reports. Keep unexpected server failures visible in the Status Log.

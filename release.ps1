@@ -115,7 +115,7 @@ if (-not $Publish) { Write-Host 'DRY RUN: no GitHub changes. Use -Publish after 
 Write-Host 'Publishing release...' -ForegroundColor Cyan
 # Commit only release source files. Never stage the entire repository.
 # Thousands of deleted node_modules/build files can be left unstaged safely.
-$paths = @('mister_muscle_qt.py','mister_muscle_original_player.py','pro_timeline.py','phase3_engine.py','phase4_lab.py','beta_studio.py','legacy_downloader.py','build_qt.py','release.ps1','objavi.bat','MisterMuscle_Setup.iss','README_RELEASE.txt','README_RELEASE_5_3_1.txt','README_RELEASE_5_3_2.txt','README_RELEASE_5_3_3.txt','README_RELEASE_5_3_4.txt','README_RELEASE_5_3_5.txt','README_RELEASE_5_3_6.txt','README_RELEASE_5_3_7.txt','test_full_waveform_and_cuts_535.py','CHANGELOG.md','assets','ikona.ico')
+$paths = @('mister_muscle_qt.py','mister_muscle_original_player.py','pro_timeline.py','phase3_engine.py','phase4_lab.py','beta_studio.py','legacy_downloader.py','build_qt.py','release.ps1','objavi.bat','MisterMuscle_Setup.iss','README_RELEASE.txt','README_RELEASE_5_3_1.txt','README_RELEASE_5_3_2.txt','README_RELEASE_5_3_3.txt','README_RELEASE_5_3_4.txt','README_RELEASE_5_3_5.txt','README_RELEASE_5_3_6.txt','README_RELEASE_5_3_7.txt','README_RELEASE_5_3_8.txt','test_full_waveform_and_cuts_535.py','test_separate_audio_markers_536.py','test_windows_cleanup_537.py','test_car_multimedia_538.py','CHANGELOG.md','assets','ikona.ico')
 $existing = @($paths | Where-Object { Test-Path -LiteralPath (Join-Path $PSScriptRoot $_) })
 # Do not accidentally include changes that were staged before this script ran.
 $preStaged = Invoke-Native git @('diff','--cached','--name-only') -Quiet
