@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.8'
+APP_VERSION = '5.3.9'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION.lstrip('v')  # render only one v in setup/update labels
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -59,6 +59,35 @@ def car_multimedia_video_args():
     return ['-c:v','libx264','-preset','fast','-crf','20',
             '-profile:v','baseline','-level:v','3.1','-bf','0','-refs','2','-g','60',
             '-maxrate','3500k','-bufsize','7000k']
+
+
+def _restricted_media_notice(details):
+    """Give useful feedback for services requiring an account, not a crash report.
+
+    Access controls belong to the media provider. This does not attempt
+    to bypass sign-in, subscription, DRM, or availability restrictions.
+    """
+    message=str(details).lower()
+    auth_phrases=(
+        'only available for registered users',
+        'only available to registered users',
+        'sign in to watch', 'please sign in', 'please log in',
+        'you need to be logged in', 'you must be logged in',
+        'authentication required', 'login required',
+        'this video is private', 'private video',
+        'only available to members', 'members only',
+        'only available to subscribers',
+        'sign in to confirm you', 'requires a subscription',
+    )
+    if not any(phrase in message for phrase in auth_phrases):
+        return None
+    if 'hotstar' in message:
+        service='Hotstar'
+    else:
+        service='The video service'
+    return (service+' requires a signed-in, authorized account for this video. '
+            'Open it on the official service and sign in. '
+            'Mister Muscle cannot inspect or preview media without access permission.')
 
 
 def _is_expected_player_disconnect(error):
@@ -1076,13 +1105,29 @@ class Main(QMainWindow):
         if raw:
             text=raw.decode('utf-8',errors='replace')
             for line in re.split(r'[\r\n]+',text):
-                if line.strip():
-                    if name=='PREVIEW':
-                        clean_line=scrub_bug_log(line)[:250]
-                        if ('error' in line.lower() or 'warning' in line.lower() or 'failed' in line.lower()):
-                            self._preview_diagnostics.append(clean_line)
-                            self._preview_diagnostics=self._preview_diagnostics[-8:]
-                    self.log('ERROR' if 'ERROR:' in line or 'Error:' in line else 'WARN' if 'WARNING:' in line else 'INFO',name,line)
+                if not line.strip():continue
+                lower=line.lower()
+                is_error='error:' in lower or 'failed' in lower
+                is_warning='warning:' in lower
+                if name in ('PREVIEW','INSPECT'):
+                    # yt-dlp may write the actual explanation before the
+                    # finished callback runs; Qt has already drained this pipe.
+                    # Preserve it for the final result rather than reporting
+                    # each line AND the exit code as separate app crashes.
+                    if is_error or is_warning:
+                        field=('_preview_diagnostics' if name=='PREVIEW'
+                               else '_inspect_diagnostics')
+                        saved=getattr(self,field,None)
+                        if saved is None:
+                            saved=[]
+                            setattr(self,field,saved)
+                        saved.append(scrub_bug_log(line)[:400])
+                        del saved[:-12]
+                    self.log('WARN' if is_error or is_warning else 'INFO',
+                             name,scrub_bug_log(line))
+                    continue
+                self.log('ERROR' if 'ERROR:' in line or 'Error:' in line
+                         else 'WARN' if 'WARNING:' in line else 'INFO',name,line)
 
     def make_download(self):
         w,v=self.column()
@@ -2149,12 +2194,11 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.9 - Inspect and Preview Sign-in Notices
-- Protected Hotstar and other account-only videos now show a helpful sign-in requirement instead of a misleading crash report.
-- Inspect and Preview collect yt-dlp diagnostics and report unexpected failures once per operation, not once for each error line.
-- Preserve per-user diagnostics for genuine app failures without cross-user deduplication.
-- Never treat an incomplete, non-zero-exit preview as a successful playable file.
-- Keep Car Multimedia (MP4), A1/V1 cutting, and all earlier hotfixes.
+        fallback_notes = """## v5.3.9 - Inspect and Preview Access Notices
+- Videos requiring a logged-in account now display an access notice instead of an internal crash report.
+- Inspect and Preview preserve the provider's explanation, classify access restrictions as warnings and report genuine failures only once per operation.
+- No login, subscription, DRM or geo-restriction bypass is attempted.
+- Keeps Car Multimedia (MP4), independent audio/video cutting, and Windows hotfixes.
 
 ## v5.3.8 - Car Multimedia MP4 Compatibility
 - Added Car Multimedia (MP4) in the File type dropdown (no checkbox).
@@ -3489,6 +3533,7 @@ class Main(QMainWindow):
             QMessageBox.information(self,'Missing link','Paste a video link first.');return
         if self.meta_proc and self.meta_proc.state()!=QProcess.NotRunning:return
         self.link_info.setText('Inspecting video metadata…')
+        self._inspect_diagnostics=[]
         self.meta_proc=QProcess(self)
         self.meta_proc.setProgram(YTDLP_EXE)
         self.meta_proc.setArguments(ytdlp_args(['-m','yt_dlp','--dump-single-json','--skip-download','--no-playlist',links[0]]))
@@ -3500,9 +3545,19 @@ class Main(QMainWindow):
     def metadata_finished(self,code,status):
         output=bytes(self.meta_proc.readAllStandardOutput()).decode('utf-8',errors='replace')
         errors=bytes(self.meta_proc.readAllStandardError()).decode('utf-8',errors='replace')
-        if code!=0:
-            self.log('ERROR','INSPECT',errors or f'Metadata inspect exited with code {code}')
-            self.link_info.setText('Could not inspect link: '+errors[-250:]);return
+        if code!=0 or status!=QProcess.NormalExit:
+            details='\n'.join(getattr(self,'_inspect_diagnostics',[])+[errors])
+            notice=_restricted_media_notice(details)
+            if notice:
+                self.link_info.setText(notice)
+                self.log('WARN','INSPECT',notice)
+            else:
+                message=(scrub_bug_log(details)[-700:] or
+                         f'Metadata inspect exited with code {code}')
+                self.log('ERROR','INSPECT',f'Metadata inspect failed (exit={code}): {message}')
+                self.link_info.setText('Could not inspect link: '+message[-250:])
+            self.meta_proc=None
+            return
         try:
             data=json.loads(output)
             links=[x.strip() for x in self.urls.toPlainText().splitlines() if x.strip()]
@@ -3557,7 +3612,10 @@ class Main(QMainWindow):
 
     def preview_finished(self,code,status):
         output=bytes(self.preview_proc.readAllStandardOutput()).decode('utf-8',errors='replace')
-        if status==QProcess.NormalExit and Path(self.preview_file).is_file() and Path(self.preview_file).stat().st_size > 1024:
+        preview_ok=(code==0 and status==QProcess.NormalExit and
+                    Path(self.preview_file).is_file() and
+                    Path(self.preview_file).stat().st_size>1024)
+        if preview_ok:
             self.local_path=self.preview_file
             self.player.setSource(QUrl.fromLocalFile(self.preview_file))
             if WEB_ENGINE_AVAILABLE:
@@ -3573,14 +3631,21 @@ class Main(QMainWindow):
                 self.player.play()
             self.cut_status.setText('Preview opened. Local cutting uses the temporary preview; remote cutting downloads the original quality.')
         else:
-            self.link_info.setText('Preview unavailable: '+output[-400:])
-        preview_ok=Path(self.preview_file).is_file() and Path(self.preview_file).stat().st_size > 1024
-        if not preview_ok:
-            # Process output may have been consumed by readyRead; preserve only redacted error lines.
-            tail=scrub_bug_log(output)[-500:]
-            details=' | '.join(self._preview_diagnostics[-5:]) or tail
-            self.log('ERROR','PREVIEW',f'Preview process finished: exit={code}; details: {details[:1100]}')
-        else:
+            # readyRead may have consumed stdout; consult cached diagnostics.
+            detail=' | '.join(getattr(self,'_preview_diagnostics',[])[-8:])
+            detail=detail or scrub_bug_log(output)[-500:]
+            notice=_restricted_media_notice(detail)
+            if notice:
+                self.link_info.setText(notice)
+                if hasattr(self,'original_player_note'):
+                    self.original_player_note.setText(notice)
+                self.log('WARN','PREVIEW',notice)
+            else:
+                safe_detail=detail[:900] or 'The preview produced no playable video.'
+                self.link_info.setText('Preview unavailable: '+safe_detail[-350:])
+                self.log('ERROR','PREVIEW',
+                         f'Preview failed (exit={code}): {safe_detail}')
+        if preview_ok:
             self.log('INFO','PREVIEW',f'Preview process finished: exit={code}')
         self.preview_proc=None
 
