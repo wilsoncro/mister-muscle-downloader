@@ -36,7 +36,8 @@ def extract(function_name,class_name=None,globals_=None):
 scrub=extract('scrub_bug_log',globals_={'re':re})
 notice=extract('_restricted_media_notice')
 env={'re':re,'json':json,'Path':Path,'scrub_bug_log':scrub,
-     '_restricted_media_notice':notice,'QProcess':types.SimpleNamespace(NormalExit=0)}
+     '_restricted_media_notice':notice,'QProcess':types.SimpleNamespace(NormalExit=0),
+     'QTimer':types.SimpleNamespace(singleShot=lambda *args:None)}
 capture=extract('_capture_process_output','Main',env)
 metadata=extract('metadata_finished','Main',env)
 preview=extract('preview_finished','Main',env)
