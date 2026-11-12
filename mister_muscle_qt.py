@@ -3859,16 +3859,18 @@ class Main(QMainWindow):
             links=extract_media_links(self.urls.toPlainText())
             if links and links[0]==url:
                 callback=self.inspect_link if source=='INSPECT' else self.preview_link
-                QTimer.singleShot(0,callback)
+                QTimer.singleShot(0,lambda u=url,fn=callback:
+                    fn() if extract_media_links(self.urls.toPlainText())[:1]==[u] else None)
             return
         if hoster=='instagram' and WEB_ENGINE_AVAILABLE:
             if not self.login_instagram():
                 return
             links=extract_media_links(self.urls.toPlainText())
             if links and links[0]==url:
-                # Never recursively restart within Qt's process finished slot.
+                # Don't re-run against a newly pasted URL after the dialog closes.
                 callback=self.inspect_link if source=='INSPECT' else self.preview_link
-                QTimer.singleShot(0,callback)
+                QTimer.singleShot(0,lambda u=url,fn=callback:
+                    fn() if extract_media_links(self.urls.toPlainText())[:1]==[u] else None)
             return
         if not isinstance(url,str) or not url.lower().startswith(('https://','http://')):
             return
