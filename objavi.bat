@@ -6,14 +6,14 @@ if not exist "release.ps1" (
   pause
   exit /b 1
 )
-rem Verify v5.3.9 source before any build, git commit, or GitHub upload.
-if exist "test_restricted_media_539.py" (
+rem Verify v5.3.10 source before any build, git commit, or GitHub upload.
+if exist "test_hoster_login_5310.py" (
   set "PATH=%~dp0tools;%PATH%"
-  echo Checking v5.3.9 Inspect, Preview and media compatibility...
+  echo Checking v5.3.10 in-app login, Inspect and Preview...
   py -3 "test_full_waveform_and_cuts_535.py"
   if errorlevel 1 (
     echo.
-    echo ERROR: v5.3.9 checks failed. Nothing published.
+    echo ERROR: v5.3.10 checks failed. Nothing published.
     pause
     exit /b 1
   )

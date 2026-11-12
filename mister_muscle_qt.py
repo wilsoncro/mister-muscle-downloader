@@ -23,7 +23,7 @@ try:
 except ImportError:
     WEB_ENGINE_AVAILABLE=False
 from mister_muscle_original_player import _player_html
-APP_VERSION = '5.3.9'
+APP_VERSION = '5.3.10'
 APP_IS_BETA = False
 DISPLAY_VERSION = APP_VERSION.lstrip('v')  # render only one v in setup/update labels
 APP_REPOSITORY = 'wilsoncro/mister-muscle-downloader'
@@ -61,6 +61,51 @@ def car_multimedia_video_args():
             '-maxrate','3500k','-bufsize','7000k']
 
 
+def _restricted_media_host(url='', details=''):
+    """Identify the service from the URL, then a trusted yt-dlp extractor tag."""
+    try:
+        hostname=(urllib.parse.urlsplit(str(url)).hostname or '').lower()
+    except ValueError:
+        hostname=''
+    message=str(details).lower()
+    if (hostname in ('instagram.com','www.instagram.com')
+            or hostname.endswith('.instagram.com')
+            or '[instagram]' in message):
+        return 'instagram'
+    if (hostname in ('hotstar.com','www.hotstar.com','jiohotstar.com',
+                     'www.jiohotstar.com')
+            or hostname.endswith('.hotstar.com')
+            or hostname.endswith('.jiohotstar.com')
+            or '[hotstar]' in message):
+        return 'hotstar'
+    return 'other'
+
+
+def _instagram_saved_cookie_args(url, cookie_file):
+    """Use only a locally saved, explicit Instagram session and only for Instagram."""
+    if _restricted_media_host(url)!='instagram':
+        return []
+    if cookie_file and Path(cookie_file).is_file():
+        return ['--cookies',str(cookie_file)]
+    return []
+
+
+def _hotstar_saved_cookie_args(url, cookie_file):
+    """Only a user-authorized Hotstar cookie file for an actual Hotstar URL.
+
+    No DRM decryption, cookie forwarding to other hosts, or implicit browsing
+    of sensitive browser profiles. This cookie file is not sent in bug reports.
+    """
+    if _restricted_media_host(url)!='hotstar':
+        return []
+    try:
+        if cookie_file and Path(cookie_file).is_file() and Path(cookie_file).stat().st_size>32:
+            return ['--cookies',str(cookie_file)]
+    except OSError:
+        pass
+    return []
+
+
 def _restricted_media_notice(details):
     """Give useful feedback for services requiring an account, not a crash report.
 
@@ -73,6 +118,9 @@ def _restricted_media_notice(details):
         'only available to registered users',
         'sign in to watch', 'please sign in', 'please log in',
         'you need to be logged in', 'you must be logged in',
+        'login to view', 'log in to view', 'log in to access',
+        'please login', 'login to continue', 'login required',
+        'you need to login', 'need to log in',
         'authentication required', 'login required',
         'this video is private', 'private video',
         'only available to members', 'members only',
@@ -83,6 +131,8 @@ def _restricted_media_notice(details):
         return None
     if 'hotstar' in message:
         service='Hotstar'
+    elif 'instagram' in message:
+        service='Instagram'
     else:
         service='The video service'
     return (service+' requires a signed-in, authorized account for this video. '
@@ -140,6 +190,7 @@ LOG_FILE=DATA/'status.log'
 WHATS_NEW_MARKER=DATA/'last_whats_new_version.txt'
 LANGUAGE_FILE=DATA/'language.json'
 INSTAGRAM_COOKIES=DATA/'instagram_cookies.txt'
+HOTSTAR_COOKIES=DATA/'hotstar_cookies.txt'
 try:
     APP_LANGUAGE=json.loads(LANGUAGE_FILE.read_text(encoding='utf-8')).get('language','en')
 except (OSError,ValueError,AttributeError):
@@ -578,6 +629,110 @@ class InstagramLoginDialog(QDialog):
             self._status.setText('Could not save Instagram session: ' + str(exc))
             return
         self._saved = True
+        self.accept()
+
+class HotstarLoginDialog(QDialog):
+    """Official Hotstar web login embedded with isolated WebEngine storage.
+
+    The app never accesses password fields or DRM keys. User explicitly opts
+    to export service cookies for ordinary yt-dlp authorization. Some login
+    flows use browser-only tokens or DRM and cannot be used by yt-dlp.
+    """
+    def __init__(self, source_url, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Hotstar login — Mister Muscle')
+        self.resize(840, 720)
+        self._cookies={}
+        self._saved=False
+        self._profile=QWebEngineProfile('MisterMuscleHotstar',self)
+        self._profile.setPersistentStoragePath(str(DATA/'hotstar_web_profile'))
+        self._profile.setCachePath(str(DATA/'hotstar_web_cache'))
+        self._profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        self._store=self._profile.cookieStore()
+        self._store.cookieAdded.connect(self._on_cookie)
+        layout=QVBoxLayout(self)
+        instructions=QLabel(
+            'Sign in on the official Hotstar page below. Mister Muscle does not '
+            'read your password. After signing in, choose "Use this session" '
+            'to retry without leaving the app. DRM-protected videos remain unavailable.')
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        self._address=QLabel('Official Hotstar website')
+        self._address.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self._address)
+        self._status=QLabel('Sign in and then click Use this session.')
+        self._status.setWordWrap(True)
+        layout.addWidget(self._status)
+        self._view=QWebEngineView(self)
+        self._page=QWebEnginePage(self._profile,self._view)
+        self._view.setPage(self._page)
+        self._view.urlChanged.connect(self._show_current_address)
+        layout.addWidget(self._view,1)
+        actions=QHBoxLayout()
+        accept_button=QPushButton('Use this session')
+        accept_button.clicked.connect(self._finish_login)
+        cancel_button=QPushButton('Cancel')
+        cancel_button.clicked.connect(self.reject)
+        actions.addStretch()
+        actions.addWidget(accept_button)
+        actions.addWidget(cancel_button)
+        layout.addLayout(actions)
+        # Process persisted cookies only after the status labels exist.
+        self._store.loadAllCookies()
+        # Passwords are entered only on an authenticated HTTPS Hotstar origin.
+        original=urllib.parse.urlsplit(str(source_url))
+        if (original.scheme.lower()=='https'
+                and _restricted_media_host(source_url)=='hotstar'):
+            self._view.setUrl(QUrl(source_url))
+        else:
+            self._view.setUrl(QUrl('https://www.hotstar.com/'))
+
+    def _show_current_address(self,url):
+        self._address.setText('Current website: '+url.toString().split('?',1)[0][:180])
+
+    def _on_cookie(self,cookie):
+        domain=str(cookie.domain()).lower().lstrip('.')
+        if not (domain in ('hotstar.com','jiohotstar.com')
+                or domain.endswith('.hotstar.com')
+                or domain.endswith('.jiohotstar.com')):
+            return
+        name=bytes(cookie.name()).decode('utf-8','replace')
+        value=bytes(cookie.value()).decode('utf-8','replace')
+        path=str(cookie.path()) or '/'
+        if (not name or not value
+                or any(ch in name+value+path for ch in '\r\n\t')
+                or len(value)>8192):
+            return
+        expiry=(cookie.expirationDate().toSecsSinceEpoch()
+                if not cookie.isSessionCookie() else int(time.time())+7*86400)
+        self._cookies[(domain,path,name)]=(
+            value,bool(cookie.isSecure()),int(expiry),str(cookie.domain()).startswith('.'))
+        self._status.setText('Hotstar session data available. Finish signing in, then choose Use this session.')
+
+    def _finish_login(self):
+        if self._saved:return
+        if not self._cookies:
+            self._status.setText(
+                'No Hotstar session cookies are available yet. Complete the sign-in '
+                'on Hotstar first, or cancel if this provider blocks embedded login.')
+            return
+        rows=['# Netscape HTTP Cookie File',
+              '# Explicitly saved by Mister Muscle Hotstar in-app login']
+        for (domain,path,name),(value,secure,expires,subdomains) in self._cookies.items():
+            cookie_domain='.'+domain if subdomains else domain
+            rows.append('\t'.join([cookie_domain,'TRUE' if subdomains else 'FALSE',
+                path,'TRUE' if secure else 'FALSE',str(expires),name,value]))
+        try:
+            temp=HOTSTAR_COOKIES.with_suffix('.tmp')
+            temp.write_text('\n'.join(rows)+'\n',encoding='utf-8')
+            try:os.chmod(temp,0o600)
+            except OSError:pass
+            temp.replace(HOTSTAR_COOKIES)
+        except OSError as exc:
+            self._status.setText('Could not save the local Hotstar session: '+str(exc))
+            return
+        self._saved=True
         self.accept()
 
 class BugReportWorker(QThread):
@@ -2194,7 +2349,15 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.9 - Inspect and Preview Access Notices
+        fallback_notes = """## v5.3.10 - In-App Service Sign-In and Hotstar Session
+- Instagram sign-in prompts reuse the existing in-app Instagram login window.
+- Hotstar login opens the official Hotstar site inside Mister Muscle.
+- With explicit permission, the saved Hotstar session can retry Inspect, Preview or Download for authorized, non-DRM media.
+- Users can log out of Hotstar and clear the locally saved session in Settings.
+- No DRM or subscription bypass; protected streams may still be unavailable.
+- Preserves Car Multimedia MP4, A1/V1 cutting and earlier hotfixes.
+
+## v5.3.9 - Inspect and Preview Access Notices
 - Videos requiring a logged-in account now display an access notice instead of an internal crash report.
 - Inspect and Preview preserve the provider's explanation, classify access restrictions as warnings and report genuine failures only once per operation.
 - No login, subscription, DRM or geo-restriction bypass is attempted.
@@ -2596,6 +2759,22 @@ class Main(QMainWindow):
         auto_note=QLabel('Automatic error reporting is enabled by default for new installations. You can disable it here. Reports are sanitized; no screenshots or full logs are attached automatically.')
         auto_note.setObjectName('sub');auto_note.setWordWrap(True);cl.addWidget(auto_note)
         self.auto_reporting_check.toggled.connect(self.set_auto_reporting)
+        cl.addWidget(QLabel('HOTSTAR ACCOUNT'))
+        hotstar_note=QLabel(
+            'Optional in-app login on the official Hotstar site. Local session '
+            'cookies may be used for authorized Inspect, Preview and Download. '
+            'DRM-protected videos are not supported. Clear the session at any time.')
+        hotstar_note.setObjectName('sub');hotstar_note.setWordWrap(True)
+        cl.addWidget(hotstar_note)
+        auth_row=QHBoxLayout()
+        auth_row.addWidget(button('Log into Hotstar in app',self.login_hotstar))
+        auth_row.addWidget(button('Clear Hotstar session',self.logout_hotstar))
+        cl.addLayout(auth_row)
+        self.hotstar_session_status=QLabel(
+            'Saved Hotstar session available' if HOTSTAR_COOKIES.is_file()
+            else 'No saved Hotstar session')
+        self.hotstar_session_status.setObjectName('sub')
+        cl.addWidget(self.hotstar_session_status)
         cl.addWidget(button('View What’s New in v' + DISPLAY_VERSION,self.show_whats_new))
         cl.addWidget(button('Change download folder',self.choose_folder))
         cl.addWidget(QLabel('UPDATE CENTER  •  Automatically checks on startup'))
@@ -2611,18 +2790,48 @@ class Main(QMainWindow):
         update_note=QLabel('Checks for application and tool updates on startup. Available application updates can be downloaded and installed; FFmpeg is checked locally.')
         update_note.setObjectName('sub');update_note.setWordWrap(True);cl.addWidget(update_note)
         cl.addWidget(QLabel('All cutting controls are now in New Download → Media Studio.'));v.addWidget(c);return w
+    def login_hotstar(self):
+        if not WEB_ENGINE_AVAILABLE:
+            QMessageBox.warning(self,'Hotstar sign-in',
+                'Qt WebEngine is required for in-app login.')
+            return False
+        dialog=HotstarLoginDialog('https://www.hotstar.com/',self)
+        ok=dialog.exec()==QDialog.DialogCode.Accepted
+        if ok:
+            self.hotstar_session_status.setText('Hotstar session saved locally')
+            self.log('INFO','HOTSTAR','User saved a local Hotstar login session')
+        return ok
+
+    def logout_hotstar(self):
+        try:
+            HOTSTAR_COOKIES.unlink(missing_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self,'Clear Hotstar session',str(exc))
+            return
+        if WEB_ENGINE_AVAILABLE:
+            profile=QWebEngineProfile('MisterMuscleHotstar',self)
+            profile.setPersistentStoragePath(str(DATA/'hotstar_web_profile'))
+            profile.setCachePath(str(DATA/'hotstar_web_cache'))
+            profile.cookieStore().deleteAllCookies()
+            profile.clearHttpCache()
+            self._hotstar_logout_profile=profile
+        self.hotstar_session_status.setText('Hotstar session cleared')
+        self.log('INFO','HOTSTAR','User cleared locally saved Hotstar session')
+
     def login_instagram(self):
         if not WEB_ENGINE_AVAILABLE:
             QMessageBox.warning(self, 'Instagram login', 'Qt WebEngine is required for in-app login.')
-            return
+            return False
         dialog = InstagramLoginDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.ig_cookie_source.setCurrentIndex(1)
             self.ig_cookie_path.setText(str(INSTAGRAM_COOKIES))
             self.ig_login_status.setText('Instagram login saved — ready to download')
             self.log('INFO', 'INSTAGRAM', 'In-app Instagram login completed; local cookies file ready')
+            return True
         else:
             self.ig_login_status.setText('Login canceled or not completed')
+            return False
 
     def logout_instagram(self):
         if INSTAGRAM_COOKIES.exists():
@@ -2765,7 +2974,7 @@ class Main(QMainWindow):
         if self.proc and self.proc.state()!=QProcess.NotRunning:return
         if not self.queue:
             self.status.setText('Queue completed.');self.refresh_center();return
-        self.current_url,mode,quality,output_format=self.queue.pop(0);self._download_finishing=False;self._premiere_finalizing=False;self._premiere_path_record=DATA/'premiere_last_download_path.txt';self._premiere_path_record.unlink(missing_ok=True);self._car_for_download=(mode==4);self._premiere_for_download=(self._car_for_download or (mode in (0,1) and self.premiere_compatible.isChecked()));self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self.last_ui_percent=-1
+        self.current_url,mode,quality,output_format=self.queue.pop(0);self._download_finishing=False;self._premiere_finalizing=False;self._premiere_path_record=DATA/'premiere_last_download_path.txt';self._premiere_path_record.unlink(missing_ok=True);self._car_for_download=(mode==4);self._premiere_for_download=(self._car_for_download or (mode in (0,1) and self.premiere_compatible.isChecked()));self.current_output_format=output_format;self.current_title=self.media_info.get(self.current_url,{}).get('title') or self.current_url;self.current_mode=mode;self.current_quality=quality;self.last_file='';self.canceled=False;self.pause_requested=False;self.output_buffer='';self._download_auth_error='';self.last_ui_percent=-1
         # Capture output folder state to identify the exact new file if yt-dlp omits its final path.
         self._premiere_before_files={}
         if self._premiere_for_download:
@@ -2812,6 +3021,7 @@ class Main(QMainWindow):
             args+=['-f',f'bestvideo[height<={fmt}]+bestaudio/best[height<={fmt}]' if fmt else 'bestvideo+bestaudio/best']
             if not self._premiere_for_download:args+=['--merge-output-format',output_format,'--remux-video',output_format]
         if speed_rate:args+=['--limit-rate',speed_rate]
+        args+=self._media_cookie_args(self.current_url)
         if self._premiere_for_download:
             # Prefer H.264 at the SAME selected resolution, never downgrade 4K.
             # Resolution remains the primary yt-dlp sort key.
@@ -2835,7 +3045,7 @@ class Main(QMainWindow):
         self.download_title_proc=proc
         proc.setProgram(YTDLP_EXE)
         proc.setArguments(ytdlp_args(['-m','yt_dlp','--no-playlist','--skip-download',
-                                      '--print','%(title)s',url]))
+                                      '--print','%(title)s',*self._media_cookie_args(url),url]))
         def title_ready(code,status):
             raw=bytes(proc.readAllStandardOutput()).decode('utf-8',errors='replace')
             if code==0 and raw.strip():
@@ -2865,7 +3075,14 @@ class Main(QMainWindow):
         for line in lines:
             m=re.search(r'\[download\]\s+(\d+(?:\.\d+)?)%',line)
             if line.strip():
-                self.log('ERROR' if 'ERROR:' in line else 'WARN' if 'WARNING:' in line else 'INFO','DOWNLOAD',line.strip())
+                access=_restricted_media_notice(line)
+                if access:
+                    self._download_auth_error=line.strip()
+                    self.log('WARN','DOWNLOAD',access)
+                else:
+                    self.log('ERROR' if 'ERROR:' in line else
+                             'WARN' if 'WARNING:' in line else 'INFO',
+                             'DOWNLOAD',scrub_bug_log(line.strip()))
             if m:
                 pct=min(100,int(float(m.group(1))))
                 if pct!=self.download_percent or self.download_detail!=line.strip()[:160]:
@@ -2956,7 +3173,10 @@ class Main(QMainWindow):
             return
         self._download_finishing=True
         self.on_output(flush=True)
-        self.log('INFO' if exitcode==0 else 'ERROR','DOWNLOAD',f'Process finished: exit={exitcode}, status={status}')
+        access_notice=(_restricted_media_notice(getattr(self,'_download_auth_error',''))
+                       if exitcode!=0 and not self.canceled else None)
+        self.log('INFO' if exitcode==0 else 'WARN' if access_notice else 'ERROR',
+                 'DOWNLOAD',f'Process finished: exit={exitcode}, status={status}')
         if self.pause_requested:
             self.queue.insert(0,(self.current_url,self.current_mode,self.current_quality,self.current_output_format))
             self.pause_requested=False
@@ -2988,7 +3208,16 @@ class Main(QMainWindow):
             self.status.setText('✓ Download completed')
         else:
             self.status.setText(('Canceled: ' if self.canceled else '✕ Download failed: ')+self.current_url)
-            if not self.canceled:self.failed_items.append({'url':self.current_url,'date':datetime.now().strftime('%Y-%m-%d %H:%M'),'mode':self.current_mode,'quality':getattr(self,'current_quality',self.quality.currentText()),'format':getattr(self,'current_output_format','mp4')})
+            if not self.canceled and not access_notice:
+                self.failed_items.append({'url':self.current_url,'date':datetime.now().strftime('%Y-%m-%d %H:%M'),'mode':self.current_mode,'quality':getattr(self,'current_quality',self.quality.currentText()),'format':getattr(self,'current_output_format','mp4')})
+            if access_notice:
+                self.status.setText(access_notice)
+                self._restricted_download_retry=(
+                    self.current_url,self.current_mode,self.current_quality,
+                    self.current_output_format)
+                QTimer.singleShot(0,
+                    lambda d=self._download_auth_error,u=self.current_url:
+                    self._offer_media_login_popup('DOWNLOAD',d,u))
         self.start_btn.setEnabled(True);self.proc=None
         self._download_finishing=False
         self.refresh_center();self.refresh_history();self.persist_session();self.run_next()
@@ -3527,16 +3756,138 @@ class Main(QMainWindow):
                 return
         QMessageBox.information(self,'No file found','No completed video file with a known location was found.')
 
+    def _instagram_login_cookie_args(self, url):
+        """Inspect/Preview can reuse the existing Instagram in-app login."""
+        selected=self.ig_cookie_path.text().strip() if hasattr(self,'ig_cookie_path') else ''
+        if selected and getattr(self,'ig_cookie_source',None) is not None:
+            if self.ig_cookie_source.currentIndex()==1:
+                return _instagram_saved_cookie_args(url, selected)
+        return _instagram_saved_cookie_args(url, INSTAGRAM_COOKIES)
+
+    def _media_cookie_args(self, url):
+        """Pass only cookies from the matched service, never cross-host credentials."""
+        provider=_restricted_media_host(url)
+        if provider=='instagram':
+            return self._instagram_login_cookie_args(url)
+        if provider=='hotstar':
+            return _hotstar_saved_cookie_args(url,HOTSTAR_COOKIES)
+        return []
+
+    def _offer_media_login_popup(self, source, details, url):
+        """One permission-aware dialog for an account-restricted Inspect/Preview."""
+        if not _restricted_media_notice(details):
+            return
+        hoster=_restricted_media_host(url, details)
+        now=time.monotonic()
+        key=(hoster,str(url))
+        if not hasattr(self,'_media_login_popup_recent'):
+            self._media_login_popup_recent={}
+        # Auto-preview and manual Inspect may fail concurrently for one URL.
+        # Avoid showing the same popup twice in a few seconds on this device.
+        if now-self._media_login_popup_recent.get(key,-1e9)<45:
+            return
+        self._media_login_popup_recent[key]=now
+        if len(self._media_login_popup_recent)>150:
+            self._media_login_popup_recent={
+                k:v for k,v in self._media_login_popup_recent.items() if now-v<120}
+
+        dialog=QMessageBox(self)
+        dialog.setIcon(QMessageBox.Information)
+        if hoster=='instagram':
+            dialog.setWindowTitle('Instagram sign-in required')
+            dialog.setText('Instagram requires a signed-in account for this video.')
+            dialog.setInformativeText(
+                'Use the existing Instagram login inside Mister Muscle. '
+                'After signing in, Inspect/Preview can retry with your saved '
+                'Instagram session. Your password is entered on Instagram, '
+                'not in the downloader.')
+            label=('Log into Instagram' if WEB_ENGINE_AVAILABLE
+                   else 'Open Instagram in browser')
+        elif hoster=='hotstar':
+            dialog.setWindowTitle('Hotstar sign-in required')
+            dialog.setText('Hotstar requires an authorized account for this video.')
+            dialog.setInformativeText(
+                'Sign in on the official Hotstar page inside Mister Muscle. '
+                'After signing in, Inspect, Preview or Download can retry '
+                'using authorized session cookies. DRM-protected content '
+                'cannot be downloaded even after sign-in.')
+            label=('Log into Hotstar in app' if WEB_ENGINE_AVAILABLE
+                   else 'Open Hotstar website')
+        else:
+            dialog.setWindowTitle('Sign-in required')
+            dialog.setText('This video requires an account on its provider.')
+            dialog.setInformativeText(
+                'Open the original video and sign in on the official '
+                'provider site. Browser sign-in does not automatically '
+                'authorize the downloader.')
+            label='Open source link'
+        action=dialog.addButton(label,QMessageBox.AcceptRole)
+        provider_open=None
+        if hoster=='hotstar':
+            provider_open=dialog.addButton('Open Hotstar website',QMessageBox.ActionRole)
+        dialog.addButton('Not now',QMessageBox.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is provider_open:
+            if isinstance(url,str) and url.lower().startswith(('https://','http://')):
+                QDesktopServices.openUrl(QUrl(url))
+            return
+        if dialog.clickedButton() is not action:
+            return
+        if hoster=='hotstar':
+            if not WEB_ENGINE_AVAILABLE:
+                if isinstance(url,str) and url.lower().startswith(('http://','https://')):
+                    QDesktopServices.openUrl(QUrl(url))
+                return
+            dialog=HotstarLoginDialog(url,self)
+            if dialog.exec()!=QDialog.DialogCode.Accepted:
+                return
+            self.log('INFO','HOTSTAR',
+                     'User authorized a local Hotstar session; retrying requested action.')
+            # Re-attempt INSPECT / PREVIEW with user-authorized in-app cookies.
+            # For DOWNLOAD, restore the exact queued task rather than trying
+            # to restart yt-dlp inside its finished() callback.
+            if source=='DOWNLOAD':
+                pending=getattr(self,'_restricted_download_retry',None)
+                if pending and pending[0]==url:
+                    if not any(item[0]==url for item in self.queue):
+                        self.queue.insert(0,pending)
+                        self.persist_session()
+                        self.refresh_queue()
+                    self._restricted_download_retry=None
+                    QTimer.singleShot(0,self.run_next)
+                return
+            links=extract_media_links(self.urls.toPlainText())
+            if links and links[0]==url:
+                callback=self.inspect_link if source=='INSPECT' else self.preview_link
+                QTimer.singleShot(0,callback)
+            return
+        if hoster=='instagram' and WEB_ENGINE_AVAILABLE:
+            if not self.login_instagram():
+                return
+            links=extract_media_links(self.urls.toPlainText())
+            if links and links[0]==url:
+                # Never recursively restart within Qt's process finished slot.
+                callback=self.inspect_link if source=='INSPECT' else self.preview_link
+                QTimer.singleShot(0,callback)
+            return
+        if not isinstance(url,str) or not url.lower().startswith(('https://','http://')):
+            return
+        # Only the exact link supplied by the user is opened; never guess a
+        # third-party login or redirect a password to this application.
+        QDesktopServices.openUrl(QUrl(url))
+
     def inspect_link(self):
         links=[line.strip() for line in self.urls.toPlainText().splitlines() if line.strip()]
         if not links:
             QMessageBox.information(self,'Missing link','Paste a video link first.');return
         if self.meta_proc and self.meta_proc.state()!=QProcess.NotRunning:return
         self.link_info.setText('Inspecting video metadata…')
+        self._inspect_url=links[0]
         self._inspect_diagnostics=[]
         self.meta_proc=QProcess(self)
         self.meta_proc.setProgram(YTDLP_EXE)
-        self.meta_proc.setArguments(ytdlp_args(['-m','yt_dlp','--dump-single-json','--skip-download','--no-playlist',links[0]]))
+        self.meta_proc.setArguments(ytdlp_args(['-m','yt_dlp','--dump-single-json','--skip-download','--no-playlist',
+            *self._media_cookie_args(links[0]),links[0]]))
         self.meta_proc.finished.connect(self.metadata_finished)
         self.watch_process(self.meta_proc,'INSPECT',stderr=False,stdout=False)
         self.meta_proc.readyReadStandardError.connect(lambda:self._capture_process_output(self.meta_proc,'INSPECT',True))
@@ -3551,6 +3902,8 @@ class Main(QMainWindow):
             if notice:
                 self.link_info.setText(notice)
                 self.log('WARN','INSPECT',notice)
+                QTimer.singleShot(0,lambda d=details,u=getattr(self,'_inspect_url',''):
+                    self._offer_media_login_popup('INSPECT',d,u))
             else:
                 message=(scrub_bug_log(details)[-700:] or
                          f'Metadata inspect exited with code {code}')
@@ -3595,6 +3948,7 @@ class Main(QMainWindow):
         self.preview_dir=tempfile.TemporaryDirectory(prefix='mm_preview_', ignore_cleanup_errors=True)
         self._preview_dirs.append(self.preview_dir)
         self.preview_file=str(Path(self.preview_dir.name)/'preview.mp4')
+        self._preview_url=links[0]
         self._preview_diagnostics=[]
         self.preview_proc=QProcess(self)
         self.preview_proc.setProcessChannelMode(QProcess.MergedChannels)
@@ -3603,6 +3957,7 @@ class Main(QMainWindow):
             '-m','yt_dlp','--no-playlist','--no-progress','--no-part',
             '-f','bestvideo[height<=480]+bestaudio/best[height<=480]/best',
             '--merge-output-format','mp4','--recode-video','mp4',
+            *self._media_cookie_args(links[0]),
             '-o',self.preview_file,links[0]]))
         self.preview_proc.finished.connect(self.preview_finished)
         self.watch_process(self.preview_proc,'PREVIEW',stderr=False,stdout=False)
@@ -3640,6 +3995,8 @@ class Main(QMainWindow):
                 if hasattr(self,'original_player_note'):
                     self.original_player_note.setText(notice)
                 self.log('WARN','PREVIEW',notice)
+                QTimer.singleShot(0,lambda d=detail,u=getattr(self,'_preview_url',''):
+                    self._offer_media_login_popup('PREVIEW',d,u))
             else:
                 safe_detail=detail[:900] or 'The preview produced no playable video.'
                 self.link_info.setText('Preview unavailable: '+safe_detail[-350:])

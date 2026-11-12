@@ -1,3 +1,15 @@
+## v5.3.10 - In-App Hotstar Authentication and Host-Specific Login
+
+- Added a service-aware login popup for account-restricted Inspect, Preview and Download requests.
+- Instagram reuses the existing in-app Instagram login window; successful login enables a retry with the user-authorized Instagram cookies.
+- Hotstar offers a new embedded login dialog loading the original official Hotstar URL in its own isolated Qt WebEngine profile, with the current page address visible.
+- After user confirmation, store only Hotstar/JioHotstar session cookies locally and use them for authorized Inspect, Preview and Download requests via yt-dlp. No passwords are collected by Mister Muscle, and cookies are not passed to other platforms or included in bug reports.
+- Added a Settings section to open the Hotstar in-app login proactively, view local session status, and clear Hotstar session cookies/cache on logout.
+- Reuse the exact failed download job after successful Hotstar login without automatically retrying indefinitely; offer opening the official page in an external browser as a fallback.
+- Preserve warnings rather than false crash reports for ordinary registration requirements, while retaining genuine per-user error reporting.
+- This feature does NOT circumvent DRM, subscriptions, regional restrictions or other provider access controls. Some media will remain unavailable even with a valid account.
+- Preserve previous Car Multimedia MP4 mode, independent A1/V1 cutting and Windows hotfixes.
+
 ## v5.3.9 - Hotstar Account Required and Inspect/Preview Error Handling
 
 - Handle videos restricted to registered users (including the Hotstar "only available for registered users" message) as an access requirement rather than an internal application crash. The user sees a clear sign-in notice in Inspect and Preview.
