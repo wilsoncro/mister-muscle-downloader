@@ -6,14 +6,14 @@ if not exist "release.ps1" (
   pause
   exit /b 1
 )
-rem Verify v5.3.8 source before any build, git commit, or GitHub upload.
-if exist "test_car_multimedia_538.py" (
+rem Verify v5.3.9 source before any build, git commit, or GitHub upload.
+if exist "test_restricted_media_539.py" (
   set "PATH=%~dp0tools;%PATH%"
-  echo Checking v5.3.8 waveform and clip exports...
+  echo Checking v5.3.9 Inspect, Preview and media compatibility...
   py -3 "test_full_waveform_and_cuts_535.py"
   if errorlevel 1 (
     echo.
-    echo ERROR: v5.3.8 checks failed. Nothing published.
+    echo ERROR: v5.3.9 checks failed. Nothing published.
     pause
     exit /b 1
   )

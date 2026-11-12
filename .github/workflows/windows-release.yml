@@ -94,9 +94,10 @@ jobs:
         run: |
           python -m compileall -q mister_muscle_qt.py pro_timeline.py mister_muscle_original_player.py phase3_engine.py phase4_lab.py beta_studio.py build_qt.py
           if ($LASTEXITCODE -ne 0) { throw 'Syntax checks failed.' }
-          if ($env:RELEASE_VERSION -eq '5.3.8' -and (Test-Path test_car_multimedia_538.py)) {
+          if ($env:RELEASE_VERSION -eq '5.3.9') {
+            if (-not (Test-Path test_restricted_media_539.py)) { throw 'Missing v5.3.9 regression tests.' }
             $env:PATH = "$PWD\tools;$env:PATH"
-            python test_car_multimedia_538.py
+            python test_restricted_media_539.py
             if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed.' }
           }
       - name: Build Windows EXE and installer

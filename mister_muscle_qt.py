@@ -2149,7 +2149,14 @@ class Main(QMainWindow):
         cards.setSpacing(13)
         # Prefer the real CHANGELOG.md, while keeping embedded release notes
         # for frozen installers where the markdown file is not packaged.
-        fallback_notes = """## v5.3.8 - Car Multimedia MP4 Compatibility
+        fallback_notes = """## v5.3.9 - Inspect and Preview Sign-in Notices
+- Protected Hotstar and other account-only videos now show a helpful sign-in requirement instead of a misleading crash report.
+- Inspect and Preview collect yt-dlp diagnostics and report unexpected failures once per operation, not once for each error line.
+- Preserve per-user diagnostics for genuine app failures without cross-user deduplication.
+- Never treat an incomplete, non-zero-exit preview as a successful playable file.
+- Keep Car Multimedia (MP4), A1/V1 cutting, and all earlier hotfixes.
+
+## v5.3.8 - Car Multimedia MP4 Compatibility
 - Added Car Multimedia (MP4) in the File type dropdown (no checkbox).
 - Selecting it always makes an H.264/AAC MP4 from the best available source up to 720p; the mode is retained when queued or resumed.
 - Encodes selected downloads to H.264 Baseline, AAC stereo, max 720p/30fps for older USB car players.

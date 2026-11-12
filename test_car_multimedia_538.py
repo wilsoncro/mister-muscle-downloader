@@ -28,8 +28,10 @@ def run_cmd(args, timeout=65):
 
 
 def test_compatibility():
-    assert "APP_VERSION = '5.3.8'" in SOURCE
-    assert '#define MyAppVersion "5.3.8"' in INSTALLER
+    version=re.search(r"(?m)^APP_VERSION = '(\d+\.\d+\.\d+)'", SOURCE)
+    assert version is not None
+    assert tuple(map(int,version.group(1).split('.'))) >= (5,3,8)
+    assert '#define MyAppVersion "'+version.group(1)+'"' in INSTALLER
     assert "Car Multimedia (MP4)" in SOURCE
     assert "self.mode=NoWheelComboBox();self.mode.addItems(" in SOURCE
     assert "self.car_compatible" not in SOURCE, 'Car mode must be in dropdown, not checkbox'

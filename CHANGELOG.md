@@ -1,3 +1,13 @@
+## v5.3.9 - Hotstar Account Required and Inspect/Preview Error Handling
+
+- Handle videos restricted to registered users (including the Hotstar "only available for registered users" message) as an access requirement rather than an internal application crash. The user sees a clear sign-in notice in Inspect and Preview.
+- Preserve the original media provider's access restrictions: this update does not bypass login, subscriptions, DRM, or geographic availability.
+- Prevent multiple automatic crash reports for a single Inspect or Preview operation: record yt-dlp diagnostics as warnings while the process runs, then issue one error if it ends with an unexpected failure.
+- Inspect/Preview still report genuine exceptions for each affected user independently; there is no cross-user deduplication or suppression of unrelated errors.
+- Preserve diagnostic output even when Qt consumed stderr/stdout before the finished callback, avoiding misleading "Metadata inspect exited with code 1" messages.
+- Only accept a preview when yt-dlp finishes successfully and a playable file exists; partial output from failed runs no longer counts as success.
+- Keep the Car Multimedia MP4 mode, independent A1/V1 cutting and previous Windows hotfixes intact.
+
 ## v5.3.8 - Car Multimedia MP4 Compatibility
 
 - Fixed a common car multimedia playback issue: selecting Video + Audio / MP4 / Best available could produce an MP4 container containing AV1, VP9, Opus, 4K or 60 FPS streams unsupported by many USB players.
